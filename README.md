@@ -32,8 +32,8 @@ git push -u origin main
 编辑 `public/index.html` 和其他 HTML 文件，将以下占位符替换为你的实际联盟链接：
 
 - `techpassive-20` → AWS 联盟追踪码
-- `ef5f58bd38d2` → DigitalOcean 联盟链接
-- `YOUR_VULTR_TAG` → Vultr 联盟链接
+- `YOUR_DO_TAG` → DigitalOcean 联盟链接
+- `9890714` → Vultr 联盟链接
 
 ## 自动化更新
 
