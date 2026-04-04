@@ -33,7 +33,7 @@ git push -u origin main
 
 - `techpassive-20` → AWS 联盟追踪码
 - `YOUR_DO_TAG` → DigitalOcean 联盟链接
-- `9890714` → Vultr 联盟链接
+- `YOUR_VULTR_TAG` → Vultr 联盟链接
 
 ## 自动化更新
 
@@ -65,7 +65,6 @@ affiliate-blog/
 - DigitalOcean 联盟计划
 - Vultr 联盟计划
 
-佣金将支付至你的 PayPal 账户：yao_hehe@hotmail.com
 
 ## 注意事项
 
