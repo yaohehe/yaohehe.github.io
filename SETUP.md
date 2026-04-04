@@ -16,7 +16,7 @@ npm install
 # 4. 复制我的配置
 # 将 _config.yml 中的以下占位符替换：
 # - YOUR_USERNAME -> 你的GitHub用户名
-# - YOUR_AWS_TAG / YOUR_DO_TAG / ... -> 你的联盟tag
+# - techpassive-20 / YOUR_DO_TAG / ... -> 你的联盟tag
 ```
 
 ## 二、手动首次部署
