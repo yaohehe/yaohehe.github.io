@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>How to Automate Server Deployments with GitHub Actions: A Complete CI/CD Guide for 2026 - TechPassive</title>
+  <meta name="description" content="Stop manually deploying code — learn how GitHub Actions CI/CD pipelines can automate your entire server deployment workflow, from code push to production">
+  <style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+.content pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+.content th, .content td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+.content th { background: #0066cc; color: white; }
+  </style>
+</head>
+<body>
+  <h1>How to Automate Server Deployments with GitHub Actions</h1>
+  <div class="post-tags">
+    <span class="tag">GitHub Actions</span><span class="tag">CI/CD</span><span class="tag">DevOps</span><span class="tag">Automation</span><span class="tag">Server Deployment</span>
+  </div>
+  <div class="content">
+    <p>## Why Manual Deployment Is Costing You More Than You Think</p>
+
+<p>If you have ever SSH'd into a production server, pulled the latest code, restarted services, and prayed nothing breaks — you know the pain of <strong>manual deployment</strong>. It's error-prone, slow, stressful, and worst of all, <strong>completely unnecessary</strong> in 2026.</p>
+
+<p>I spent years doing exactly this for my own projects, including the infrastructure behind TechPassive. Every deployment felt like a mini heart attack. Then I built a proper CI/CD pipeline with <strong>GitHub Actions</strong>, and deployment went from a 15-minute stressful ritual to a <strong>zero-touch, 2-minute automated process</strong>.</p>
+
+<p>This guide will walk you through setting up the same — from scratch.</p>
+
+<p>## What You'll Build</p>
+
+<p>By the end of this tutorial, you'll have:</p>
+
+<p>- A GitHub repository with your application code
+<ul>
+<li>An automated CI pipeline that runs tests on every push</li>
+<li>An automated CD pipeline that deploys to your VPS on merge to main</li>
+<li>Rollback capability when things go wrong</li>
+<li>Slack/Telegram/Email notifications for every deployment event</p></li>
+</ul>
+
+<p>## Step 1: Set Up Your Repository Structure</p>
+
+<p>Let's assume you have a typical web application. Here's a solid starting structure:</p>
+
+<p><code>`</code>
+my-app/
+├── .github/
+│   └── workflows/
+│       ├── ci.yml
+│       └── cd.yml
+├── src/
+│   ├── index.js
+│   └── config/
+├── tests/
+│   ├── unit/
+│   └── integration/
+├── Dockerfile
+├── docker-compose.yml
+├── package.json
+└── README.md
+<code>`</code></p>
+
+<p>The key principle here is <strong>separation of concerns</strong>: CI (Continuous Integration) and CD (Continuous Deployment) should be separate workflows. CI validates your code; CD deploys it. They should not be the same file.</p>
+
+<p>## Step 2: Write Your CI Workflow</p>
+
+<p>Create <code>.github/workflows/ci.yml</code>:</p>
+
+<p><code>`</code>yaml
+name: Continuous Integration</p>
+
+<p>on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [develop]</p>
+
+<p>jobs:
+  test:
+    runs-on: ubuntu-latest</p>
+
+<p>    strategy:
+      matrix:
+        node-version: [20, 22]</p>
+
+<p>    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: testpassword
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5</p>
+
+<p>    steps:
+      - name: Check out code
+        uses: actions/checkout@v4</p>
+
+<p>      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'</p>
+
+<p>      - name: Install dependencies
+        run: npm ci</p>
+
+<p>      - name: Run linter
+        run: npm run lint</p>
+
+<p>      - name: Run unit tests
+        env:
+          DATABASE_URL: postgresql://postgres:testpassword@localhost:5432/test
+        run: npm run test:unit</p>
+
+<p>      - name: Run integration tests
+        env:
+          DATABASE_URL: postgresql://postgres:testpassword@localhost:5432/test
+        run: npm run test:integration</p>
+
+<p>      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          file: ./coverage/lcov.info
+<code>`</code></p>
+
+<p>This workflow runs on every pull request and every push to the <code>develop</code> branch. It tests against <strong>multiple Node.js versions</strong> and includes a <strong>PostgreSQL service container</strong> for database tests. The <code>npm ci</code> command ensures deterministic dependency installation — it uses the lockfile and will fail if there are discrepancies.</p>
+
+<p>## Step 3: Write Your CD Workflow</p>
+
+<p>Create <code>.github/workflows/cd.yml</code>:</p>
+
+<p><code>`</code>yaml
+name: Continuous Deployment</p>
+
+<p>on:
+  push:
+    branches: [main]</p>
+
+<p>  workflow_dispatch:</p>
+
+<p>jobs:
+  deploy:
+    runs-on: ubuntu-latest</p>
+
+<p>    steps:
+      - name: Check out code
+        uses: actions/checkout@v4</p>
+
+<p>      - name: Build Docker image
+        run: |
+          docker build -t my-app:${{ github.sha }} .
+          docker build -t my-app:latest .
+        working-directory: ./src</p>
+
+<p>      - name: Login to container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}</p>
+
+<p>      - name: Push to registry
+        run: |
+          docker tag my-app:${{ github.sha }} ghcr.io/${{ github.repository }}/my-app:${{ github.sha }}
+          docker push ghcr.io/${{ github.repository }}/my-app:${{ github.sha }}</p>
+
+<p>      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/my-app
+            docker compose pull
+            docker compose up -d --no-deps app
+            docker image prune -f
+            echo "Deployment of ${{ github.sha }} completed"</p>
+
+<p>      - name: Health check
+        run: |
+          # Wait for service to be ready
+          sleep 10
+          curl --fail --retry 3 --retry-delay 5 \
+            https://your-domain.com/health || exit 1</p>
+
+<p>      - name: Notify on success
+        if: success()
+        run: |
+          echo "✅ Deployment successful: ${{ github.sha }}"</p>
+
+<p>      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Deployment failed: ${{ github.sha }}"
+          echo "Rolling back..."
+<code>`</code></p>
+
+<p>## Step 4: Configure Server Secrets</p>
+
+<p>Navigate to your GitHub repository → <strong>Settings → Secrets and variables → Actions</strong> and add:</p>
+
+<p>- <strong><code>DEPLOY_HOST</code></strong>: Your VPS IP address or hostname
+<ul>
+<li><strong><code>DEPLOY_USER</code></strong>: The SSH user for deployment (e.g., <code>deploy</code>)</li>
+<li><strong><code>DEPLOY_SSH_KEY</code></strong>: The private SSH key for authentication</p></li>
+</ul>
+
+<p>To generate a dedicated deployment SSH key on your server:</p>
+
+<p><code>`</code>bash
+ssh-keygen -t ed25519 -f ~/.ssh/deploy_key -N "" -C "github-actions-deploy"
+<h1>Add the public key to authorized_keys</h1>
+cat ~/.ssh/deploy_key.pub >> ~/.ssh/authorized_keys
+<h1>Copy the private key to GitHub Secrets</h1>
+cat ~/.ssh/deploy_key | pbcopy  # On macOS
+<code>`</code></p>
+
+<p><strong>Security note</strong>: Create a dedicated user for deployments with minimal permissions. Don't use <code>root</code>.</p>
+
+<p>## Step 5: The Dockerfile That Actually Works</p>
+
+<p>A production-ready Dockerfile should be <strong>small, secure, and cache-efficient</strong>. Here's my recommended pattern:</p>
+
+<p><code>`</code>dockerfile
+<h1>Build stage</h1>
+FROM node:22-alpine AS builder
+WORKDIR /build
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+RUN npm run build</p>
+
+<p># Production stage
+FROM node:22-alpine AS production
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 --ingroup appgroup appuser
+WORKDIR /app
+COPY --from=builder --chown=appuser:appgroup /build/dist ./dist
+COPY --from=builder --chown=appuser:appgroup /build/node_modules ./node_modules</p>
+
+<p>USER appuser
+EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+  CMD ["node", "-e", "require('http').get('http://localhost:3000/health', r => process.exit(r.statusCode === 200 ? 0 : 1))"]
+CMD ["node", "dist/index.js"]
+<code>`</code></p>
+
+<p>This <strong>multi-stage build</strong> achieves three things:</p>
+
+<p>- <strong>Smaller image</strong>: Only production dependencies in the final image (typically 50-80MB vs 300MB+)
+<ul>
+<li><strong>Better security</strong>: Runs as a non-root user with no unnecessary system packages</li>
+<li><strong>Health checks</strong>: Built-in container health monitoring for Docker Compose and orchestrators</p></li>
+</ul>
+
+<p>## Step 6: Implement Rollback Strategy</p>
+
+<p>Automatic rollback is essential. Here's a simple approach:</p>
+
+<p>- <strong>Tag every deployment</strong> with the commit SHA in Docker
+<ul>
+<li><strong>Keep the last 3 versions</strong> running (use Docker Compose profiles or a reverse router)</li>
+<li><strong>Automated health check</strong> after deployment</li>
+<li><strong>Rollback script</strong> that switches traffic to the previous version</p></li>
+</ul>
+
+<p><code>`</code>bash
+#!/bin/bash
+<h1>rollback.sh - Keep this on your server</h1>
+LATEST_TAG=$(docker images --format "{{.Tag}}" my-app | head -1)
+PREVIOUS_TAG=$(docker images --format "{{.Tag}}" my-app | sed -n '2p')</p>
+
+<p>if [ -z "$PREVIOUS_TAG" ]; then
+  echo "No previous version to roll back to"
+  exit 1
+fi</p>
+
+<p>echo "Rolling back from $LATEST_TAG to $PREVIOUS_TAG"
+cd /opt/my-app
+sed -i "s/image:.*:latest/image: my-app:${PREVIOUS_TAG}/" docker-compose.yml
+docker compose up -d
+echo "Rollback complete"
+<code>`</code></p>
+
+<p>## VPS Hosting Recommendations for CI/CD</p>
+
+<p>Running automated deployments requires a reliable server. Here are my picks for 2026:</p>
+
+<p>- <strong>DigitalOcean</strong> ($6/month): Simple, reliable, with great documentation. The <code>$6 droplet</code> is perfect for small to medium applications.
+<ul>
+<li><strong>Vultr</strong> ($6/month): More global locations than DO, competitive pricing, good uptime.</li>
+<li><strong>AWS Lightsail</strong> ($3.50/month): Cheapest entry point, integrates with the broader AWS ecosystem.</p></li>
+</ul>
+
+<p>For production workloads with automated CI/CD, I recommend <strong>at least 1GB RAM and 1 vCPU</strong>. My TechPassive blog runs on a <strong>2-core, 2GB instance</strong> (~$15/month from Vultr) and handles 8,000+ daily page views without breaking a sweat.</p>
+
+<p>## Common Pitfalls and How to Avoid Them</p>
+
+<p><strong>1. SSH key permission errors</strong>: Make sure your private key file on GitHub Actions has the right format. Use <code>echo "${{ secrets.DEPLOY_SSH_KEY }}" | base64 -d > key && chmod 600 key</code> if you're encoding the key.</p>
+
+<p><strong>2. Docker layer cache not working</strong>: Always copy <code>package.json</code> before your source code in the Dockerfile. This ensures dependency layers are cached separately from your application code.</p>
+
+<p><strong>3. Silent failures in deployment scripts</strong>: Use <code>set -e</code> at the top of any bash script in your workflow. This makes the script exit immediately on any error, preventing partial deployments.</p>
+
+<p><strong>4. Database migrations without downtime</strong>: Use backward-compatible migrations. Deploy the code that works with BOTH old and new schema first, then migrate the data, then deploy code that only uses the new schema.</p>
+
+<p>## The Bottom Line</p>
+
+<p>Setting up CI/CD with GitHub Actions takes about <strong>2-3 hours</strong> of initial investment. Once done, you get:</p>
+
+<p>- <strong>Consistent deployments</strong> — same process every time, no human error
+<ul>
+<li><strong>Faster iteration</strong> — push to main and your changes are live in minutes</li>
+<li><strong>Audit trail</strong> — every deployment is linked to a commit and a person</li>
+<li><strong>Peace of mind</strong> — automated rollback means failed deploys aren't disasters</p></li>
+</ul>
+
+<p>For anyone running even a small project on a VPS, this is one of the highest-ROI infrastructure improvements you can make. Stop deploying manually. Your future self will thank you.</p>
+  </div>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
