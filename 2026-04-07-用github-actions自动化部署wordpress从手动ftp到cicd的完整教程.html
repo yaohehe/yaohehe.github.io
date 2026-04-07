@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>用GitHub Actions自动化部署WordPress：从手动FTP到CI/CD的完整教程 - TechPassive</title>
+  <meta name="description" content="别再手动上传主题和插件了，这篇文章教你用GitHub Actions实现WordPress网站的自动化CI/CD部署">
+  <style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
+.content pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { border-collapse: collapse; width: 100%; margin: 15px 0; }
+.content th, .content td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+.content th { background: #0066cc; color: white; }
+  </style>
+</head>
+<body>
+  <h1>用GitHub Actions自动化部署WordPress博客</h1>
+  <div class="post-tags">
+    <span class="tag">GitHub Actions</span><span class="tag">WordPress</span><span class="tag">CI/CD</span><span class="tag">自动化部署</span><span class="tag">DevOps</span>
+  </div>
+  <div class="content">
+    <p>## 引言：你是否还在用FTP手动部署WordPress？</p>
+
+<p>如果你有一个自建的WordPress网站，每次更新主题、修改插件或者部署新文章时，还要手动用FTP上传文件——那这篇文章就是为你写的。作为一名技术博主，我花了很长时间才从"改完文件→FTP上传→检查是否生效"的痛苦循环中走出来。今天，我要分享如何用 <strong>GitHub Actions</strong> 实现 <strong>WordPress的CI/CD自动化部署</strong>。</p>
+
+<p>## 为什么WordPress也需要CI/CD？</p>
+
+<p>很多人觉得WordPress只是一个"博客平台"，不需要CI/CD。但实际上：</p>
+
+<p>- <strong>主题和插件版本管理混乱</strong>：直接在生产环境修改代码，出了问题无法回滚
+<ul>
+<li><strong>手动部署容易出错</strong>：上传遗漏文件、覆盖数据库、缓存未清理</li>
+<li><strong>团队协作困难</strong>：多个人同时修改主题文件，没有版本控制</li>
+<li><strong>部署不可追踪</strong>：不知道谁在什么时候改了什么，出了问题无从排查</p></li>
+</ul>
+
+<p>引入CI/CD后，你的WordPress部署流程会变成这样：本地修改主题代码 → 推送到GitHub → 自动测试 → 自动部署到服务器 → 自动清理缓存。全程无需手动干预，<strong>零停机、可回滚、可追溯</strong>。</p>
+
+<p>## 第一步：将WordPress主题版本化</p>
+
+<p>首先，你需要把WordPress主题（或子主题）纳入Git版本控制。这里推荐使用<strong>子主题（Child Theme）</strong>，这样父主题更新不会覆盖你的修改。</p>
+
+<p><code>`</code>bash
+cd /path/to/wordpress/wp-content/themes
+<h1>如果你还没有子主题，先创建一个</h1>
+mkdir -p mytheme-child
+cd mytheme-child
+<code>`</code></p>
+
+<p>创建子主题的三个必需文件：</p>
+
+<p><strong>style.css</strong> — 子主题的声明文件：
+<code>`</code>css
+/*
+Theme Name: MyTheme Child
+Template: twentytwentyfour
+Version: 1.0.0
+*/
+<code>`</code></p>
+
+<p><strong>functions.php</strong> — 用于引入父主题样式和自定义代码：
+<code>`</code>php
+<?php
+add_action('wp_enqueue_scripts', 'mytheme_child_enqueue');
+function mytheme_child_enqueue() {
+    wp_enqueue_style('parent-style',
+        get_template_directory_uri() . '/style.css');
+}
+// 在这里添加你的自定义函数
+<code>`</code></p>
+
+<p><strong>screenshot.png</strong> — 主题预览图（可选，放在WordPress后台主题列表中显示）</p>
+
+<p>初始化Git仓库：
+<code>`</code>bash
+git init
+git remote add origin git@github.com:yourusername/wp-theme.git
+git add .
+git commit -m "初始化子主题"
+git push -u origin main
+<code>`</code></p>
+
+<p>## 第二步：配置服务器上的免密部署</p>
+
+<p>GitHub Actions需要通过SSH连接到你的服务器来部署文件。配置步骤如下：</p>
+
+<p><strong>在服务器上生成SSH密钥对</strong>（如果还没有的话）：
+<code>`</code>bash
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/deploy_rsa -N ""
+<code>`</code></p>
+
+<p><strong>将公钥添加到服务器的authorized_keys</strong>：
+<code>`</code>bash
+cat ~/.ssh/deploy_rsa.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+<code>`</code></p>
+
+<p><strong>将私钥添加到GitHub Secrets</strong>：
+1. 进入你的GitHub仓库 → Settings → Secrets and variables → Actions
+2. 点击 "New repository secret"
+3. Name填 <code>SSH_PRIVATE_KEY</code>
+4. Value填入私钥内容：<code>cat ~/.ssh/deploy_rsa</code></p>
+
+<p>同时建议添加以下Secrets：
+<ul>
+<li><code>SERVER_HOST</code>：你的服务器IP或域名</li>
+<li><code>SERVER_USER</code>：SSH用户名（如deploy）</p></li>
+</ul>
+
+<p>## 第三步：编写GitHub Actions工作流</p>
+
+<p>在你的主题仓库中创建 <code>.github/workflows/deploy.yml</code>：</p>
+
+<p><code>`</code>yaml
+name: Deploy WordPress Theme</p>
+
+<p>on:
+  push:
+    branches: [main]</p>
+
+<p>  # 也支持手动触发
+  workflow_dispatch:</p>
+
+<p>jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4</p>
+
+<p>      - name: 部署到WordPress服务器
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            THEME_DIR="/var/www/html/wp-content/themes/mytheme-child"
+            DEPLOY_DIR="/tmp/wp-deploy-$$"</p>
+
+<p>            # 创建部署目录
+            mkdir -p $DEPLOY_DIR</p>
+
+<p>            # 将代码推送到部署目录
+            cd $DEPLOY_DIR
+            # 这里用rsync从GitHub拉取会比较复杂
+            # 更推荐的方式是用rsync直接push</p>
+
+<p>      - name: Rsync部署
+        uses: burnett01/rsync-deployments@v7
+        with:
+          switches: -avzr --delete
+          path: "./"
+          remote_path: "/var/www/html/wp-content/themes/mytheme-child"
+          remote_host: ${{ secrets.SERVER_HOST }}
+          remote_user: ${{ secrets.SERVER_USER }}
+          remote_key: ${{ secrets.SSH_PRIVATE_KEY }}</p>
+
+<p>      - name: 清理缓存
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            # 如果使用WP-CLI
+            cd /var/www/html
+            wp cache flush --allow-root
+            # 如果用了Redis/Memcached
+            # redis-cli FLUSHDB
+            echo "✅ 部署完成，缓存已清理"
+<code>`</code></p>
+
+<p>## 第四步：优化你的部署流程</p>
+
+<p>上面的基础工作流已经可以用了，但实际运营中建议添加以下优化：</p>
+
+<p><strong>1. 添加部署通知</strong></p>
+
+<p><code>`</code>yaml
+      - name: 发送部署通知
+        if: always()
+        run: |
+          curl -X POST "https://your-webhook-url/notify" \
+            -H "Content-Type: application/json" \
+            -d "{\"status\":\"${{ job.status }}\",\"commit\":\"${{ github.sha }}\"}"
+<code>`</code></p>
+
+<p><strong>2. 部署前运行代码检查</strong></p>
+
+<p><code>`</code>yaml
+      - name: PHP代码检查
+        run: |
+          docker run --rm -v $(pwd):/app ghcr.io/phpstan/phpstan analyse .
+<code>`</code></p>
+
+<p><strong>3. 实现回滚机制</strong></p>
+
+<p><code>`</code>yaml
+      - name: 创建部署前备份
+        uses: burnett01/rsync-deployments@v7
+        with:
+          switches: -avz
+          remote_path: "/var/www/html/wp-content/themes/mytheme-child/"
+          path: "/tmp/wp-backup/$(date +%Y%m%d-%H%M%S)/"
+<code>`</code></p>
+
+<p>## 常见问题与解决方案</p>
+
+<p><strong>Q: rsync部署失败，提示permission denied？</strong></p>
+
+<p>确保你的SSH用户有写入WordPress主题目录的权限。可以：
+<code>`</code>bash
+sudo chown -R deploy:www-data /var/www/html/wp-content/themes/mytheme-child
+sudo chmod -R 755 /var/www/html/wp-content/themes/mytheme-child
+<code>`</code></p>
+
+<p><strong>Q: 更新后前台没有变化？</strong></p>
+
+<p>很可能是缓存问题。除了上面的 <code>wp cache flush</code>，还要检查：
+<ul>
+<li>对象缓存（Redis/Memcached）</li>
+<li>页面缓存插件（WP Super Cache/W3 Total Cache）</li>
+<li>CDN缓存（Cloudflare等）</p></li>
+</ul>
+
+<p><strong>Q: 如何管理数据库变更？</strong></p>
+
+<p>主题文件可以用Git管理，但数据库变更需要额外工具。推荐：
+<ul>
+<li><strong>WP Migrate DB Pro</strong>：同步数据库和本地文件</li>
+<li><strong>自定义WP-CLI脚本</strong>：在部署后执行数据库迁移</li>
+<li><strong>WordPress REST API</strong>：通过API管理内容变更</p></li>
+</ul>
+
+<p>## 成本分析与VPS推荐</p>
+
+<p>要实现这套自动化流程，你需要一台VPS服务器。以下是我的推荐配置：</p>
+
+<p>| 服务商 | 月费 | 配置 | 适合场景 |
+|--------|------|------|----------|
+| DigitalOcean | $6 | 1核1GB/25GB SSD | 个人博客、低流量 |
+| Vultr | $6 | 1核1GB/32GB SSD | 同上，全球节点多 |
+| 腾讯云轻量 | ¥30起 | 1核2GB/40GB SSD | 国内用户首选 |
+| AWS Lightsail | $3.5 | 1核512MB/20GB SSD | 入门试用 |</p>
+
+<p>如果你的博客流量较大（日PV > 5000），建议从2核2GB起步。我目前用的是<strong>2核2GB的服务器</strong>，月费约¥60，WordPress网站日均PV约8000，完全够用。</p>
+
+<p>## 总结</p>
+
+<p>用GitHub Actions实现WordPress自动化部署，核心价值在于：</p>
+
+<p>- <strong>可追溯</strong>：每一次部署都有记录，随时回滚
+<ul>
+<li><strong>零停机</strong>：rsync增量同步，不影响现有访问</li>
+<li><strong>可扩展</strong>：后续轻松添加代码检查、自动备份、缓存清理</li>
+<li><strong>省时省力</strong>：改完代码push即可，不用手动FTP</p></li>
+</ul>
+
+<p>作为TechPassive博客的站长，我认为<strong>自动化运维是每一个WordPress站长的必修课</strong>。投入几个小时搭建好这套流程，后续每天节省的时间会让你觉得非常值得。</p>
+
+<p>如果你觉得这篇文章有用，不妨收藏分享，也欢迎在评论区告诉我你的WordPress自动化经验！</p>
+  </div>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
