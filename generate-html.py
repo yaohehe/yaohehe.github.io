@@ -153,6 +153,37 @@ def text_to_html(text):
         if not line.strip() and len(html_parts) == 0:
             continue
 
+        # Markdown 表格
+        if line.strip().startswith('|') and line.strip().endswith('|'):
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            # 跳过分隔行（如 |---|---|
+            if all(re.match(r'^[-:]+$', c.replace(' ', '')) for c in cells if c):
+                continue
+            # 判断是否是表头（第一行）或数据行
+            if not hasattr(text_to_html, '_table_header'):
+                text_to_html._table_header = cells
+                text_to_html._table_rows = []
+                continue
+            else:
+                text_to_html._table_rows.append(cells)
+                continue
+        else:
+            # 输出累积的表格
+            if hasattr(text_to_html, '_table_header'):
+                headers = text_to_html._table_header
+                rows = text_to_html._table_rows
+                del text_to_html._table_header
+                del text_to_html._table_rows
+                # 构建 HTML table
+                th_html = ''.join([f'<th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">{h}</th>' for h in headers])
+                tbody_html = ''
+                for i, row in enumerate(rows):
+                    bg = '#f9f9f9' if i % 2 == 0 else 'white'
+                    td_html = ''.join([f'<td style="border:1px solid #ddd;padding:8px;">{c}</td>' for c in row])
+                    tbody_html += f'<tr style="background:{bg}">{td_html}</tr>'
+                table_html = f'<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr>{th_html}</tr></thead><tbody>{tbody_html}</tbody></table>'
+                html_parts.append(table_html)
+
         # 列表项
         if line.startswith('- '):
             list_items.append(line[2:])
@@ -194,6 +225,21 @@ def text_to_html(text):
     # 处理末尾列表
     if in_list:
         html_parts.append('<ul>' + ''.join([f'<li>{item}</li>' for item in list_items]) + '</ul>')
+
+    # 处理末尾表格
+    if hasattr(text_to_html, '_table_header'):
+        headers = text_to_html._table_header
+        rows = text_to_html._table_rows
+        del text_to_html._table_header
+        del text_to_html._table_rows
+        th_html = ''.join([f'<th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">{h}</th>' for h in headers])
+        tbody_html = ''
+        for i, row in enumerate(rows):
+            bg = '#f9f9f9' if i % 2 == 0 else 'white'
+            td_html = ''.join([f'<td style="border:1px solid #ddd;padding:8px;">{c}</td>' for c in row])
+            tbody_html += f'<tr style="background:{bg}">{td_html}</tr>'
+        table_html = f'<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr>{th_html}</tr></thead><tbody>{tbody_html}</tbody></table>'
+        html_parts.append(table_html)
 
     return '\n'.join(html_parts)
 
