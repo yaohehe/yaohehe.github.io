@@ -48,9 +48,12 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .content li { margin: 8px 0; }
 .content a { color: #0066cc; text-decoration: none; }
 .content a:hover { text-decoration: underline; }
-.content code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; font-family: monospace; }
-.content pre { background: #f5f5f5; padding: 15px; border-radius: 5px; overflow-x: auto; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
 .content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
 '''
 
 CSS_EN = CSS_CN
@@ -68,6 +71,7 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <a href="/" class="back-btn">← 返回首页</a>
   <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
@@ -75,6 +79,7 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   <div class="content">
     {html_body}
   </div>
+  <a href="/" class="back-btn">← 返回首页</a>
   {BAIDU_STATS}
   <div style="margin:30px 0; text-align:center;">
     {ADSENSE_IN_ARTICLE}
@@ -96,6 +101,7 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <a href="/" class="back-btn">← Back to Home</a>
   <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
@@ -103,6 +109,7 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   <div class="content">
     {html_body}
   </div>
+  <a href="/" class="back-btn">← Back to Home</a>
   {BAIDU_STATS}
   <div style="margin:30px 0; text-align:center;">
     {ADSENSE_IN_ARTICLE}
@@ -195,6 +202,28 @@ def text_to_html(text):
                 list_items = []
                 in_list = False
 
+        # 多行代码块（``` ``` ```）
+        if line.strip().startswith('```'):
+            if not hasattr(text_to_html, '_in_code_block'):
+                text_to_html._in_code_block = True
+                text_to_html._code_block_lines = []
+                # 提取语言标识（如 ```python）
+                lang = line.strip()[3:].strip()
+                text_to_html._code_lang = lang
+            else:
+                # 结束代码块
+                text_to_html._in_code_block = False
+                code_content = '\n'.join(text_to_html._code_block_lines)
+                code_html = f'<pre><code>{code_content}</code></pre>'
+                html_parts.append(code_html)
+                del text_to_html._code_block_lines
+                del text_to_html._code_lang
+                del text_to_html._in_code_block
+            continue
+        elif hasattr(text_to_html, '_in_code_block') and text_to_html._in_code_block:
+            text_to_html._code_block_lines.append(line)
+            continue
+
         # 标题
         if line.startswith('### '):
             html_parts.append(f'<h3>{line[4:]}</h3>')
@@ -222,11 +251,14 @@ def text_to_html(text):
         elif not line.strip():
             pass  # 忽略空行
 
-    # 处理末尾列表
-    if in_list:
-        html_parts.append('<ul>' + ''.join([f'<li>{item}</li>' for item in list_items]) + '</ul>')
+    # 处理末尾未闭合的代码块
+    if hasattr(text_to_html, '_in_code_block') and text_to_html._in_code_block:
+        code_content = '\n'.join(text_to_html._code_block_lines)
+        html_parts.append(f'<pre><code>{code_content}</code></pre>')
+        del text_to_html._code_block_lines
+        del text_to_html._in_code_block
 
-    # 处理末尾表格
+    # 处理末尾列表
     if hasattr(text_to_html, '_table_header'):
         headers = text_to_html._table_header
         rows = text_to_html._table_rows
