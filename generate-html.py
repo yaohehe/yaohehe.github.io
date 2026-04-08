@@ -125,8 +125,10 @@ def parse_metadata(content_lines):
     current_year = datetime.now().strftime('%Y')
     # 中文年份：如 "2024年新手必看" → "2026年新手必看"
     title = re.sub(r'\b(20\d{2})年\b', f'{current_year}年', title)
-    # 英文年份：如 "(2024)" 或 "2024 Edition" → "(2026)" / "2026 Edition"
-    title = re.sub(r'\b(20\d{2})\b', current_year, title)
+    # 英文年份：如 "(2024)"、"2024 Beginners"、"2024 Edition" → "(2026)"、"2026 Beginners"、"2026 Edition"
+    title = re.sub(r'\b(20\d{2})\b(?!\d)', current_year, title)  # 避免重复替换已替换过的
+    title = re.sub(r'\((20\d{2})\)', f'({current_year})', title)  # 处理括号内年份如 "(2024)"
+    title = re.sub(r'\b(20\d{2})( Beginners| Edition| Guide| Tutorial)?\b', f'{current_year}\2', title)  # 处理 "2024 Beginners" 等
     return {
         'title': title,
         'description': parts[1].strip(),
