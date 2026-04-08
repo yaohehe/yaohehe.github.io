@@ -119,8 +119,16 @@ def parse_metadata(content_lines):
     if len(parts) < 4:
         print(f"❌ 元数据格式错误: {first_line}")
         sys.exit(1)
+    import re
+    from datetime import datetime
+    title = parts[0].strip()
+    current_year = datetime.now().strftime('%Y')
+    # 中文年份：如 "2024年新手必看" → "2026年新手必看"
+    title = re.sub(r'\b(20\d{2})年\b', f'{current_year}年', title)
+    # 英文年份：如 "(2024)" 或 "2024 Edition" → "(2026)" / "2026 Edition"
+    title = re.sub(r'\b(20\d{2})\b', current_year, title)
     return {
-        'title': parts[0].strip(),
+        'title': title,
         'description': parts[1].strip(),
         'h1': parts[2].strip(),
         'tags': [t.strip() for t in parts[3].split(',') if t.strip()]
