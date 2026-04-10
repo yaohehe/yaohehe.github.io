@@ -36,6 +36,72 @@ gtag('config', 'G-YQZQY6XDXN');
 ADSENSE_IN_ARTICLE = '<ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>'
 ADSENSE_PUSH = '<script>\n(adsbygoogle = window.adsbygoogle || []).push({});\n</script>'
 
+# ===== 联盟链接配置 =====
+# TODO: 将 YOUR_REF_CODE 替换为你实际的联盟 Ref ID
+AFFILIATE_LINKS = {
+    'DigitalOcean':    'https://www.digitalocean.com/?refcode=YOUR_REF_CODE&utm_campaign=TechPassive',
+    'Vultr':           'https://www.vultr.com/?ref=YOUR_REF_CODE',
+    'Linode':          'https://www.linode.com/?r=YOUR_REF_CODE',
+    'AWS':             'https://aws.amazon.com/?ref=YOUR_REF_CODE',
+    'Amazon':          'https://www.amazon.com/?ref=YOUR_REF_CODE',
+    'Cloudflare':      'https://www.cloudflare.com/?affiliate=YOUR_REF_CODE',
+    'Namecheap':       'https://www.namecheap.com/?affiliate=YOUR_REF_CODE',
+    '阿里云':          'https://www.aliyun.com/?affiliate=YOUR_REF_CODE',
+    '腾讯云':          'https://cloud.tencent.com/?affiliate=YOUR_REF_CODE',
+    'GitHub':          'https://github.com/?ref=YOUR_REF_CODE',
+    'JetBrains':       'https://jb.gg/aaaaaa?ref=YOUR_REF_CODE',
+    'WP Engine':       'https://wpengine.com/?ref=YOUR_REF_CODE',
+    'SiteGround':      'https://www.siteground.com/?ref=YOUR_REF_CODE',
+    '蓝队':            'https://www.bluehost.com/?ref=YOUR_REF_CODE',
+    'HostGator':       'https://www.hostgator.com/?ref=YOUR_REF_CODE',
+    'Kadence':         'https://www.kadencewp.com/?ref=YOUR_REF_CODE',
+    'Rank Math':       'https://rankmath.com/?ref=YOUR_REF_CODE',
+    'Wordfence':       'https://www.wordfence.com/?ref=YOUR_REF_CODE',
+    'ShortPixel':      'https://shortpixel.com/?ref=YOUR_REF_CODE',
+    'Sucuri':          'https://sucuri.net/?ref=YOUR_REF_CODE',
+    'Elementor':       'https://elementor.com/?ref=YOUR_REF_CODE',
+    'Divi':            'https://www.elegantthemes.com/?ref=YOUR_REF_CODE',
+    'GeneratePress':   'https://generatepress.com/?ref=YOUR_REF_CODE',
+    'Astra':           'https://wpastra.com/?ref=YOUR_REF_CODE',
+    'Udemy':           'https://www.udemy.com/?ref=YOUR_REF_CODE',
+    'Coursera':        'https://www.coursera.org/?ref=YOUR_REF_CODE',
+    'Notion':          'https://www.notion.so/?ref=YOUR_REF_CODE',
+    'Zapier':          'https://zapier.com/?ref=YOUR_REF_CODE',
+    'Make':            'https://www.make.com/?ref=YOUR_REF_CODE',
+    'n8n':             'https://n8n.io/?ref=YOUR_REF_CODE',
+    'Pabbly':          'https://www.pabbly.com/?ref=YOUR_REF_CODE',
+    'UpdraftPlus':     'https://updraftplus.com/?ref=YOUR_REF_CODE',
+    'WPForms':         'https://wpforms.com/?ref=YOUR_REF_CODE',
+    'Gravity Forms':   'https://www.gravityforms.com/?ref=YOUR_REF_CODE',
+    'Semrush':         'https://www.semrush.com/?ref=YOUR_REF_CODE',
+    'Fathom':          'https://usefathom.com/?ref=YOUR_REF_CODE',
+    'Plausible':       'https://plausible.io/?ref=YOUR_REF_CODE',
+    'Ghost':           'https://ghost.org/?ref=YOUR_REF_CODE',
+    'Netlify':         'https://www.netlify.com/?ref=YOUR_REF_CODE',
+    'Vercel':          'https://vercel.com/?ref=YOUR_REF_CODE',
+    'Railway':         'https://railway.app/?ref=YOUR_REF_CODE',
+    'Render':          'https://render.com/?ref=YOUR_REF_CODE',
+    'Fly.io':          'https://fly.io/?ref=YOUR_REF_CODE',
+    'Supabase':        'https://supabase.com/?ref=YOUR_REF_CODE',
+    'MongoDB':         'https://www.mongodb.com/?ref=YOUR_REF_CODE',
+    'Redis':           'https://redis.io/?ref=YOUR_REF_CODE',
+    'PostgreSQL':      'https://www.postgresql.org/?ref=YOUR_REF_CODE',
+    'Docker':          'https://www.docker.com/?ref=YOUR_REF_CODE',
+    'Kubernetes':      'https://kubernetes.io/?ref=YOUR_REF_CODE',
+    'Terraform':       'https://www.terraform.io/?ref=YOUR_REF_CODE',
+    'Ansible':         'https://www.ansible.com/?ref=YOUR_REF_CODE',
+    'Jenkins':         'https://www.jenkins.io/?ref=YOUR_REF_CODE',
+    'GitLab':          'https://gitlab.com/?ref=YOUR_REF_CODE',
+    'Datadog':         'https://www.datadoghq.com/?ref=YOUR_REF_CODE',
+    'Sentry':          'https://sentry.io/?ref=YOUR_REF_CODE',
+    'New Relic':       'https://newrelic.com/?ref=YOUR_REF_CODE',
+    '1Password':       'https://1password.com/?ref=YOUR_REF_CODE',
+    'LastPass':        'https://www.lastpass.com/?ref=YOUR_REF_CODE',
+    'ExpressVPN':      'https://www.expressvpn.com/?ref=YOUR_REF_CODE',
+    'NordVPN':         'https://nordvpn.com/?ref=YOUR_REF_CODE',
+    'YouTube':         'https://www.youtube.com/?ref=YOUR_REF_CODE',
+}
+
 CSS_CN = '''body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
 h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
@@ -276,12 +342,73 @@ def text_to_html(text):
     return '\n'.join(html_parts)
 
 
+def insert_affiliate_links(html_body, is_en):
+    """在 HTML 正文中插入联盟链接（关键词匹配，跳过已有链接）"""
+    for keyword, url in AFFILIATE_LINKS.items():
+        # 用 split/join 策略：先按 <a ...>...</a> 分割，对非链接部分做替换
+        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', html_body, flags=re.DOTALL | re.IGNORECASE)
+        new_parts = []
+        for part in parts:
+            if re.match(r'<a\s', part, re.IGNORECASE):
+                new_parts.append(part)  # 不修改已有链接
+            else:
+                # 不区分大小写匹配关键词，加上链接
+                pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b', re.IGNORECASE)
+                part = pattern.sub(
+                    lambda m: f'<a href="{url}" target="_blank" rel="nofollow sponsored">{m.group(1)}</a>',
+                    part
+                )
+                new_parts.append(part)
+        html_body = ''.join(new_parts)
+    return html_body
+
+
+AFFILIATE_BOX_CN = '''
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 推荐阅读</h3>
+  <p style="margin:0 0 15px;color:#666;">以下是我们精心挑选的优质工具，使用推荐链接支持我们持续产出高质量内容：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
+    <a href="{cloudflare_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#f38020;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Cloudflare CDN</a>
+    <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap 域名</a>
+  </div>
+</div>
+'''
+
+AFFILIATE_BOX_EN = '''
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="{cloudflare_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#f38020;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Cloudflare CDN</a>
+    <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap Domains</a>
+  </div>
+</div>
+'''
+
+
 def generate_html(content, template, css):
     """填充 HTML 模板"""
     lines = content.strip().split('\n')
     meta = parse_metadata(lines)
     body_lines = lines[2:]  # 跳过元数据和空行
     html_body = text_to_html('\n'.join(body_lines))
+
+    is_en = 'en' in css.lower() or 'lang="en"' in template
+    html_body = insert_affiliate_links(html_body, is_en)
+
+    # 追加联盟推荐箱
+    box = AFFILIATE_BOX_EN if is_en else AFFILIATE_BOX_CN
+    box_html = box.format(
+        digitalocean_url=AFFILIATE_LINKS['DigitalOcean'],
+        vultr_url=AFFILIATE_LINKS['Vultr'],
+        cloudflare_url=AFFILIATE_LINKS['Cloudflare'],
+        namecheap_url=AFFILIATE_LINKS['Namecheap'],
+    )
+    html_body = html_body + box_html
 
     tags_html = ''.join([f'<span class="tag">{tag}</span>' for tag in meta['tags']])
 
