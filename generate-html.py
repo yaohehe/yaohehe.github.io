@@ -39,11 +39,11 @@ ADSENSE_PUSH = '<script>\n(adsbygoogle = window.adsbygoogle || []).push({});\n</
 # ===== 联盟链接配置 =====
 # TODO: 将 YOUR_REF_CODE 替换为你实际的联盟 Ref ID
 AFFILIATE_LINKS = {
-    'DigitalOcean':    'https://www.digitalocean.com/?refcode=YOUR_REF_CODE&utm_campaign=TechPassive',
-    'Vultr':           'https://www.vultr.com/?ref=YOUR_REF_CODE',
+    'DigitalOcean':    'https://m.do.co/c/ef5f58bd38d2',
+    'Vultr':           'https://www.vultr.com/?ref=9890714',
     'Linode':          'https://www.linode.com/?r=YOUR_REF_CODE',
-    'AWS':             'https://aws.amazon.com/?ref=YOUR_REF_CODE',
-    'Amazon':          'https://www.amazon.com/?ref=YOUR_REF_CODE',
+    'AWS':             'https://aws.amazon.com/?tag=techpassive-20',
+    'Amazon':          'https://www.amazon.com/?tag=techpassive-20',
     'Cloudflare':      'https://www.cloudflare.com/?affiliate=YOUR_REF_CODE',
     'Namecheap':       'https://www.namecheap.com/?affiliate=YOUR_REF_CODE',
     '阿里云':          'https://www.aliyun.com/?affiliate=YOUR_REF_CODE',
@@ -343,17 +343,67 @@ def text_to_html(text):
 
 
 def insert_affiliate_links(html_body, is_en):
-    """在 HTML 正文中插入联盟链接（关键词匹配，跳过已有链接）"""
-    for keyword, url in AFFILIATE_LINKS.items():
+    """在 HTML 正文中插入联盟链接（仅匹配与工具/品牌相关的关键词）"""
+    # 关键词白名单：只匹配明确的工具/品牌名，不会与普通英文单词混淆
+    # 格式: (关键词, URL)
+    BRAND_KEYWORDS = [
+        ('DigitalOcean', AFFILIATE_LINKS['DigitalOcean']),
+        ('Vultr', AFFILIATE_LINKS['Vultr']),
+        ('AWS', AFFILIATE_LINKS['AWS']),
+        ('Amazon', AFFILIATE_LINKS['Amazon']),
+        ('Cloudflare', AFFILIATE_LINKS['Cloudflare']),
+        ('Namecheap', AFFILIATE_LINKS['Namecheap']),
+        ('GitHub', AFFILIATE_LINKS['GitHub']),
+        ('JetBrains', AFFILIATE_LINKS['JetBrains']),
+        ('Linode', AFFILIATE_LINKS['Linode']),
+        ('WordPress', AFFILIATE_LINKS['WordPress']),
+        ('Kubernetes', AFFILIATE_LINKS['Kubernetes']),
+        ('Docker', AFFILIATE_LINKS['Docker']),
+        ('Terraform', AFFILIATE_LINKS['Terraform']),
+        ('Ansible', AFFILIATE_LINKS['Ansible']),
+        ('Jenkins', AFFILIATE_LINKS['Jenkins']),
+        ('GitLab', AFFILIATE_LINKS['GitLab']),
+        ('Datadog', AFFILIATE_LINKS['Datadog']),
+        ('Sentry', AFFILIATE_LINKS['Sentry']),
+        ('Notion', AFFILIATE_LINKS['Notion']),
+        ('Zapier', AFFILIATE_LINKS['Zapier']),
+        ('n8n', AFFILIATE_LINKS['n8n']),
+        ('Pabbly', AFFILIATE_LINKS['Pabbly']),
+        ('Netlify', AFFILIATE_LINKS['Netlify']),
+        ('Vercel', AFFILIATE_LINKS['Vercel']),
+        ('Supabase', AFFILIATE_LINKS['Supabase']),
+        ('WP Engine', AFFILIATE_LINKS['WP Engine']),
+        ('SiteGround', AFFILIATE_LINKS['SiteGround']),
+        ('Bluehost', AFFILIATE_LINKS['Bluehost']),
+        ('HostGator', AFFILIATE_LINKS['HostGator']),
+        ('Kadence', AFFILIATE_LINKS['Kadence']),
+        ('Rank Math', AFFILIATE_LINKS['Rank Math']),
+        ('Wordfence', AFFILIATE_LINKS['Wordfence']),
+        ('ShortPixel', AFFILIATE_LINKS['ShortPixel']),
+        ('Sucuri', AFFILIATE_LINKS['Sucuri']),
+        ('Elementor', AFFILIATE_LINKS['Elementor']),
+        ('Divi', AFFILIATE_LINKS['Divi']),
+        ('GeneratePress', AFFILIATE_LINKS['GeneratePress']),
+        ('Astra', AFFILIATE_LINKS['Astra']),
+        ('Udemy', AFFILIATE_LINKS['Udemy']),
+        ('Coursera', AFFILIATE_LINKS['Coursera']),
+        ('1Password', AFFILIATE_LINKS['1Password']),
+        ('LastPass', AFFILIATE_LINKS['LastPass']),
+        ('ExpressVPN', AFFILIATE_LINKS['ExpressVPN']),
+        ('NordVPN', AFFILIATE_LINKS['NordVPN']),
+        ('YouTube', AFFILIATE_LINKS['YouTube']),
+    ]
+    
+    for keyword, url in BRAND_KEYWORDS:
         # 用 split/join 策略：先按 <a ...>...</a> 分割，对非链接部分做替换
-        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', html_body, flags=re.DOTALL | re.IGNORECASE)
+        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', html_body, flags=re.DOTALL)
         new_parts = []
         for part in parts:
             if re.match(r'<a\s', part, re.IGNORECASE):
                 new_parts.append(part)  # 不修改已有链接
             else:
-                # 不区分大小写匹配关键词，加上链接
-                pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b', re.IGNORECASE)
+                # 区分大小写匹配关键词，加上链接
+                pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b')
                 part = pattern.sub(
                     lambda m: f'<a href="{url}" target="_blank" rel="nofollow sponsored">{m.group(1)}</a>',
                     part
