@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-纯 Python 发布脚本 - 不依赖 AI 模型
+纯 Python 发布脚本 - 不依赖 AI模型
 检查 drafts/，如有草稿则发布到 GitHub
 """
 import os
@@ -13,7 +13,36 @@ from datetime import datetime
 DRAFTS_DIR = "/root/.openclaw/workspace/affiliate-blog/drafts"
 PUBLISH_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 BLOG_DIR = "/root/.openclaw/workspace/affiliate-blog"
+
+def extract_token_from_git_remote(cwd_path):
+    """从 git remote URL 中提取 token"""
+    import subprocess
+    try:
+        result = subprocess.run(
+            ['git', 'config', '--get', 'remote.origin.url'],
+            cwd=cwd_path,
+            capture_output=True, text=True, timeout=10
+        )
+        remote_url = result.stdout.strip()
+        if 'x-access-token:' in remote_url:
+            token_start = remote_url.index('x-access-token:') + len('x-access-token:')
+            token_end = remote_url.index('@')
+            return remote_url[token_start:token_end]
+    except Exception as e:
+        print(f"  ⚠️ 从 {cwd_path} 提取 token 失败: {e}", flush=True)
+    return None
+
+# 优先级：env > PUBLISH_DIR git remote > BLOG_DIR git remote
 TOKEN = os.environ.get('GITHUB_TOKEN', os.environ.get('GITHUB_API_TOKEN', ''))
+if not TOKEN:
+    TOKEN = extract_token_from_git_remote(PUBLISH_DIR)
+if not TOKEN:
+    TOKEN = extract_token_from_git_remote(BLOG_DIR)
+if not TOKEN:
+    raise RuntimeError("❌ 无法获取 GITHUB_TOKEN：环境变量和 git remote URL 均不可用")
+
+print(f"  🔑 Token 已获取: {TOKEN[:8]}...", flush=True)
+
 REPO = "yaohehe/yaohehe.github.io"
 HEADERS = {
     "Authorization": f"token {TOKEN}",
@@ -45,7 +74,6 @@ def push_file(filepath, content, message=None):
     else:
         print(f"❌ {filepath}: {r.status_code} {r.text[:200]}")
         return False
-
 
 def push_local_file(local_path, repo_path=None, message=None):
     """读取本地文件并通过 GitHub API 推送到指定仓库路径"""
@@ -146,6 +174,10 @@ def main():
         dst = os.path.join(archive_dir, f)
         shutil.move(src, dst)
         print(f"  📦 {f} -> {archive_dir}/")
+
+    if pushed == 0 and files:
+        print(f"❌ 发布失败：{len(files)} 篇草稿全部推送失败，退出码 1")
+        sys.exit(1)
 
     print(f"✅ 发布完成 | 篇数：{pushed}")
     print(f"[{datetime.now()}] === 发布脚本结束 ===")
