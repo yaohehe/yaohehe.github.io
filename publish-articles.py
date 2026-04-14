@@ -8,7 +8,26 @@ import sys
 import base64
 import requests
 import shutil
+import json
 from datetime import datetime
+
+MEMORY_DIR = os.path.expanduser("~/.openclaw/memory/self-improving")
+
+def log_script_error(command, error, fix="", priority="high"):
+    """写错误到 self-improving errors.jsonl"""
+    entry = {
+        "type": "error",
+        "timestamp": datetime.now().isoformat(),
+        "command": command,
+        "error": error,
+        "fix": fix,
+        "priority": priority,
+        "status": "pending",
+        "source": "publish-articles.py"
+    }
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    with open(f"{MEMORY_DIR}/errors.jsonl", "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 DRAFTS_DIR = "/root/.openclaw/workspace/affiliate-blog/drafts"
 PUBLISH_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
@@ -67,12 +86,28 @@ def push_file(filepath, content, message=None):
     sha = get_file_sha(filepath)
     if sha:
         data["sha"] = sha
-    r = requests.put(url, headers=HEADERS, json=data)
-    if r.status_code in (200, 201):
-        print(f"✅ {filepath}")
-        return True
-    else:
-        print(f"❌ {filepath}: {r.status_code} {r.text[:200]}")
+    try:
+        r = requests.put(url, headers=HEADERS, json=data, timeout=30)
+        if r.status_code in (200, 201):
+            print(f"✅ {filepath}")
+            return True
+        else:
+            print(f"❌ {filepath}: {r.status_code} {r.text[:200]}")
+            log_script_error(
+                f"requests.put {url}",
+                f"HTTP {r.status_code}: {r.text[:300]}",
+                fix="检查 GitHub token 权限和网络状态",
+                priority="high"
+            )
+            return False
+    except Exception as e:
+        print(f"❌ {filepath}: {type(e).__name__}: {e}")
+        log_script_error(
+            f"requests.put {url}",
+            f"{type(e).__name__}: {str(e)}",
+            fix="检查网络连接和 GitHub API 可用性",
+            priority="high"
+        )
         return False
 
 def push_local_file(local_path, repo_path=None, message=None):
