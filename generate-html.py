@@ -297,6 +297,10 @@ def text_to_html(text):
             html_parts.append(f'<h3>{line[4:]}</h3>')
         elif line.startswith('## '):
             html_parts.append(f'<h2>{line[3:]}</h2>')
+        # 行内代码（优先于粗体处理，避免 ` 被 ** 误消耗）
+        elif '`' in line:
+            line = re.sub(r'`(.+?)`', r'<code>\1</code>', line)
+            html_parts.append(f'<p>{line}</p>')
         # 粗体
         elif '**' in line:
             line = re.sub(r'\*\*(.+?)\*\*', '<strong>\1</strong>', line)
@@ -304,10 +308,6 @@ def text_to_html(text):
         # 斜体
         elif '*' in line:
             line = re.sub(r'\*(.+?)\*', '<em>\1</em>', line)
-            html_parts.append(f'<p>{line}</p>')
-        # 行内代码
-        elif '`' in line:
-            line = re.sub(r'`(.+?)`', '<code>\1</code>', line)
             html_parts.append(f'<p>{line}</p>')
         # 引用
         elif line.startswith('> '):
