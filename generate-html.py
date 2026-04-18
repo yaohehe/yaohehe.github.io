@@ -41,13 +41,10 @@ ADSENSE_PUSH = '<script>\n(adsbygoogle = window.adsbygoogle || []).push({});\n</
 AFFILIATE_LINKS = {
     'DigitalOcean':    'https://m.do.co/c/ef5f58bd38d2',
     'Vultr':           'https://www.vultr.com/?ref=9890714',
-    'Linode':          'https://www.linode.com/?r=YOUR_REF_CODE',
     'AWS':             'https://aws.amazon.com/?tag=techpassive-20',
     'Amazon':          'https://www.amazon.com/?tag=techpassive-20',
     'MiniMax':         'https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link',
     
-    'GitHub':           'https://github.com/?ref=YOUR_REF_CODE',
-    'JetBrains':        'https://jb.gg/aaaaaa?ref=YOUR_REF_CODE',
     'WordPress':        'https://wordpress.org/?ref=YOUR_REF_CODE',
     'Kubernetes':       'https://kubernetes.io/?ref=YOUR_REF_CODE',
     'Docker':           'https://www.docker.com/?ref=YOUR_REF_CODE',
@@ -419,9 +416,6 @@ def insert_affiliate_links(html_body, is_en):
         ('AWS', AFFILIATE_LINKS['AWS']),
         # ('Amazon', AFFILIATE_LINKS['Amazon']),  # 移除：Amazon链接已在Markdown链接中指定，避免URL被二次转换
         
-        ('GitHub', AFFILIATE_LINKS['GitHub']),
-        ('JetBrains', AFFILIATE_LINKS['JetBrains']),
-        ('Linode', AFFILIATE_LINKS['Linode']),
         ('WordPress', AFFILIATE_LINKS['WordPress']),
         ('Kubernetes', AFFILIATE_LINKS['Kubernetes']),
         ('Docker', AFFILIATE_LINKS['Docker']),
