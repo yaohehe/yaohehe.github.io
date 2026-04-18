@@ -70,6 +70,9 @@ if not os.path.exists(f"{TMP_DIR}/en.txt"):
 print(f"✅ cn.txt: {os.path.getsize(f'{TMP_DIR}/cn.txt')} bytes")
 print(f"✅ en.txt: {os.path.getsize(f'{TMP_DIR}/en.txt')} bytes")
 
+# Step 0: 价格真实性验证（警告但不阻断）
+run_cmd(f"python3 {WORKSPACE}/validate-prices.py", fatal=False)
+
 # Step 1: HTML conversion (非致命，drafts 存在时跳过)
 drafts_before = set(os.listdir(f"{WORKSPACE}/drafts")) if os.path.exists(f"{WORKSPACE}/drafts") else set()
 gen_ok = run_cmd(f"python3 {WORKSPACE}/generate-html.py", fatal=False) is not None
