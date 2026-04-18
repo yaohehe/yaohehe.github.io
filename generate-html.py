@@ -45,7 +45,7 @@ AFFILIATE_LINKS = {
     'AWS':             'https://aws.amazon.com/?tag=techpassive-20',
     'Amazon':          'https://www.amazon.com/?tag=techpassive-20',
     'MiniMax':         'https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link',
-    'Namecheap':        'https://www.namecheap.com/?affiliate=YOUR_REF_CODE',
+    
     'GitHub':           'https://github.com/?ref=YOUR_REF_CODE',
     'JetBrains':        'https://jb.gg/aaaaaa?ref=YOUR_REF_CODE',
     'WordPress':        'https://wordpress.org/?ref=YOUR_REF_CODE',
@@ -418,7 +418,7 @@ def insert_affiliate_links(html_body, is_en):
         ('Vultr', AFFILIATE_LINKS['Vultr']),
         ('AWS', AFFILIATE_LINKS['AWS']),
         # ('Amazon', AFFILIATE_LINKS['Amazon']),  # 移除：Amazon链接已在Markdown链接中指定，避免URL被二次转换
-        ('Namecheap', AFFILIATE_LINKS['Namecheap']),
+        
         ('GitHub', AFFILIATE_LINKS['GitHub']),
         ('JetBrains', AFFILIATE_LINKS['JetBrains']),
         ('Linode', AFFILIATE_LINKS['Linode']),
@@ -486,7 +486,6 @@ AFFILIATE_BOX_CN = '''
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
     <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
-    <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap 域名</a>
     <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
@@ -499,7 +498,6 @@ AFFILIATE_BOX_EN = '''
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
     <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
-    <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap Domains</a>
     <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
@@ -522,7 +520,7 @@ def generate_html(content, template, css):
         digitalocean_url=AFFILIATE_LINKS['DigitalOcean'],
         vultr_url=AFFILIATE_LINKS['Vultr'],
         cloudflare_url='',
-        namecheap_url=AFFILIATE_LINKS['Namecheap'],
+        namecheap_url='',
         minimax_url=AFFILIATE_LINKS['MiniMax'],
     )
     html_body = html_body + box_html
