@@ -316,9 +316,9 @@ def text_to_html(text):
         elif '`' in line:
             line = re.sub(r'`(.+?)`', r'<code>\1</code>', line)
             html_parts.append(f'<p>{line}</p>')
-        # 粗体
+        # 粗体：允许空内容（匹配 ** 和 ** 之间的任何内容，包括空）
         elif '**' in line:
-            line = re.sub(r'\*\*(.+?)\*\*', '<strong>\1</strong>', line)
+            line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
             html_parts.append(f'<p>{line}</p>')
         # 斜体
         elif '*' in line:
@@ -363,6 +363,8 @@ def text_to_html(text):
     result = re.sub(r'<em>\s*</em>', '', result)
     result = re.sub(r'<code>\s*</code>', '', result)
     result = re.sub(r'<b>\s*</b>', '', result)
+    # 清理空段落（清理空标签后可能遗留空 <p></p>）
+    result = re.sub(r'<p>\s*</p>', '', result)
     
     return result
 
