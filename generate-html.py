@@ -292,8 +292,23 @@ def text_to_html(text):
             text_to_html._code_block_lines.append(line)
             continue
 
+        # Markdown 链接 [text](url) - 必须在其他模式之前处理
+        if '](' in line:
+            # 匹配 [text](url) 格式，转换为 <a href="url">text</a>
+            def convert_markdown_link(m):
+                text = m.group(1)
+                url = m.group(2)
+                # 确保 url 以 http/https 开头
+                if not url.startswith('http'):
+                    url = 'https://' + url
+                # 清理 url 中的特殊字符
+                url = url.strip().replace(' ', '+')
+                return f'<a href="{url}" target="_blank" rel="nofollow sponsored">{text}</a>'
+            
+            line = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', convert_markdown_link, line)
+            html_parts.append(f'<p>{line}</p>')
         # 标题
-        if line.startswith('### '):
+        elif line.startswith('### '):
             html_parts.append(f'<h3>{line[4:]}</h3>')
         elif line.startswith('## '):
             html_parts.append(f'<h2>{line[3:]}</h2>')
@@ -341,7 +356,15 @@ def text_to_html(text):
         table_html = f'<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr>{th_html}</tr></thead><tbody>{tbody_html}</tbody></table>'
         html_parts.append(table_html)
 
-    return '\n'.join(html_parts)
+    result = '\n'.join(html_parts)
+    
+    # 清理空标签（AI 生成时常产生 <strong></strong> 这种空标签）
+    result = re.sub(r'<strong>\s*</strong>', '', result)
+    result = re.sub(r'<em>\s*</em>', '', result)
+    result = re.sub(r'<code>\s*</code>', '', result)
+    result = re.sub(r'<b>\s*</b>', '', result)
+    
+    return result
 
 
 def insert_affiliate_links(html_body, is_en):
@@ -352,7 +375,7 @@ def insert_affiliate_links(html_body, is_en):
         ('DigitalOcean', AFFILIATE_LINKS['DigitalOcean']),
         ('Vultr', AFFILIATE_LINKS['Vultr']),
         ('AWS', AFFILIATE_LINKS['AWS']),
-        ('Amazon', AFFILIATE_LINKS['Amazon']),
+        # ('Amazon', AFFILIATE_LINKS['Amazon']),  # 移除：Amazon链接已在Markdown链接中指定，避免URL被二次转换
         ('Cloudflare', AFFILIATE_LINKS['Cloudflare']),
         ('Namecheap', AFFILIATE_LINKS['Namecheap']),
         ('GitHub', AFFILIATE_LINKS['GitHub']),
