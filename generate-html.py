@@ -45,6 +45,7 @@ AFFILIATE_LINKS = {
     'AWS':             'https://aws.amazon.com/?tag=techpassive-20',
     'Amazon':          'https://www.amazon.com/?tag=techpassive-20',
     'Cloudflare':       'https://www.cloudflare.com/?affiliate=YOUR_REF_CODE',
+    'MiniMax':         'https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link',
     'Namecheap':        'https://www.namecheap.com/?affiliate=YOUR_REF_CODE',
     'GitHub':           'https://github.com/?ref=YOUR_REF_CODE',
     'JetBrains':        'https://jb.gg/aaaaaa?ref=YOUR_REF_CODE',
@@ -272,7 +273,17 @@ def text_to_html(text):
                 tbody_html = ''
                 for i, row in enumerate(rows):
                     bg = '#f9f9f9' if i % 2 == 0 else 'white'
-                    td_html = ''.join([f'<td style="border:1px solid #ddd;padding:8px;">{c}</td>' for c in row])
+                    # 转换单元格内的 markdown 链接
+                    def convert_cell_links(cell):
+                        def _convert(m):
+                            text = m.group(1)
+                            url = m.group(2).strip().replace(' ', '+')
+                            if not url.startswith('http'):
+                                url = 'https://' + url
+                            return f'<a href="{url}" target="_blank" rel="nofollow sponsored">{text}</a>'
+                        return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert, cell)
+                    
+                    td_html = ''.join([f'<td style="border:1px solid #ddd;padding:8px;">{convert_cell_links(c)}</td>' for c in row])
                     tbody_html += f'<tr style="background:{bg}">{td_html}</tr>'
                 table_html = f'<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr>{th_html}</tr></thead><tbody>{tbody_html}</tbody></table>'
                 html_parts.append(table_html)
@@ -467,6 +478,7 @@ AFFILIATE_BOX_CN = '''
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
     <a href="{cloudflare_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#f38020;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Cloudflare CDN</a>
     <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap 域名</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''
@@ -480,6 +492,7 @@ AFFILIATE_BOX_EN = '''
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
     <a href="{cloudflare_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#f38020;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Cloudflare CDN</a>
     <a href="{namecheap_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#de6800;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Namecheap Domains</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''
@@ -502,6 +515,7 @@ def generate_html(content, template, css):
         vultr_url=AFFILIATE_LINKS['Vultr'],
         cloudflare_url=AFFILIATE_LINKS['Cloudflare'],
         namecheap_url=AFFILIATE_LINKS['Namecheap'],
+        minimax_url=AFFILIATE_LINKS['MiniMax'],
     )
     html_body = html_body + box_html
 
