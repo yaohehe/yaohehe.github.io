@@ -297,7 +297,17 @@ def text_to_html(text):
             continue
         else:
             if in_list:
-                html_parts.append('<ul>' + ''.join([f'<li>{item}</li>' for item in list_items]) + '</ul>')
+                # 转换列表项内的 markdown 链接
+                def convert_item_links(item):
+                    def _convert(m):
+                        text = m.group(1)
+                        url = m.group(2).strip()
+                        if not url.startswith('http'):
+                            url = 'https://' + url
+                        return f'<a href="{url}" target="_blank" rel="nofollow sponsored">{text}</a>'
+                    return re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _convert, item)
+                
+                html_parts.append('<ul>' + ''.join([f'<li>{convert_item_links(item)}</li>' for item in list_items]) + '</ul>')
                 list_items = []
                 in_list = False
 
