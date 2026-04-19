@@ -33,6 +33,15 @@ gtag('js', new Date());
 gtag('config', 'G-YQZQY6XDXN');
 </script>'''
 
+CLARITY = '''<!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>'''
+
 ADSENSE_IN_ARTICLE = '<ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>'
 ADSENSE_PUSH = '<script>\n(adsbygoogle = window.adsbygoogle || []).push({});\n</script>'
 
@@ -153,6 +162,7 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   <title>{title} - TechPassive</title>
   <meta name="description" content="{description}">
   {GOOGLE_ANALYTICS}
+  {CLARITY}
   <style>
 {css}
   </style>
@@ -186,6 +196,7 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   <title>{title} - TechPassive</title>
   <meta name="description" content="{description}">
   {GOOGLE_ANALYTICS}
+  {CLARITY}
   <style>
 {css}
   </style>
@@ -538,6 +549,7 @@ def generate_html(content, template, css):
         css=css,
         BAIDU_STATS=BAIDU_STATS,
         GOOGLE_ANALYTICS=GOOGLE_ANALYTICS,
+        CLARITY=CLARITY,
         ADSENSE_IN_ARTICLE=ADSENSE_IN_ARTICLE,
         ADSENSE_PUSH=ADSENSE_PUSH
     )
