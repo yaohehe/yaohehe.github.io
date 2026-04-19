@@ -536,6 +536,17 @@ def generate_html(content, template, css):
     body_lines = lines[2:]  # 跳过元数据和空行
     html_body = text_to_html('\n'.join(body_lines))
 
+    # 检查 h1 是否与正文第一个 h2 重复（AI 误将章节标题当作 h1）
+    import re
+    first_h2 = None
+    m = re.search(r'<h2>([^<]+)</h2>', html_body)
+    if m:
+        first_h2 = m.group(1).strip()
+    h1_to_use = meta['h1']
+    if first_h2 and first_h2 == meta['h1']:
+        print(f"⚠️ h1 与正文第一个 h2 相同 ('{h1_to_use[:50]}...')，用 title 替代")
+        h1_to_use = meta['title']
+
     is_en = 'en' in css.lower() or 'lang="en"' in template
     html_body = insert_affiliate_links(html_body, is_en)
 
@@ -555,7 +566,7 @@ def generate_html(content, template, css):
     return template.format(
         title=meta['title'],
         description=meta['description'],
-        h1=meta['h1'],
+        h1=h1_to_use,
         tags_html=tags_html,
         html_body=html_body,
         css=css,
