@@ -101,7 +101,9 @@ AFFILIATE_LINKS = {
 }
 
 
-CSS_CN = '''body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+CSS_CN = '''.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
 h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
 .post-tags { margin: 15px 0; }
@@ -156,7 +158,9 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
   <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
   <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
@@ -165,6 +169,7 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
     {html_body}
   </div>
   <a href="/" class="back-btn">← 返回首页</a>
+  </main>
   {BAIDU_STATS}
   <div style="margin:30px 0; text-align:center;">
     {ADSENSE_IN_ARTICLE}
@@ -186,7 +191,9 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   </style>
 </head>
 <body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
   <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
   <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
@@ -195,6 +202,7 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
     {html_body}
   </div>
   <a href="/" class="back-btn">← Back to Home</a>
+  </main>
   {BAIDU_STATS}
   <div style="margin:30px 0; text-align:center;">
     {ADSENSE_IN_ARTICLE}
