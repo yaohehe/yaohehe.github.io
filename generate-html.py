@@ -240,10 +240,22 @@ def parse_metadata(content_lines):
     title = re.sub(r'\b(20\d{2})\b(?!\d)', current_year, title)  # 避免重复替换已替换过的
     title = re.sub(r'\((20\d{2})\)', f'({current_year})', title)  # 处理括号内年份如 "(2024)"
     title = re.sub(r'\b(20\d{2})( Beginners| Edition| Guide| Tutorial)?\b', f'{current_year}\2', title)  # 处理 "2024 Beginners" 等
+    h1_raw = parts[2].strip()
+    # 如果元数据是占位符（未被 AI 填充），从正文中提取第一个 # 标题
+    PLACEHOLDER_KEYWORDS = ['标题', '一级标题', 'title', 'headline', 'heading']
+    if any(kw in h1_raw for kw in PLACEHOLDER_KEYWORDS) and len(h1_raw) < 20:
+        print(f"⚠️ 检测到占位符元数据 h1='{h1_raw}'，从正文中提取...")
+        for line in content_lines[1:50]:  # 扫描前50行
+            line = line.strip()
+            if line.startswith('# ') and len(line) > 5:
+                h1_raw = line.lstrip('#').strip()
+                print(f"  提取到 h1: {h1_raw[:60]}")
+                break
+
     return {
         'title': title,
         'description': parts[1].strip(),
-        'h1': parts[2].strip(),
+        'h1': h1_raw,
         'tags': [t.strip() for t in parts[3].split(',') if t.strip()]
     }
 
