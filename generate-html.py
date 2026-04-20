@@ -249,30 +249,18 @@ def parse_metadata(content_lines):
         print(f"❌ 元数据格式错误 (字段不足4个): {first_line[:80]}")
         sys.exit(1)
 
-    from datetime import datetime
-    current_year = datetime.now().strftime('%Y')
-
     # ---- 修复1: parts[0] 格式校验 + 清理 ----
-    raw_title = parts[0].strip()
+    title = parts[0].strip()
     # 检测 parts[0] 是否被污染（元数据行格式错误：AI 把标题放到了 parts[0] 但带标记）
     parts0_dirty = (
-        re.match(r'^[\s　]*标题[：:]', raw_title) or
-        re.match(r'^[\s　]*title[\s:]', raw_title, re.IGNORECASE) or
-        re.match(r'^[\s　]*一级标题[：:]', raw_title) or
-        re.match(r'^[\s　]*#', raw_title)
+        re.match(r'^[\s　]*标题[：:]', title) or
+        re.match(r'^[\s　]*title[\s:]', title, re.IGNORECASE) or
+        re.match(r'^[\s　]*一级标题[：:]', title) or
+        re.match(r'^[\s　]*#', title)
     )
     if parts0_dirty:
-        print(f"⚠️ 检测到 parts[0] 被污染: '{raw_title[:60]}...'，尝试清理...")
-        raw_title = _clean_metadata_title(raw_title)
-
-    # 年份归一化（仅对已清理的纯标题执行）
-    title = re.sub(r'\b(20\d{2})年\b', f'{current_year}年', raw_title)
-    title = re.sub(r'\((20\d{2})\)', f'({current_year})', title)  # "(2024)" → "(2026)"
-    title = re.sub(r'\b(20\d{2})(?=\s+[A-Za-z])', current_year, title)  # "2024 Beginners" → "2026 Beginners"
-    title = re.sub(r'\b(20\d{2})( Beginners| Edition| Guide| Tutorial)\b', f'{current_year}\2', title)  # 避免上面行重复替换
-    # 避免对已经是当前年份的重复替换
-    if current_year not in title or title.count(current_year) > 1:
-        title = re.sub(r'\b(20\d{2})\b(?!\d)', current_year, title)
+        print(f"⚠️ 检测到 parts[0] 被污染: '{title[:60]}...'，尝试清理...")
+        title = _clean_metadata_title(title)
 
     # ---- 修复2: parts[1] 描述字段校验 ----
     raw_desc = parts[1].strip()
