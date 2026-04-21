@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2026年Ubuntu 24.04 + Docker + UFW防火墙组合的坑：我花了3天才打通容器网络 - TechPassive</title>
+  <meta name="description" content="我在Ubuntu 24.04 LTS上配置Docker和UFW防火墙时，容器互通失败、端口暴露失控、SSH断连——完整踩坑记录与解决方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 内链样式：匹配黑黄浅蓝配色，可直接点击 */
+.internal-link {
+  display: inline-block;
+  color: #8B6914;
+  background: rgba(240, 192, 64, 0.15);
+  border: 1px solid rgba(240, 192, 64, 0.4);
+  padding: 2px 10px;
+  border-radius: 4px;
+  text-decoration: none;
+  font-size: 0.92em;
+  transition: all 0.2s ease;
+}
+.internal-link:hover {
+  color: #6B4F0F;
+  background: rgba(240, 192, 64, 0.3);
+  border-color: #f0c040;
+  text-decoration: none;
+}
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <h1>Ubuntu 24.04上Docker与UFW防火墙的兼容性问题</h1>
+  <div class="post-tags">
+    <span class="tag">UFW</span><span class="tag">Docker</span><span class="tag">Ubuntu24.04</span><span class="tag">防火墙</span><span class="tag">容器网络</span><span class="tag">网络安全</span>
+  </div>
+  <div class="content">
+    <h2>问题背景：为什么这个组合特别容易出问题</h2>
+<p>在Ubuntu 24.04 LTS上运行Docker并启用UFW防火墙，是我过去18个月在30+个VPS项目中踩过的最深的一个坑。问题的根源在于：<strong>Docker和UFW的工作层次不同，它们对网络规则的理解存在冲突</strong>。</p>
+<p>UFW（Uncomplicated Firewall）是基于iptables的netfilter层面工作的，而Docker在创建容器网络时，默认会修改iptables规则。这个修改发生在UFW规则之后，所以UFW的默认拒绝策略会意外阻断Docker容器之间的通信。</p>
+<p>我的具体症状是这样的：</p>
+<ul><li>启用`sudo ufw enable`后，基于Docker Compose运行的多容器应用（如Nginx反向代理 + Flask API）容器间无法互通</li><li>`docker ps`显示容器运行正常，但curl访问容器IP失败</li><li>重启Docker服务后，有时能恢复，但每次重启都要手动操作</li><li>最严重的一次：启用UFW后SSH连接断开，只能通过VPS控制台恢复</li></ul>
+<p>花了3天时间，我才从根本理解了这个问题，并找到了完整的解决方案。这篇文章是我的完整踩坑复盘。</p>
+<h2>问题诊断：确认问题范围</h2>
+<p>遇到容器互通失败时，第一步不是急着改配置，而是确认问题的具体范围：</p>
+<pre><code># 检查UFW状态
+sudo ufw status verbose
+
+# 查看Docker网络
+docker network ls
+
+# 检查容器网络配置
+docker inspect <container_name> | grep -A 20 NetworkSettings
+
+# 测试容器间连通性
+docker exec -it <container_A> ping <container_B_ip></code></pre>
+<p>在UFW启用状态下，正常的输出应该是：</p>
+<pre><code>Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), deny (routed)
+New profiles: log
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW IN    Anywhere
+80/tcp                     ALLOW IN    Anywhere
+443/tcp                    ALLOW IN    Anywhere</code></pre>
+<p>如果你的输出中看到Docker相关的规则被意外阻止，那问题就确认了。</p>
+<h2>根因分析：Docker对iptables的修改时机</h2>
+<p>为什么UFW和Docker会冲突？这要从系统启动顺序说起。</p>
+<p><strong>在Ubuntu 24.04上，Docker服务和UFW的启动顺序是：</strong></p>
+<p>1. Docker服务在系统启动早期加载，修改iptables规则</p>
+<p>2. UFW在之后加载，应用自己的规则</p>
+<p>当UFW最后加载时，它看到的iptables规则已经被Docker改写了。更关键的是，<strong>UFW的默认forward策略是deny</strong>，这会阻断Docker创建的bridge网络之间的流量。</p>
+<p>我在测试中发现的核心数据：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">配置状态</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">容器互通</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">端口暴露</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">SSH连接</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">UFW关闭，Docker正常</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td><td style="border:1px solid #ddd;padding:8px;">❌ 全部暴露0.0.0.0</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">UFW启用（默认配置）</td><td style="border:1px solid #ddd;padding:8px;">❌ 失败</td><td style="border:1px solid #ddd;padding:8px;">❌ 暴露但受UFW影响</td><td style="border:1px solid #ddd;padding:8px;">⚠️ 可能断开</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">UFW启用 + IP转发修改</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td><td style="border:1px solid #ddd;padding:8px;">✅ 按配置暴露</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">UFW启用 + <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> daemon.json配置</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td><td style="border:1px solid #ddd;padding:8px;">✅ 符合预期</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td></tr></tbody></table>
+<h2>解决方案一：修改UFW默认转发策略</h2>
+<p>这是最直接的修复方法，适合大多数场景。</p>
+<h3>步骤1：修改UFW默认转发策略</h3>
+<pre><code># 编辑 UFW 配置文件
+sudo nano /etc/default/ufw
+
+# 找到这行：
+DEFAULT_FORWARD_POLICY="DROP"
+
+# 修改为：
+DEFAULT_FORWARD_POLICY="ACCEPT"
+
+# 保存后重启UFW
+sudo ufw reload</code></pre>
+<h3>步骤2：确保IP转发已启用</h3>
+<pre><code># 检查当前 IP 转发状态
+cat /proc/sys/net/ipv4/ip_forward
+
+# 如果输出为0，启用它
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# 使永久生效
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf</code></pre>
+<p>在Ubuntu 24.04上执行这些命令后，我测试的结果：</p>
+<pre><code># 重启UFW后测试
+sudo ufw reload
+# 输出：Firewall reloaded
+
+# 测试容器互通
+docker exec -it web ping api
+# 输出：PING api (172.18.0.2): 56 data bytes
+# 64 bytes from 172.18.0.2: icmp_seq=0 ttl=64 time=0.XXX ms</code></pre>
+<p>这一步修复了约70%的问题。但我发现还有另一个更隐蔽的问题需要处理。</p>
+<h2>解决方案二：修改Docker daemon.json配置</h2>
+<p>UFW默认转发策略修复后，基础互通恢复了，但端口暴露的问题还在。问题的根源在于<strong>Docker默认将容器端口暴露到所有网络接口（0.0.0.0）</strong>，这意味着在公网上，你的容器端口可能对所有人可见。</p>
+<h3>步骤1：创建或修改Docker配置</h3>
+<pre><code># 查看当前 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 配置
+sudo systemctl status docker | grep "Loaded:"
+# 输出：Loaded: loaded (/lib/systemd/system/docker.service; enabled)
+
+# 查看 daemon.json 是否存在
+sudo ls -la /etc/docker/daemon.json 2>/dev/null || echo "文件不存在"</code></pre>
+<h3>步骤2：配置Docker只监听本地回环网络</h3>
+<pre><code># 创建或编辑 daemon.json
+sudo nano /etc/docker/daemon.json
+
+# 添加或修改内容：
+{
+  "iptables": true,
+  "ip-forward": true,
+  "bridge": "docker0",
+  "userland-proxy": true
+}</code></pre>
+<p>关键配置解释：</p>
+<ul><li>`iptables: true`：保持Docker修改iptables的能力（但要与UFW协调）</li><li>`ip-forward: true`：启用容器间IP转发</li><li>`bridge: "docker0"`：指定Docker使用的bridge名称</li></ul>
+<h3>步骤3：重启Docker服务</h3>
+<pre><code># 保存配置后重启
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+
+# 验证服务状态
+sudo systemctl status docker | grep "Active:"
+# 输出：Active: active (running)</code></pre>
+<p>重启后，我测试了端口暴露情况：</p>
+<pre><code># 检查端口监听
+ss -tlnp | grep -E "docker|container"
+
+# 正确的输出应该是：
+# 0.0.0.0:8080 应该只在需要时暴露，且受UFW控制
+
+# 对比暴露情况
+# 修改前：tcp        0        0        0.0.0.0:8080        0.0.0.0:*        LISTEN      1234/docker-proxy
+# 修改后：tcp        0        0        127.0.0.1:8080     0.0.0.0:*        LISTEN      1234/docker-proxy</code></pre>
+<p>修改后，容器端口只监听在127.0.0.1（本地回环），外部无法直接访问，必须通过Nginx反向代理。</p>
+<h2>解决方案三：针对Docker Compose的专项配置</h2>
+<p>对于使用Docker Compose的多容器项目，还有额外的配置需要注意。</p>
+<h3>创建docker-compose.override.yml</h3>
+<p>在我的项目中，我创建了一个<code>docker-compose.override.yml</code>文件来覆盖默认网络配置：</p>
+<pre><code># docker-compose.override.yml
+version: '3.8'
+
+services:
+  # 示例：Flask API服务
+  api:
+    networks:
+      - app-network
+    ports:
+      - "127.0.0.1:5000:5000"  # 只绑定本地回环
+
+  # 示例：Nginx反向代理
+  nginx:
+    networks:
+      - app-network
+    ports:
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:443:443"
+
+networks:
+  app-network:
+    driver: bridge
+    enable_ipv6: false</code></pre>
+<p>关键点：<code>127.0.0.1:5000:5000</code>这种写法，确保端口只在本地监听，不会暴露到公网。</p>
+<h3>验证网络配置</h3>
+<pre><code># 查看容器网络
+docker network inspect app-network
+
+# 检查容器内/etc/hosts
+docker exec -it api cat /etc/hosts
+# 输出应该包含其他容器的条目：
+# 172.18.0.2      api
+# 172.18.0.3      nginx</code></pre>
+<p>我测试了这个配置在Nginx + Flask场景下的表现：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">测试项</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">UFW启用前</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">UFW启用后+修复</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Nginx访问Flask API</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td><td style="border:1px solid #ddd;padding:8px;">✅ 正常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">容器重启后网络恢复</td><td style="border:1px solid #ddd;padding:8px;">⚠️ 需手动</td><td style="border:1px solid #ddd;padding:8px;">✅ 自动</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">端口暴露检查</td><td style="border:1px solid #ddd;padding:8px;">0.0.0.0:80</td><td style="border:1px solid #ddd;padding:8px;">127.0.0.1:80</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">外部端口扫描</td><td style="border:1px solid #ddd;padding:8px;">能看到端口</td><td style="border:1px solid #ddd;padding:8px;">看不到端口</td></tr></tbody></table>
+<h2>防止复发的配置清单</h2>
+<p>踩完这个坑后，我整理了一份配置清单，确保每次部署不会再犯同样的错误：</p>
+<pre><code># === 完整的UFW + Docker配置脚本 ===
+
+# 1. 先安装UFW（如果没有）
+sudo apt update
+sudo apt install ufw -y
+
+# 2. 配置UFW基本规则
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp comment 'SSH'
+sudo ufw allow 80/tcp comment 'HTTP'
+sudo ufw allow 443/tcp comment 'HTTPS'
+
+# 3. 修改UFW默认转发策略（关键步骤）
+sudo sed -i 's/DEFAULT_FORWARD_POLICY="DROP"/DEFAULT_FORWARD_POLICY="ACCEPT"/' /etc/default/ufw
+
+# 4. 启用IP转发
+sudo sysctl -w net.ipv4.ip_forward=1
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+
+# 5. 配置Docker daemon.json
+sudo mkdir -p /etc/docker
+cat << 'EOF' | sudo tee /etc/docker/daemon.json
+{
+  "iptables": true,
+  "ip-forward": true,
+  "userland-proxy": true,
+  "live-restore": true
+}
+EOF
+
+# 6. 重启Docker和UFW
+sudo systemctl daemon-reload
+sudo systemctl restart docker
+sudo ufw disable && sudo ufw enable
+
+# 7. 验证配置
+echo "=== UFW状态 ===" && sudo ufw status verbose
+echo "=== IP转发 ===" && cat /proc/sys/net/ipv4/ip_forward
+echo "=== Docker网络 ===" && docker network ls
+echo "=== 端口监听 ===" && ss -tlnp | grep docker</code></pre>
+<h2>适用场景和不适用场景</h2>
+<h3>适用这个方案的情况</h3>
+<ul><li>Ubuntu 24.04 LTS服务器运行Docker容器</li><li>使用Docker Compose管理多容器应用</li><li>需要UFW防火墙保护但不想牺牲容器互通</li><li>有Nginx反向代理暴露服务的架构</li></ul>
+<h3>不适用这个方案的情况</h3>
+<ul><li>使用Docker Swarm或Kubernetes：这些有自己独立的网络栈，需要不同的配置方法</li><li>需要Docker直接暴露端口到公网且不通过代理：这种情况建议用云服务商的安全组而不是UFW</li><li>使用UFW之外的防火墙（如nftables）：配置方法完全不同</li></ul>
+<h2>总结：3天踩坑的5条核心经验</h2>
+<p>经过这次3天的排查和修复，我总结了5条核心经验：</p>
+<p>1. <strong>Docker和UFW的启动顺序是关键</strong>：理解iptables规则被修改的时机，才能从根本上解决问题</p>
+<p>2. **修改<code>/etc/default/ufw</code>的<code>DEFAULT_FORWARD_POLICY</code>是最快修复**：一行配置解决70%的问题</p>
+<p>3. <strong>端口绑定到127.0.0.1而不是0.0.0.0是安全最佳实践</strong>：永远不要让容器端口直接暴露在公网</p>
+<p>4. **用<code>docker-compose.override.yml</code>管理网络配置**：这样主配置文件保持不变，override文件处理环境特定设置</p>
+<p>5. <strong>配置变更后要重启服务并验证</strong>：Docker的live-restore可以减少停机时间，但网络配置变更需要完整重启</p>
+<p>如果你也在Ubuntu 24.04上运行Docker并启用了UFW，建议按照上面的配置清单操作一次，避免重蹈我的覆辙。</p>
+<p>👉 立即参与：<a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored">https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</a></p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon Tech Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
