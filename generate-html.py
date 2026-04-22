@@ -273,10 +273,18 @@ def parse_metadata(content_lines):
     # ---- 修复3: h1 占位符检测（精确匹配避免误判） ----
     h1_raw = parts[2].strip()
     # 使用精确前缀匹配而非 contains，避免"如何设置标题"被误判
+    # 占位符检测：短文本精确匹配 + 长文本句子检测（超过60字符且含句号/数据报告特征的视为正文污染）
     h1_is_placeholder = (
         h1_raw in ('标题', '一级标题', 'title', 'headline', 'heading') or
         h1_raw.startswith('标题') and len(h1_raw) < 10 or
-        h1_raw.startswith('title') and len(h1_raw) < 15
+        h1_raw.startswith('title') and len(h1_raw) < 15 or
+        # 新增：长句检测——超过60字符且像段落（包含句号或WPScan/数据报告特征的）
+        (len(h1_raw) > 60 and (
+            '。' in h1_raw or
+            '%' in h1_raw or
+            h1_raw.startswith('WPScan') or
+            h1_raw.startswith('202')
+        ))
     )
     if h1_is_placeholder:
         print(f"⚠️ 检测到占位符 h1='{h1_raw}'，从正文中提取...")
