@@ -266,6 +266,8 @@ def parse_metadata(content_lines):
     raw_desc = parts[1].strip()
     if raw_desc.startswith('标题') or raw_desc.startswith('title') or raw_desc.startswith('#'):
         print(f"⚠️ 检测到 parts[1] 异常（描述字段被标题污染）: '{raw_desc[:40]}...'")
+    # Strip HTML tags from description (AI may include <a class="internal-link"> tags)
+    description = re.sub(r'<[^>]+>', '', raw_desc)
 
     # ---- 修复3: h1 占位符检测（精确匹配避免误判） ----
     h1_raw = parts[2].strip()
@@ -284,10 +286,13 @@ def parse_metadata(content_lines):
                 print(f"  提取到 h1: {h1_raw[:60]}")
                 break
 
+    # Strip HTML tags from h1 (AI may embed <a class="internal-link"> in h1 field)
+    h1 = re.sub(r'<[^>]+>', '', h1_raw)
+
     return {
         'title': title,
-        'description': parts[1].strip(),
-        'h1': h1_raw,
+        'description': description,
+        'h1': h1,
         'tags': [t.strip() for t in parts[3].split(',') if t.strip()]
     }
 
