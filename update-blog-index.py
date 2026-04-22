@@ -120,10 +120,12 @@ def get_title_from_html(filepath):
     try:
         with open(filepath, 'r', encoding='utf-8', errors='replace') as f:
             content = f.read()
-        # 优先找 h1
-        m = re.search(r'<h1[^>]*>([^<]+)</h1>', content)
+        # 优先找 h1（处理嵌套标签情况）
+        m = re.search(r'<h1[^>]*>(.*?)</h1>', content)
         if m:
-            return m.group(1).strip()
+            title = re.sub(r'<[^>]+>', '', m.group(1)).strip()
+            if title:
+                return title
         # 其次找 title
         m = re.search(r'<title>([^<]+)</title>', content)
         if m:
