@@ -1,0 +1,179 @@
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub CLI身份验证失败的排查与解决：我花了2小时才找到原因 - TechPassive</title>
+  <meta name="description" content="在GitHub Actions工作流和CI/CD脚本中，gh命令突然报authentication失败，问题可能不在token本身">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> CLI认证排坑指南</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a></span><span class="tag">CLI</span><span class="tag">SSH</span><span class="tag">认证</span><span class="tag">Actions</span><span class="tag">DevOps</span>
+  </div>
+  <div class="content">
+    <h2>问题背景</h2>
+<p>上周五下午4点，我正在给一个VPS部署脚本添加CI/CD功能，需要在服务器上直接推送构建产物到私有仓库。写好<code>.github/workflows/deploy.yml</code>后，我本地试跑<code>gh auth status</code>——显示已登录。然后把脚本同步到VPS上跑，结果：</p>
+<pre><code>$ gh auth status
+✓ <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> CLI is authenticated</code></pre>
+<p>但当我执行<code>gh workflow run build</code>时报错：</p>
+<pre><code>git@github.com: Permission denied (publickey).
+fatal: Could not read from remote repository.</code></pre>
+<p>SSH key已添加，token显示有效，push却失败。问题出在哪？</p>
+<p>---</p>
+<h2>排查过程</h2>
+<h3>第一步：确认gh自身的认证状态</h3>
+<pre><code>gh auth status --hostname github.com</code></pre>
+<p>关键信息：<code>git credential</code>配置和<code>gh auth login</code>时的认证类型（browser/token/SSH key）。</p>
+<h3>第二步：检查git credential helper</h3>
+<p>gh CLI使用git credential helper来存储和传递认证信息。查看当前配置：</p>
+<pre><code>git config --global credential.helper
+# 输出：store</code></pre>
+<p>常见问题：credential helper指向了错误的存储（旧的、不存在的文件）。</p>
+<p>修复方式：</p>
+<pre><code>gh auth git-credential
+# 这会输出当前gh使用的git credential helper命令
+# 如果为空，说明没有配置，gh就无法正确传递认证信息</code></pre>
+<p>我在实际排查中发现，VPS上的<code>~/.git-credentials</code>文件权限不对（600），导致git无法读取。修复方法：</p>
+<pre><code>chmod 600 ~/.git-credentials</code></pre>
+<h3>第三步：检查GITHUB_TOKEN环境变量</h3>
+<p>如果你在GitHub Actions中使用<code>gh</code>，Actions会自动设置<code>GITHUB_TOKEN</code>。但如果在本地VPS上使用自己的token：</p>
+<pre><code>echo $GITHUB_TOKEN
+# 如果为空，说明shell没有读取到token
+gh auth status
+# 会显示：Authentication failures. Run: gh auth login</code></pre>
+<p>**关键点**：有时<code>gh auth login</code>会用interactive browser登录，但如果你的VPS是headless环境（无浏览器），登录会卡住。我在阿里云ECS（Ubuntu 22.04）上就遇到过这个问题，光标卡在<code>Authentication pending</code>无法完成。</p>
+<p>解决方案是用token登录而非browser：</p>
+<pre><code>gh auth login --with-token < your-token-file</code></pre>
+<h3>第四步：SSH key vs token认证</h3>
+<p><code>gh</code>支持两种认证方式：</p>
+<ul><li>**Token认证**：通过`GITHUB_TOKEN`环境变量或`~/.config/gh/hosts.yml`</li><li>**SSH key认证**：通过git的SSH URL</li></ul>
+<p>如果仓库使用<code>git@github.com:owner/repo.git</code>格式，git会走SSH；如果使用<code>https://github.com/owner/repo.git</code>，git会走HTTPS（需要token）。</p>
+<p>检查仓库的remote URL：</p>
+<pre><code>git remote -v
+# 如果显示git@github.com，说明走SSH
+# 如果显示https://github.com，说明走HTTPS</code></pre>
+<h3>第五步：检查hosts.yml配置</h3>
+<p>gh的认证信息存在<code>~/.config/gh/hosts.yml</code>（Linux/Mac）或<code>%APP_DATA%\<a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> CLI\hosts.yml</code>（Windows）。</p>
+<pre><code>cat ~/.config/gh/hosts.yml</code></pre>
+<p>正确的格式：</p>
+<pre><code>github.com:
+  oauth_token: gho_xxxxxxxxxxxx
+  user: your-username
+  git_protocol: https  # 或 ssh</code></pre>
+<p>常见问题：<code>git_protocol: ssh</code>但SSH agent没运行。</p>
+<p>---</p>
+<h2>真正的原因</h2>
+<p>我的问题是：VPS上通过<code>gh auth login --with-token</code>导入token后，gh配置了<code>git_protocol: https</code>，但git remote URL仍然是SSH格式（<code>git@github.com:...</code>）。</p>
+<p>本地Mac的gh配置是<code>git_protocol: ssh</code>，所以本地没问题；VPS上是新装的Ubuntu 24.04，gh默认用HTTPS设置。</p>
+<p>修复：</p>
+<pre><code>gh auth setup-git
+# 这会根据当前的gh认证配置，设置对应的git credential helper</code></pre>
+<p>然后：</p>
+<pre><code>git remote set-url origin https://github.com/owner/repo.git
+# 或者改为SSH：git remote set-url origin git@github.com:owner/repo.git</code></pre>
+<p>---</p>
+<h2>防止方法</h2>
+<p>1. **不要假设本地和远程配置一致**。在新环境跑CI前，先验证<code>gh auth status</code>和<code>git remote -v</code></p>
+<p>2. <strong>优先用HTTPS URL</strong>。GitHub已弃用SSH密码认证，HTTPS token方式更可靠（来源：<a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Blog 2021年公告）</p>
+<p>3. **用<code>gh auth setup-git</code>**。这个命令会自动配置git credential helper，替代手动配置</p>
+<p>4. <strong>把认证检查加入部署脚本</strong>。在部署前先检查认证状态：</p>
+<pre><code>gh auth status || { echo "GitHub未认证，请运行: gh auth login"; exit 1; }</code></pre>
+<p>---</p>
+<h2>适用场景</h2>
+<ul><li>在VPS/CDK云服务器上部署CI/CD脚本</li><li><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Actions中使用自定义Actions需要gh CLI</li><li>多台机器管理GitHub资源</li></ul>
+<p>不适用：</p>
+<ul><li><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Desktop（不通过gh）</li><li>已通过浏览器登录且能访问github.com的桌面环境</li></ul>
+<p><strong>本文包含联盟链接</strong>：文中提及的MiniMax API是我的真实使用工具，通过上述链接注册我可获得佣金，这对您无额外费用。</p>
+<p>顺便推荐一本我在学习GitHub Actions时读过的书——《<a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Actions in Action》（Manning出版社，ISBN: 9781615862368），第五章对CI/CD pipeline设计讲得很透，Amazon有售：https://www.amazon.com/dp/1919182366?tag=techpassive-20</p>
+<p>👉 立即体验MiniMax API：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
