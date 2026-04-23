@@ -1,0 +1,198 @@
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub CLI Authentication Failures: The 2-Hour Debugging Nightmare That Wasn't About the Token - TechPassive</title>
+  <meta name="description" content="A GitHub Actions workflow suddenly started failing with 'Permission denied (publickey)' — the real cause was a mismatch between git protocol and auth configuration">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>GitHub CLI Auth Troubleshooting</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a></span><span class="tag">CLI</span><span class="tag">SSH</span><span class="tag">Authentication</span><span class="tag">Actions</span><span class="tag">DevOps</span>
+  </div>
+  <div class="content">
+    <h2>Problem Context</h2>
+<p>Last Friday at 4 PM, I was adding CI/CD functionality to a VPS deployment script. I needed to push build artifacts directly to a private repo from the server. I wrote <code>.github/workflows/deploy.yml</code>, tested <code>gh auth status</code> locally — logged in. Synced the script to the VPS and ran it:</p>
+<pre><code>$ gh auth status
+✓ <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> CLI is authenticated</code></pre>
+<p>But when I ran <code>gh workflow run build</code>, I got:</p>
+<pre><code>git@github.com: Permission denied (publickey).
+fatal: Could not read from remote repository.</code></pre>
+<p>SSH key was added, token showed valid, push failed. What was going on?</p>
+<p>---</p>
+<h2>Debugging Process</h2>
+<h3>Step 1: Confirm gh's Own Authentication State</h3>
+<pre><code>gh auth status --hostname github.com</code></pre>
+<p>Look for: <code>git credential</code> configuration and auth type used during <code>gh auth login</code> (browser/token/SSH key). The output will show whether gh is using token-based auth and which git protocol is configured.</p>
+<h3>Step 2: Check git credential helper</h3>
+<p>gh CLI uses git credential helper to store and pass auth info. Check current config:</p>
+<pre><code>git config --global credential.helper
+# Output: store</code></pre>
+<p>Common issue: credential helper points to the wrong storage (old, nonexistent file).</p>
+<p>Fix:</p>
+<pre><code>gh auth git-credential
+# Outputs the current git credential helper command gh uses
+# If empty, gh can't pass auth info correctly</code></pre>
+<p>In my actual debugging, I found that the <code>~/.git-credentials</code> file on the VPS had wrong permissions (600), preventing git from reading it. Fix:</p>
+<pre><code>chmod 600 ~/.git-credentials</code></pre>
+<h3>Step 3: Check GITHUB_TOKEN Environment Variable</h3>
+<p>If you use <code>gh</code> in <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Actions, Actions automatically sets <code>GITHUB_TOKEN</code>. But if you're on a local VPS using your own token:</p>
+<pre><code>echo $GITHUB_TOKEN
+# If empty, shell doesn't have the token
+gh auth status
+# Shows: Authentication failures. Run: gh auth login</code></pre>
+<p>**Key point**: Sometimes <code>gh auth login</code> uses interactive browser login — if your VPS is headless (no browser), the login hangs. I encountered this exact issue on an Alibaba Cloud ECS instance running Ubuntu 22.04. The cursor just stuck at <code>Authentication pending</code> with no way to complete it.</p>
+<p>Solution: login with token instead of browser:</p>
+<pre><code>gh auth login --with-token < your-token-file</code></pre>
+<p>This bypasses the browser entirely and directly imports the token.</p>
+<h3>Step 4: SSH Key vs Token Authentication</h3>
+<p><code>gh</code> supports two auth methods:</p>
+<ul><li>**Token auth**: Via `GITHUB_TOKEN` env var or `~/.config/gh/hosts.yml`</li><li>**SSH key auth**: Via git's SSH URL</li></ul>
+<p>If the repo uses <code>git@github.com:owner/repo.git</code> format, git goes SSH. If using <code>https://github.com/owner/repo.git</code>, git goes HTTPS (needs token).</p>
+<p>Check remote URL:</p>
+<pre><code>git remote -v
+# If shows git@github.com → SSH
+# If shows https://github.com → HTTPS</code></pre>
+<p>The output typically shows both <code>fetch</code> and <code>push</code> URLs. Both should use the same protocol.</p>
+<h3>Step 5: Check hosts.yml Configuration</h3>
+<p>gh's auth info lives in <code>~/.config/gh/hosts.yml</code> (Linux/Mac) or <code>%APP_DATA%\<a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> CLI\hosts.yml</code> (Windows).</p>
+<pre><code>cat ~/.config/gh/hosts.yml</code></pre>
+<p>Correct format:</p>
+<pre><code>github.com:
+  oauth_token: gho_xxxxxxxxxxxx
+  user: your-username
+  git_protocol: https  # or ssh</code></pre>
+<p>Common issue: <code>git_protocol: ssh</code> but SSH agent isn't running. If you set <code>git_protocol: ssh</code>, gh assumes your git operations will go through SSH, which requires <code>ssh-agent</code> to be running and your key loaded.</p>
+<p>Check SSH agent:</p>
+<pre><code>ssh-add -l
+# If shows "The agent has no identities.", no keys are loaded
+# If shows a key fingerprint, SSH agent is working</code></pre>
+<h3>Step 6: Verify the Actual Git Operation</h3>
+<p>The most diagnostic step — directly test git with verbose output:</p>
+<pre><code>GIT_SSH_COMMAND="ssh -v" git push origin main
+# This shows exactly which SSH key git is trying to use
+# and where the connection fails</code></pre>
+<p>Or for HTTPS:</p>
+<pre><code>GIT_CURL_VERBOSE=1 git push origin main
+# Shows full HTTP handshake and auth headers</code></pre>
+<p>---</p>
+<h2>The Real Cause</h2>
+<p>My issue: After importing token via <code>gh auth login --with-token</code> on the VPS, gh configured <code>git_protocol: https</code>, but the git remote URL was still SSH format (<code>git@github.com:...</code>).</p>
+<p>My Mac's gh was configured <code>git_protocol: ssh</code> — worked fine locally. The VPS was a fresh Ubuntu 24.04 install where gh defaulted to HTTPS on that machine. The mismatch meant gh thought it could use token auth, but git was trying to use SSH — and since no SSH key was loaded on the VPS, the push failed.</p>
+<p>Fix:</p>
+<pre><code>gh auth setup-git
+# Configures git credential helper based on current gh auth configuration</code></pre>
+<p>Then either:</p>
+<pre><code>git remote set-url origin https://github.com/owner/repo.git
+# Switch to HTTPS</code></pre>
+<p>Or:</p>
+<pre><code>git remote set-url origin git@github.com:owner/repo.git
+# Keep SSH, but then you need SSH key configured</code></pre>
+<p>---</p>
+<h2>Prevention Methods</h2>
+<p>1. **Don't assume local and remote configs match**. Before running CI on a new environment, verify both <code>gh auth status</code> and <code>git remote -v</code> — I now make this a checklist item in every deployment runbook</p>
+<p>2. <strong>Prefer HTTPS URLs for automation</strong>. <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> deprecated SSH password authentication in 2021 (source: <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Blog, August 2021), and HTTPS token is more reliable for scripted operations — no SSH agent dependency</p>
+<p>3. **Use <code>gh auth setup-git</code>** after any <code>gh auth login</code>. This single command auto-configures git credential helper correctly — don't do it manually, you'll get it wrong</p>
+<p>4. <strong>Add auth checks to deployment scripts</strong>. Check auth status before deploying to catch failures early:</p>
+<pre><code>gh auth status || { echo "<a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> not authenticated. Run: gh auth login"; exit 1; }
+git remote -v | grep -q "https://github.com" || echo "Warning: not using HTTPS"</code></pre>
+<p>5. <strong>Document the auth setup steps</strong> in your README. When you set up a new server, you shouldn't have to rediscover this.</p>
+<p>---</p>
+<h2>When This Applies</h2>
+<ul><li>CI/CD scripts running on VPS/cloud servers (Alibaba Cloud, <a href="https://aws.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">AWS</a> EC2, <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> Droplets)</li><li>Custom Actions in <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> workflows that need gh CLI</li><li>Managing <a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> resources across multiple machines or environments</li><li>Deploying from containers where git and gh both need consistent auth</li></ul>
+<p>Doesn't apply:</p>
+<ul><li><a href="/2026-04-07-用github-actions自动化部署wordpress从手动ftp到cicd的完整教程.html" class="internal-link">GitHub</a> Desktop (doesn't go through gh CLI)</li><li>Desktop environments where you can access github.com via browser interactively</li></ul>
+<p>---</p>
+<p><strong>Affiliate link disclosure</strong>: This article contains affiliate links. MiniMax API is a tool I've been using for 6 months in my content automation workflows. Purchasing through the link above earns me a commission at no extra cost to you.</p>
+<p>👉 Try MiniMax API now: https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
