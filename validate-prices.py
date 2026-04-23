@@ -388,8 +388,22 @@ def main():
                             'method': method,
                             'error': error
                         })
+
+        # ASIN 可用性检查（验证推广链接是否有效）
+        asin_results = check_asins_in_article(txt_file, lang)
+        invalid_asins = [(a, s) for a, v, s in asin_results if not v]
+        if invalid_asins:
+            print(f"  ❌ {lang}.txt: 发现 {len(invalid_asins)} 个无效 ASIN（产品已下架或不可用）")
+            for asin, status in invalid_asins:
+                print(f"     ❌ ASIN {asin} (HTTP {status}) → https://www.amazon.com/dp/{asin}")
+                url_verification_results.append({
+                    'url': f'https://www.amazon.com/dp/{asin}',
+                    'found_prices': None,
+                    'method': 'asin_check',
+                    'error': f'ASIN无效 (HTTP {status})'
+                })
         else:
-            print(f"  ✅ {lang}.txt: 未发现明显可疑价格")
+            print(f"  ✅ {lang}.txt: ASIN 验证通过')
     
     # 输出总结
     print(f"\n{'='*50}")
@@ -434,3 +448,48 @@ def main():
 
 if __name__ == '__main__':
     main()
+
+
+def check_asin_availability(asin):
+    """检查 ASIN 是否有效（HTTP 200）"""
+    url = f"https://www.amazon.com/dp/{asin}"
+    try:
+        result = subprocess.run(
+            ['curl', '-so', '/dev/null', '-w', '%{http_code}',
+             '--max-time', '8',
+             '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+             url],
+            capture_output=True, text=True, timeout=12
+        )
+        return result.stdout.strip() == '200', result.stdout.strip()
+    except:
+        return False, 'error'
+
+
+def extract_asins(text):
+    """从文本中提取所有 ASIN"""
+    asins = set()
+    for m in re.finditer(r'amazon\.com/[^/]*/dp/([A-Z0-9]{10})', text, re.IGNORECASE):
+        asins.add(m.group(1))
+    return list(asins)
+
+
+def check_asins_in_article(txt_file, lang):
+    """检查草稿中 ASIN 的可用性"""
+    if not os.path.exists(txt_file):
+        return []
+
+    with open(txt_file, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    asins = extract_asins(content)
+    if not asins:
+        return []
+
+    results = []
+    for asin in asins:
+        valid, status = check_asin_availability(asin)
+        results.append((asin, valid, status))
+
+    invalid = [(a, s) for a, v, s in results if not v]
+    return results

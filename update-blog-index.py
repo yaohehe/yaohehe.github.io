@@ -180,7 +180,7 @@ def main():
     today = datetime.now().strftime('%Y-%m-%d')
 
     # 扫描所有 HTML 文件
-    html_files = glob.glob(os.path.join(BLOG_DIR, '*.html'))
+    html_files = glob.glob(os.path.join(BLOG_DIR, '*.html')) + glob.glob(os.path.join(BLOG_DIR, 'archive', '**', '*.html'), recursive=True)
     html_files = [f for f in html_files if os.path.basename(f) not in (
         'index.html', 'index-en.html', 'sitemap.xml'
     )]
@@ -189,7 +189,7 @@ def main():
     en_articles = []
 
     for filepath in html_files:
-        filename = os.path.basename(filepath)
+        filename = filepath.replace(BLOG_DIR + '/', '')  # keep archive/ prefix
         date = get_date_from_filename(filename)
         if not date:
             continue

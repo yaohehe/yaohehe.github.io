@@ -117,9 +117,19 @@ def insert_internal_links_to_html(html_content, links):
     向 HTML 内容中插入内链（匹配关键词加链接，使用 .internal-link 样式）
     links: list of (keyword, url) 元组列表
     """
-    # 已有的 insert_internal_links 函数逻辑
+    # Split head and body - only process body to protect <head> content like canonical URLs
+    head_match = re.search(r'<head[^>]*>.*?</head>', html_content, flags=re.DOTALL | re.IGNORECASE)
+    if head_match:
+        head_content = head_match.group(0)
+        body_start = head_match.end()
+        body_content = html_content[body_start:]
+    else:
+        head_content = ''
+        body_content = html_content
+
+    # Apply internal links to body only
     for keyword, url in links:
-        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', html_content, flags=re.DOTALL)
+        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', body_content, flags=re.DOTALL)
         new_parts = []
         for part in parts:
             if re.match(r'<a\s', part, re.IGNORECASE):
@@ -131,8 +141,9 @@ def insert_internal_links_to_html(html_content, links):
                     part
                 )
                 new_parts.append(part)
-        html_content = ''.join(new_parts)
-    return html_content
+        body_content = ''.join(new_parts)
+
+    return head_content + body_content
 
 
 def self_heal_internal_links(html_content):

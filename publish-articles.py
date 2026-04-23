@@ -166,7 +166,20 @@ def main():
         shutil.copy2(src, dst)
         print(f"  📋 复制: {f}")
 
-    # 3. 运行索引同步
+    # 3. 先归档草稿（这样 update-blog-index 能扫描到 archive/ 路径）
+    print("🗃️  归档草稿...")
+    archive_base = f"{BLOG_DIR}/archive"
+    today = datetime.now().strftime('%Y-%m-%d')
+    archive_dir = os.path.join(archive_base, today)
+    os.makedirs(archive_dir, exist_ok=True)
+    for f in files:
+        src = os.path.join(DRAFTS_DIR, f)
+        dst = os.path.join(archive_dir, f)
+        if os.path.exists(src):
+            shutil.move(src, dst)
+            print(f"  📦 {f} -> {archive_dir}/")
+
+    # 4. 运行索引同步（扫描 archive/ 目录生成正确路径）
     import subprocess
     print("🔄 运行索引同步...")
     r = subprocess.run(
@@ -179,36 +192,26 @@ def main():
     if r.returncode != 0:
         print(f"⚠️ 索引同步异常: {r.stderr[:200]}")
 
-    # 4. 推送到 GitHub
+    # 5. 推送草稿（此时草稿已在 archive）
     print("🚀 推送草稿...")
     pushed = 0
     for f in files:
-        filepath = os.path.join(PUBLISH_DIR, f)
-        if os.path.exists(filepath):
-            with open(filepath, 'rb') as fp:
+        # 文件已在 archive，路径为 archive/YYYY-MM-DD/f
+        archive_path = os.path.join(archive_dir, f)
+        if os.path.exists(archive_path):
+            with open(archive_path, 'rb') as fp:
                 content = fp.read()
-            if push_file(f, content):
+            remote_path = f"archive/{today}/{f}"
+            if push_file(remote_path, content):
                 pushed += 1
 
-    # 5. 推送 index 和 sitemap
+    # 6. 推送 index 和 sitemap
     for fname in ['index.html', 'index-en.html', 'sitemap.xml']:
         fpath = os.path.join(PUBLISH_DIR, fname)
         if os.path.exists(fpath):
             with open(fpath, 'rb') as fp:
                 content = fp.read()
             push_file(fname, content)
-
-    # 6. 归档草稿
-    print("🗃️  归档草稿...")
-    archive_base = f"{BLOG_DIR}/archive"
-    today = datetime.now().strftime('%Y-%m-%d')
-    archive_dir = os.path.join(archive_base, today)
-    os.makedirs(archive_dir, exist_ok=True)
-    for f in files:
-        src = os.path.join(DRAFTS_DIR, f)
-        dst = os.path.join(archive_dir, f)
-        shutil.move(src, dst)
-        print(f"  📦 {f} -> {archive_dir}/")
 
     if pushed == 0 and files:
         print(f"❌ 发布失败：{len(files)} 篇草稿全部推送失败，退出码 1")

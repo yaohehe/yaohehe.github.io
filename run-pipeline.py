@@ -193,7 +193,8 @@ def _review_single_html(html_path, lang):
         issues.append("缺少 </body> 闭合标签")
 
     # 9. 内链检查：必须有 internal-link 类，且 href 必须可点击（非 JS、非复制粘贴）
-    internal_links = re.findall(r'<a[^>]*class="internal-link"[^>]*href="([^"]+)"', content)
+    # 修复：支持 href 在 class 之前或之后（generate-html.py 产生 href 在前的格式）
+    internal_links = re.findall(r'<a[^>]*href="([^"]+)"[^>]*class="internal-link"', content)
     if not internal_links:
         issues.append("缺少内链（.internal-link），建议插入相关文章链接")
     else:
