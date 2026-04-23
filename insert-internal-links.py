@@ -117,30 +117,58 @@ def insert_internal_links_to_html(html_content, links):
     向 HTML 内容中插入内链（匹配关键词加链接，使用 .internal-link 样式）
     links: list of (keyword, url) 元组列表
     """
-    # 已有的 insert_internal_links 函数逻辑
-    for keyword, url in links:
-        parts = re.split(r'(<a\s[^>]*?>.*?</a>)', html_content, flags=re.DOTALL)
-        new_parts = []
-        for part in parts:
-            if re.match(r'<a\s', part, re.IGNORECASE):
-                new_parts.append(part)
-            else:
-                pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b')
-                part = pattern.sub(
-                    lambda m: f'<a href="{url}" class="internal-link">{m.group(1)}</a>',
-                    part
-                )
-                new_parts.append(part)
-        html_content = ''.join(new_parts)
-    return html_content
+    # Only process content inside <body>, leave <head> (including <title> and <meta>) untouched
+    head_match = re.search(r'<head[^>]*>.*?</head>', html_content, flags=re.DOTALL | re.IGNORECASE)
+    if head_match:
+        head = head_match.group(0)
+        body = html_content[head_match.end():]
+        for keyword, url in links:
+            body = _add_links_to_text(body, keyword, url)
+        return html_content[:head_match.start()] + head + body
+    else:
+        # No head tag found, process as before (shouldn't happen in practice)
+        for keyword, url in links:
+            html_content = _add_links_to_text(html_content, keyword, url)
+        return html_content
+
+
+def _add_links_to_text(text, keyword, url):
+    """Add internal links to text (non-anchor parts only)."""
+    parts = re.split(r'(<a\s[^>]*?>.*?</a>)', text, flags=re.DOTALL)
+    new_parts = []
+    for part in parts:
+        if re.match(r'<a\s', part, re.IGNORECASE):
+            new_parts.append(part)
+        else:
+            pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b')
+            part = pattern.sub(
+                lambda m: f'<a href="{url}" class="internal-link">{m.group(1)}</a>',
+                part
+            )
+            new_parts.append(part)
+    return ''.join(new_parts)
 
 
 def self_heal_internal_links(html_content):
     """
     自检内链：删除不可点击或格式不规范的链接（只留真实可点击路径）
+    Only processes <body> content, leaves <head> untouched.
     返回清理后的内容和被删除的链接数
     """
-    original_count = len(re.findall(r'<a[^>]*class="internal-link"', html_content))
+    head_match = re.search(r'<head[^>]*>.*?</head>', html_content, flags=re.DOTALL | re.IGNORECASE)
+    if head_match:
+        head = head_match.group(0)
+        body = html_content[head_match.end():]
+        body, removed = _heal_links_body(body, original_count=None)
+        return html_content[:head_match.start()] + head + body, removed
+    else:
+        return _heal_links_body(html_content, original_count=None)
+
+
+def _heal_links_body(html_content, original_count=None):
+    """Core healing logic for body content only."""
+    if original_count is None:
+        original_count = len(re.findall(r'<a[^>]*class="internal-link"', html_content))
 
     def fix_anchor(m):
         full_match = m.group(0)
