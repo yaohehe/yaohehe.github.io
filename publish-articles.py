@@ -4,6 +4,7 @@
 检查 drafts/，如有草稿则发布到 GitHub
 """
 import os
+import re
 import sys
 import base64
 import requests
@@ -191,6 +192,34 @@ def main():
         print(r.stdout[:500])
     if r.returncode != 0:
         print(f"⚠️ 索引同步异常: {r.stderr[:200]}")
+
+    # 4b. 验证索引中的链接是否指向真实存在的文件（防止404）
+    print("🔍 验证索引链接完整性...")
+    broken_links = []
+    for idx_file in ['index.html', 'index-en.html']:
+        idx_path = os.path.join(PUBLISH_DIR, idx_file)
+        if not os.path.exists(idx_path):
+            continue
+        with open(idx_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        # 提取所有文章链接
+        for href_m in re.finditer(r'href="([^"]+)"', content):
+            href = href_m.group(1)
+            # 跳过外部链接和首页链接
+            if href.startswith('http') or href.startswith('//') or href in ('index.html', 'index-en.html', '#'):
+                continue
+            # 验证文件存在（支持 archive/ 路径和根路径）
+            file_path = os.path.join(PUBLISH_DIR, href)
+            if not os.path.exists(file_path):
+                broken_links.append((idx_file, href, file_path))
+    
+    if broken_links:
+        print(f"❌ 索引验证失败：发现 {len(broken_links)} 个断链:")
+        for idx_f, href, path in broken_links[:5]:
+            print(f"  [{idx_f}] {href} -> 文件不存在")
+        print("❌ 推送已中止。请修复后重试。")
+        sys.exit(1)
+    print(f"✅ 索引链接验证通过")
 
     # 5. 推送草稿（此时草稿已在 archive）
     print("🚀 推送草稿...")
