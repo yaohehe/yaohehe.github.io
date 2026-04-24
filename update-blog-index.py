@@ -179,9 +179,25 @@ def generate_sitemap(articles, today):
 def main():
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # 扫描所有 HTML 文件
-    html_files = glob.glob(os.path.join(BLOG_DIR, '*.html')) + glob.glob(os.path.join(BLOG_DIR, 'archive', '**', '*.html'), recursive=True)
-    html_files = [f for f in html_files if os.path.basename(f) not in (
+    # 扫描所有 HTML 文件（去重：同一文件名优先使用 archive/ 版本）
+    # 根因：同时扫描 root 和 archive/ 时，未追踪的根目录文件会生成错误链接（如 04-24 文章少了 2026-04-24- 前缀）
+    # 解决：同一 basename 文件同时存在于 root 和 archive 时，优先使用 archive 版本（规范发布位置）
+    import collections
+    root_files = glob.glob(os.path.join(BLOG_DIR, '*.html'))
+    archive_files = glob.glob(os.path.join(BLOG_DIR, 'archive', '**', '*.html'), recursive=True)
+    
+    # basename -> filepath, archive 版本优先
+    file_by_basename = {}
+    for f in archive_files:
+        bn = os.path.basename(f)
+        if bn not in file_by_basename:  # 第一次见到，优先保留
+            file_by_basename[bn] = f
+    for f in root_files:
+        bn = os.path.basename(f)
+        if bn not in file_by_basename:  # 只有不存在于 archive 时才加入
+            file_by_basename[bn] = f
+    
+    html_files = [f for bn, f in file_by_basename.items() if bn not in (
         'index.html', 'index-en.html', 'sitemap.xml'
     )]
 
