@@ -42,7 +42,7 @@ def load_existing_articles():
     return articles
 
 
-def find_related_articles(new_article_content, articles, limit=2):
+def find_related_articles(new_article_content, articles, limit=4):
     """基于文章内容/标签，找出最相关的已发布文章"""
     # 提取新文章标签
     tags_m = re.findall(r'class="tag"[^>]*>([^<]+)</a>', new_article_content)
@@ -203,7 +203,7 @@ def process_single_file(target_file, existing):
     content = open(target_file, "r", encoding="utf-8").read()
 
     # 找相关文章（最多2篇）
-    related = find_related_articles(content, existing, limit=2)
+    related = find_related_articles(content, existing, limit=4)
     if not related:
         print(f"⚠️ [{os.path.basename(target_file)}] 未找到相关文章，跳过")
         return False
