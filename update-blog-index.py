@@ -108,8 +108,10 @@ INDEX_FOOTER = '''    </ul>
 
 
 def get_date_from_filename(filename):
-    """从文件名提取日期 YYYY-MM-DD"""
-    m = re.match(r'^(\d{4}-\d{2}-\d{2})', filename)
+    """从文件名提取日期 YYYY-MM-DD（从路径或文件名中提取）"""
+    # 使用 basename 去掉路径前缀（如 archive/2026-04-12/ 前缀）
+    basename = os.path.basename(filename)
+    m = re.match(r'^(\d{4}-\d{2}-\d{2})', basename)
     if m:
         return m.group(1)
     return None
