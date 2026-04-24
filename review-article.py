@@ -40,7 +40,21 @@ def check_file(filepath, lang):
         if "Tags:" in first_line:
             critical.append(f"{lang}: 元数据包含 'Tags:' 标记，应为纯pipe格式")
     
-    # 2. 禁止的章节标题
+    # 2. h1 占位符检测（元数据第三字段）
+    if lang == "CN":
+        parts = first_line.split('|')
+        if len(parts) >= 3:
+            h1_val = parts[2].strip()
+            if h1_val in ('标题', '一级标题', '二级标题', '三级标题', 'H1标题', '主标题'):
+                critical.append(f"{lang}: h1占位符未填充（当前值='{h1_val}'），元数据行格式：标题|描述|一级标题|标签")
+    else:
+        parts = first_line.split('|')
+        if len(parts) >= 3:
+            h1_val = parts[2].strip()
+            if h1_val.lower() in ('title', 'heading', 'headline', 'h1', 'main title'):
+                critical.append(f"{lang}: h1 placeholder not filled (current='{h1_val}')")
+
+    # 3. 禁止的章节标题
     forbidden_headers_cn = ["## 开头", "## 引言", "## 前言", "## 导语", "## 开篇", "## Hook"]
     forbidden_headers_en = ["## Introduction", "## Overview", "## Beginning", "## Intro", "## Hook", "## Preface"]
     forbidden_headers = forbidden_headers_cn if lang == "CN" else forbidden_headers_en
