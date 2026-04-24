@@ -526,6 +526,7 @@ AFFILIATE_BOX_CN = '''
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
     <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
+    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon 云服务</a>
     <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
@@ -538,6 +539,7 @@ AFFILIATE_BOX_EN = '''
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
     <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
     <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon Web Services</a>
     <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
@@ -571,6 +573,7 @@ def generate_html(content, template, css):
         vultr_url=AFFILIATE_LINKS['Vultr'],
         cloudflare_url='',
         namecheap_url='',
+        amazon_url=AFFILIATE_LINKS['Amazon'],
         minimax_url=AFFILIATE_LINKS['MiniMax'],
     )
     html_body = html_body + box_html

@@ -182,21 +182,36 @@ def main():
     today = datetime.now().strftime('%Y-%m-%d')
 
     # 扫描所有 HTML 文件（去重：同一文件名优先使用 archive/ 版本）
-    # 根因：同时扫描 root 和 archive/ 时，未追踪的根目录文件会生成错误链接（如 04-24 文章少了 2026-04-24- 前缀）
+    # 根因：同时扫描 root 和 archive/ 时，未追踪的根目录文件会生成错误链接
     # 解决：同一 basename 文件同时存在于 root 和 archive 时，优先使用 archive 版本（规范发布位置）
+    # 防护：检测根目录孤立 HTML 文件（不在 git 追踪中）并报警，防止 publish-articles.py 复制残留
     import collections
     root_files = glob.glob(os.path.join(BLOG_DIR, '*.html'))
     archive_files = glob.glob(os.path.join(BLOG_DIR, 'archive', '**', '*.html'), recursive=True)
-    
+
+    # 检测根目录孤立文件（不在 git 追踪的 HTML，排除索引文件本身）
+    import subprocess
+    r = subprocess.run(['git', 'ls-files', '--others', '--exclude-standard', '-I', '*.html',
+                        '--ignore-case'], capture_output=True, text=True, cwd=BLOG_DIR)
+    orphaned_html = [f.strip() for f in r.stdout.splitlines() if f.strip().endswith('.html')]
+    if orphaned_html:
+        print(f"⚠️ 检测到 {len(orphaned_html)} 个根目录孤立 HTML 文件（不在 git 追踪中），已从索引扫描中排除:")
+        for f in orphaned_html[:5]:
+            print(f"  排除: {f}")
+        if len(orphaned_html) > 5:
+            print(f"  ... 还有 {len(orphaned_html) - 5} 个")
+
     # basename -> filepath, archive 版本优先
     file_by_basename = {}
     for f in archive_files:
         bn = os.path.basename(f)
-        if bn not in file_by_basename:  # 第一次见到，优先保留
+        if bn not in file_by_basename:
             file_by_basename[bn] = f
     for f in root_files:
         bn = os.path.basename(f)
-        if bn not in file_by_basename:  # 只有不存在于 archive 时才加入
+        if bn in orphaned_html:
+            continue  # 跳过孤立文件，不加入索引
+        if bn not in file_by_basename:
             file_by_basename[bn] = f
     
     html_files = [f for bn, f in file_by_basename.items() if bn not in (

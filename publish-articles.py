@@ -160,14 +160,8 @@ def main():
 
     print(f"📄 发现 {len(files)} 篇草稿: {files}")
 
-    # 2. 复制到发布目录
-    for f in files:
-        src = os.path.join(DRAFTS_DIR, f)
-        dst = os.path.join(PUBLISH_DIR, f)
-        shutil.copy2(src, dst)
-        print(f"  📋 复制: {f}")
-
-    # 3. 先归档草稿（这样 update-blog-index 能扫描到 archive/ 路径）
+    # 2. 归档草稿到 BLOG_DIR/archive/（仅此处存放，不复制到 PUBLISH_DIR 根目录）
+    # 注意：PUBLISH_DIR 根目录禁止写入 HTML 文件，防止 update-blog-index.py 索引到错误路径
     print("🗃️  归档草稿...")
     archive_base = f"{BLOG_DIR}/archive"
     today = datetime.now().strftime('%Y-%m-%d')
