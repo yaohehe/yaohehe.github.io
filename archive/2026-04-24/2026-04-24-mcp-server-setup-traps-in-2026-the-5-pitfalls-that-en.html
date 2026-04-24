@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP Server Setup Traps in 2026: The 5 Pitfalls That Cost Me 3 Days to Debug - TechPassive</title>
+  <meta name="description" content="TypeScript SDK v2 vs v1 incompatibility, print() corrupting stdio JSON-RPC, npm package quality issues, Claude Desktop config syntax errors — real debugging experience">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>MCP Server Setup Traps in 2026</h1>
+  <div class="post-tags">
+    <span class="tag">MCP</span><span class="tag">TypeScript</span><span class="tag">Python</span><span class="tag">Claude Desktop</span><span class="tag">debugging</span>
+  </div>
+  <div class="content">
+    <p>I spent 3 days getting my first MCP server running—not because the protocol is hard, but because of 5 specific traps that are poorly documented. Here's what I hit and how I fixed each one.</p>
+<p>---</p>
+<h2>Pitfall 1: print() in stdio Mode Breaks the JSON-RPC Protocol</h2>
+<p><strong>This is the most insidious trap for beginners.</strong></p>
+<p>When MCP uses stdio transport, stdout is reserved for JSON-RPC message exchange. If you sprinkle <code>print()</code> statements for debugging, they write to stdout by default, corrupting the protocol stream. Your client will throw <code>Parse error</code> or <code>Invalid JSON</code> with no helpful message.</p>
+<p><strong>Wrong (Python):</strong></p>
+<pre><code>@server.tool()
+async def get_weather(city: str) -> str:
+    print(f"Querying weather for {city}")  # ❌ Writes to stdout, corrupts protocol
+    result = await fetch_weather(city)
+    return result</code></pre>
+<p><strong>Correct:</strong></p>
+<pre><code>import sys
+import logging
+
+logging.basicConfig(stream=sys.stderr, level=logging.INFO)
+
+@server.tool()
+async def get_weather(city: str) -> str:
+    logging.info(f"Querying weather for {city}")  # ✅ stderr is safe
+    result = await fetch_weather(city)
+    return result</code></pre>
+<p><strong>Or use file parameter directly:</strong></p>
+<pre><code>print(f"Querying weather for {city}", file=sys.stderr)  # ✅</code></pre>
+<p>To verify: if you see your debug prints appearing in the MCP Inspector's log stream, you're polluting stdout.</p>
+<p>---</p>
+<h2>Pitfall 2: TypeScript SDK v1 and v2 Have Completely Incompatible APIs</h2>
+<p><strong>This is especially tricky in 2026 because v2 is still pre-alpha, but GitHub examples often mix versions.</strong></p>
+<p>Per the official TypeScript SDK README:</p>
+<ul><li>**v1.x**: Stable, production-ready. Docs at `ts.sdk.modelcontextprotocol.io/`</li><li>**v2**: In development, pre-alpha. Docs at `ts.sdk.modelcontextprotocol.io/v2/`</li></ul>
+<p>If your <code>package.json</code> pins <code>"@modelcontextprotocol/server": "^1.0.0"</code> but you follow v2 example code, you'll see:</p>
+<pre><code>TypeError: server.run is not a function</code></pre>
+<p>Or:</p>
+<pre><code>The server is using v2 APIs which are not compatible with this client</code></pre>
+<p><strong>Fix:</strong></p>
+<pre><code># Check what version you have
+npm list @modelcontextprotocol/server
+
+# Force v1.x if needed
+npm install @modelcontextprotocol/server@1.x
+
+# Verify v1 with correct import pattern
+import { McpServer } from "@modelcontextprotocol/server";
+import { StdioServerTransport } from "@modelcontextprotocol/server/stdio";
+
+const server = new McpServer({ name: "my-server", version: "1.0.0" });
+const transport = new StdioServerTransport();
+await server.run(transport);</code></pre>
+<p>**Real issue**: Many npm MCP packages don't pin the SDK version. When you <code>npm install</code>, you might pull a v2 package and everything breaks. Check before installing:</p>
+<pre><code>npm view @modelcontextprotocol/server versions --json | tail -20</code></pre>
+<p>---</p>
+<h2>Pitfall 3: Claude Desktop Config Syntax Errors Cause Silent Failures</h2>
+<p>When you register an MCP server in Claude Desktop via <code>claude_desktop_config.json</code>, the JSON format is unforgiving. One extra comma or misplaced quote and the entire server list silently fails—Claude Desktop won't warn you, your server just won't appear.</p>
+<p><strong>Common error 1: command as array instead of command + args</strong></p>
+<pre><code>// ❌ Wrong
+"mcpServers": {
+  "filesystem": {
+    "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Projects"]
+  }
+}</code></pre>
+<pre><code>// ✅ Correct (command is string, args is array)
+"mcpServers": {
+  "filesystem": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/username/Projects"]
+  }
+}</code></pre>
+<p><strong>Common error 2: Windows paths with forward slashes</strong></p>
+<pre><code>// ❌ Windows might choke on this
+"command": "npx -y @modelcontextprotocol/server-filesystem C:/Users/username/Projects"</code></pre>
+<pre><code>// ✅ Windows: escape backslashes or use correct structure
+"command": "npx",
+"args": ["-y", "@modelcontextprotocol/server-filesystem", "C:\\Users\\username\\Projects"]</code></pre>
+<p><strong>Debugging tip</strong>: Test with MCP Inspector directly, skip Claude Desktop during development:</p>
+<pre><code>npx -y @modelcontextprotocol/inspector npx @modelcontextprotocol/server-filesystem /tmp</code></pre>
+<p>If Inspector works but Claude Desktop doesn't, the config file is the culprit 100% of the time.</p>
+<p>---</p>
+<h2>Pitfall 4: npm MCP Packages Have Severe Version Fragmentation</h2>
+<p>MCP was open-sourced by Anthropic in 2024, and while the protocol is solid, community packages vary wildly in quality. Searching <code>mcp-server</code> on npm gives you dozens of packages, many with these problems:</p>
+<ul><li>**Not updated in 6+ months**, but SDK versions have changed significantly</li><li>**Missing `bin` field** in `package.json`, making global install useless</li><li>**Outdated README commands**, e.g. `npx mcp-server-xxx` when the actual package name is `@xxx/mcp-server`</li></ul>
+<p><strong>3-step package quality check:</strong></p>
+<pre><code># 1. Check last update time
+npm view @modelcontextprotocol/server-filesystem time
+
+# 2. Check if it has a CLI entry point
+npm view @modelcontextprotocol/server-filesystem bin
+
+# 3. Test directly with Inspector, not Claude Desktop
+npx -y @modelcontextprotocol/inspector npx @modelcontextprotocol/server-filesystem /tmp</code></pre>
+<p>If Inspector works fine but integration fails, the issue is in the integration, not the package.</p>
+<p>---</p>
+<h2>Pitfall 5: Streamable HTTP Transport Requires Explicit CORS Configuration</h2>
+<p>When you move from local stdio to HTTP transport (for remote access), CORS configuration becomes mandatory. Most tutorials only cover stdio, so this catches everyone. The symptom: Inspector connects fine, but browser-based clients throw <code>CORS error</code>.</p>
+<p><strong>FastMCP (Python) correct CORS setup:</strong></p>
+<pre><code>from fastmcp import FastMCP
+
+mcp = FastMCP("my-server")
+
+# ❌ Wrong: no CORS config for HTTP transport
+if __name__ == "__main__":
+    mcp.run(transport="streamable-http")</code></pre>
+<pre><code># ✅ Correct: specify allowed origins
+if __name__ == "__main__":
+    mcp.run(
+        transport="streamable-http",
+        http_host="0.0.0.0",
+        cors_allowed_origins=["https://your-frontend.com"]
+    )</code></pre>
+<p><strong>Looser debug config (dev only):</strong></p>
+<pre><code>mcp.run(
+    transport="streamable-http",
+    http_host="0.0.0.0",
+    cors_allowed_origins=["*"],  # ⚠️ Never use in production
+)</code></pre>
+<p>---</p>
+<h2>Debugging Efficiently with MCP Inspector</h2>
+<p>The MCP Inspector is your most important debugging tool. It lets you test servers without Claude Desktop.</p>
+<p><strong>Basic usage:</strong></p>
+<pre><code># Test npm packages
+npx -y @modelcontextprotocol/inspector npx @modelcontextprotocol/server-filesystem /tmp
+
+# Test local Python projects
+npx @modelcontextprotocol/inspector \
+  uv \
+  --directory /path/to/project \
+  run \
+  mcp-server-git \
+  --repository ~/code/mcp/servers.git</code></pre>
+<p>Inspector opens a local web UI showing:</p>
+<ul><li>All exposed tools, resources, and prompts</li><li>Real-time protocol message stream</li><li>Input/output for each tool call</li><li>Error logs and debug output</li></ul>
+<p>---</p>
+<h2>Quick Reference Checklist</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Pitfall</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Key Point</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Fix</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">print() corrupts protocol</td><td style="border:1px solid #ddd;padding:8px;">stdio: print() goes to stdout</td><td style="border:1px solid #ddd;padding:8px;">Use `logging.info()` or `print(..., file=sys.stderr)`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">SDK version mismatch</td><td style="border:1px solid #ddd;padding:8px;">v1 vs v2 API incompatibility</td><td style="border:1px solid #ddd;padding:8px;">`npm view @modelcontextprotocol/server versions`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Claude Desktop config format</td><td style="border:1px solid #ddd;padding:8px;">JSON strict syntax, command/args structure</td><td style="border:1px solid #ddd;padding:8px;">Use Inspector first, bypass config</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">npm package fragmentation</td><td style="border:1px solid #ddd;padding:8px;">Package quality varies wildly</td><td style="border:1px solid #ddd;padding:8px;">`npm view <pkg> time` to check freshness</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">HTTP CORS issues</td><td style="border:1px solid #ddd;padding:8px;">HTTP mode needs CORS config</td><td style="border:1px solid #ddd;padding:8px;">`cors_allowed_origins` parameter</td></tr></tbody></table>
+<p>---</p>
+<p>👉 Build smarter AI workflows with MiniMax API: <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored">Token Plan</a></p>
+<p>---</p>
+<p><em></em></p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon Web Services</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
