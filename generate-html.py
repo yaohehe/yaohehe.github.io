@@ -54,7 +54,7 @@ AFFILIATE_LINKS = {
     'Amazon':          'https://www.amazon.com/?tag=techpassive-20',
     'MiniMax':         'https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link',
     
-    'WordPress':        'https://wordpress.org/?ref=YOUR_REF_CODE',
+    'WordPress':        'https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20',
     'Kubernetes':       'https://kubernetes.io/?ref=YOUR_REF_CODE',
     'Docker':           'https://www.docker.com/?ref=YOUR_REF_CODE',
     'Terraform':        'https://www.terraform.io/?ref=YOUR_REF_CODE',
