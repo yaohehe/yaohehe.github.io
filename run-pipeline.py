@@ -321,10 +321,27 @@ if not html_passed:
 
 print("\n✅ HTML 审稿通过")
 
-# Phase 5: 发布
+# Phase 5: 同步文章到 blog 仓库 + 发布
 print("\n" + "=" * 60)
-print("🚀 Phase 3: 发布")
+print("🚀 Phase 5: 同步文章到 blog 仓库 + 发布")
 print("=" * 60)
+
+# 关键修复：把 drafts 里的文章复制到 yaohehe.github.io/archive/（目标仓库）
+import shutil as _shutil
+YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
+drafts_dir = f"{WORKSPACE}/drafts"
+today_str = datetime.now().strftime('%Y-%m-%d')
+target_archive = os.path.join(YAOHEHE_DIR, "archive", today_str)
+if os.path.exists(drafts_dir):
+    draft_files = [f for f in os.listdir(drafts_dir) if f.endswith('.html') and not f.startswith('.')]
+    if draft_files:
+        os.makedirs(target_archive, exist_ok=True)
+        for f in draft_files:
+            src = os.path.join(drafts_dir, f)
+            dst = os.path.join(target_archive, f)
+            _shutil.copy2(src, dst)
+            print(f"  📋 同步: {f} -> {target_archive}/")
+        print(f"  ✅ 已同步 {len(draft_files)} 篇到 {target_archive}")
 
 run_cmd(f"python3 {WORKSPACE}/publish-articles.py", timeout=300)
 
