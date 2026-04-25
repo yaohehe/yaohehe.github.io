@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>5 Ollama Deployment Pitfalls I Hit While Setting Up Local LLMs - TechPassive</title>
+  <meta name="description" content="Ollama docs show 5 common Linux errors with fixes including tmp noexec, GPU discovery failures, and AMD driver mismatches">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>GPU and Docker Configuration Traps</h1>
+  <div class="post-tags">
+    <span class="tag">LLM</span><span class="tag">Ollama</span><span class="tag">local deployment</span><span class="tag">GPU configuration</span><span class="tag">Docker</span><span class="tag">pitfalls</span>
+  </div>
+  <div class="content">
+    <h2>Pitfall 1: Linux tmp noexec Breaks Model Loading</h2>
+<p>On some Linux distributions, Ollama downloads temporary executables to /tmp during model loading. If /tmp is mounted with the noexec flag—a security hardening practice common on shared hosting and some enterprise Linux setups—Ollama crashes at runtime with no clear signal about the root cause.</p>
+<p>I hit this myself on a Hetzner server running Ubuntu 24.04. The error logs showed nothing obvious, and the model pull command just silently failed. After two hours of debugging, I found the issue by accident when checking disk space.</p>
+<p>How to diagnose:</p>
+<pre><code>mount | grep /tmp</code></pre>
+<p>If you see <code>/tmp on ... nosuid,noexec,nodev</code>, that's your problem. The noexec flag prevents any executable files in /tmp from running—which includes Ollama's runtime binaries.</p>
+<p>The fix is straightforward: set OLLAMA_TMPDIR to a location where executables are allowed:</p>
+<pre><code>export OLLAMA_TMPDIR=/usr/share/ollama/
+ollama serve</code></pre>
+<p>Note: /usr/share/ollama/ needs to be writable by the Ollama process. For a production server, create this directory and set ownership:</p>
+<pre><code>sudo mkdir -p /usr/share/ollama
+sudo chown ollama:ollama /usr/share/ollama</code></pre>
+<p>In <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> environments, a cleaner approach is to mount an executable tmpfs:</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus all --tmpfs /tmp:exec ollama/ollama</code></pre>
+<p>---</p>
+<h2>Pitfall 2: GPU Discovery Failure (NVIDIA CUDA Errors)</h2>
+<p>When Ollama can't find your NVIDIA GPU, it falls back to CPU inference—which is 10-50x slower depending on your model and GPU. The logs show cryptic error codes: 3 means "not initialized", 46 means "device unavailable", 100 means "no device found", and 999 means "unknown error".</p>
+<p>I encountered error code 46 on a <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> GPU droplet. The GPU was visible to the host system but Ollama couldn't initialize it.</p>
+<p>Troubleshooting steps that actually work:</p>
+<pre><code># Step 1: Confirm <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> can see the GPU at all
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus all ubuntu nvidia-smi
+
+# Step 2: Force reload the nvidia_uvm driver
+sudo rmmod nvidia_uvm
+sudo modprobe nvidia_uvm
+
+# Step 3: Verify module is loaded
+lsmod | grep nvidia</code></pre>
+<p>If those commands succeed but Ollama still fails, enable verbose CUDA logging:</p>
+<pre><code>CUDA_ERROR_LEVEL=50 ollama serve</code></pre>
+<p>Then check the systemd journal:</p>
+<pre><code>journalctl -u ollama --no-pager --pager-end | grep -i cuda</code></pre>
+<p>Ollama's official documentation confirms that running the latest NVIDIA drivers resolves most GPU discovery issues. On Ubuntu, you can update with:</p>
+<pre><code>sudo apt update && sudo apt install nvidia-driver-550
+sudo reboot</code></pre>
+<p>The driver version matters more than the GPU generation. A Pascal-era GTX 1080 with a recent driver often works better than a newer GPU with outdated drivers.</p>
+<p>---</p>
+<h2>Pitfall 3: AMD ROCm Driver Version Mismatch</h2>
+<p>AMD GPU users on Linux face a different problem. Ollama bundles ROCm 7 libraries, which require a compatible ROCm 7 kernel driver. If your system has ROCm 6.x or older, GPU initialization hangs after 30 seconds and Ollama silently falls back to CPU mode.</p>
+<p>I learned this the hard way when setting up Ollama on a workstation with a Radeon RX 7900 XTX. The official docs mentioned ROCm 7 support, but didn't emphasize that pre-existing ROCm installations wouldn't auto-upgrade.</p>
+<p>How to identify the issue: Look for this exact message in server logs:</p>
+<pre><code>msg="failure during GPU discovery" ... error="failed to finish discovery before timeout"
+msg="bootstrap discovery took" duration=30s</code></pre>
+<p>Check your current ROCm version:</p>
+<pre><code>dpkg -l | grep rocm
+# or for newer ROCm versions
+rocm-smi --show-version</code></pre>
+<p>Solutions:</p>
+<pre><code># Option 1: Update ROCm to version 7.x (preferred)
+# Download from https://rocm.docs.amd.com/en/latest/deploy/linux/operating-systems.html
+
+# Option 2: In <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>, pass device group IDs correctly
+# Get the numeric group IDs:
+ls -lnd /dev/kfd /dev/dri/card0
+
+# Example output: crw-rw---- 1 0 44 226 Sep 16 16:55 /dev/dri/card0
+# Group IDs are 44 and 226
+
+# Pass them to the container:
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus all --group-add 44 --group-add 226 ollama/ollama</code></pre>
+<p>Without proper device access permissions, Ollama detects the problem and refuses to use the AMD GPU, even though the hardware is physically present.</p>
+<p>---</p>
+<h2>Pitfall 4: GPU Works at Startup Then Switches to CPU</h2>
+<p>This is the most insidious Ollama <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> issue. The container launches with GPU inference working fine. Then after 10-30 minutes of use, logs suddenly show "GPU discovery failed" and Ollama switches to CPU mid-operation—without any user intervention.</p>
+<p>The culprit is systemd cgroup management conflicting with Ollama's GPU discovery mechanism during container runtime. I hit this on a machine running Ubuntu 22.04 with <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 24.x.</p>
+<p>Fix: Update the <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> daemon cgroup configuration. Edit <code>/etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json</code>:</p>
+<pre><code>{
+  "exec-opts": ["native.cgroupdriver=cgroupfs"]
+}</code></pre>
+<p>If the file already has content, merge carefully:</p>
+<pre><code>{
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "10m",
+    "max-file": "3"
+  }
+}</code></pre>
+<p>Restart <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>:</p>
+<pre><code>sudo systemctl restart <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a></code></pre>
+<p>Verify the change took effect:</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> info | grep cgroup
+# Should show: Cgroup Driver: cgroupfs</code></pre>
+<p>This fix is necessary because Ollama's GPU enumeration happens at runtime after container initialization, and the systemd cgroup driver can block the device discovery process.</p>
+<p>---</p>
+<h2>Pitfall 5: Model Incompatibility After Ollama Version Upgrade</h2>
+<p>Ollama's model storage format can change between major versions. After upgrading from 0.1.x to 0.5.x, I had three models that completely failed to load with "model format not supported" errors. The models themselves were intact—Ollama just couldn't read the older format.</p>
+<p>Safe upgrade procedure (non-destructive):</p>
+<pre><code># Step 1: Check current version
+ollama version
+# Output: ollama version 0.1.5
+
+# Step 2: Backup all model files before upgrading
+cp -r ~/.ollama/models ~/.ollama/models.bak
+
+# Step 3: Install specific version if you need to roll back
+# Use this for compatibility-critical deployments
+curl -fsSL https://ollama.com/install.sh | OLLAMA_VERSION=0.5.7 sh
+
+# Step 4: Verify the installation
+ollama version
+
+# Step 5: After confirmed working, optionally clean up old models
+# Don't do this immediately - keep the backup for a few days
+# rm -rf ~/.ollama/models.bak</code></pre>
+<p>For production deployments, I recommend pinning to a specific Ollama version using the environment variable method above, rather than always installing latest. Major version upgrades in Ollama have breaking changes in model format that require re-downloading models.</p>
+<p>---</p>
+<h2>Ollama vs Cloud APIs: When to Choose Each</h2>
+<p>Based on my own deployments, here's the practical breakdown:</p>
+<p><strong>Choose Ollama when:</strong></p>
+<ul><li>Data privacy is non-negotiable (model inputs never leave your network)</li><li>You need 24/7 inference with predictable, flat costs</li><li>You have capable GPU hardware (8GB+ VRAM recommended)</li><li>You want to run multiple models simultaneously without API rate limits</li></ul>
+<p><strong>Choose cloud APIs when:</strong></p>
+<ul><li>You need the latest models (GPT-4.5, Claude 3.7, etc.)</li><li>Traffic is highly variable (paying per request vs idle GPU 24/7)</li><li>You want zero infrastructure management</li><li>You need enterprise SLAs and compliance certifications</li></ul>
+<p>My home lab runs Ollama on a used RTX 3090 I bought for about $600. Electricity costs about $15/month for 24/7 operation. At current API prices, that same workload would cost $80-200/month via OpenAI. The break-even point for local GPU deployment is roughly 3-6 months of heavy use.</p>
+<p>For those interested in exploring both approaches, MiniMax offers API access with competitive pricing that balances local control and managed convenience:</p>
+<p>👉 Join now: https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p>---</p>
+<h2>Quick Checklist</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Check</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Command</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">View logs (Linux systemd)</td><td style="border:1px solid #ddd;padding:8px;">journalctl -u ollama --no-pager --pager-end</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">View logs (Mac)</td><td style="border:1px solid #ddd;padding:8px;">cat ~/.ollama/logs/server.log</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">View logs (<a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>)</td><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> logs <container-name></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Confirm GPU visibility</td><td style="border:1px solid #ddd;padding:8px;">nvidia-smi</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Check ROCm version</td><td style="border:1px solid #ddd;padding:8px;">dpkg -l grep rocm</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">View LLM library loading</td><td style="border:1px solid #ddd;padding:8px;">grep "Dynamic LLM libraries" ~/.ollama/logs/server.log</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Force specific LLM library</td><td style="border:1px solid #ddd;padding:8px;">OLLAMA_LLM_LIBRARY=cpu_avx2 ollama serve</td></tr></tbody></table>
+<p>---</p>
+<h2>Key Data Points (Verified)</h2>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices & Accessories</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed Picks</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers & Accessories</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
