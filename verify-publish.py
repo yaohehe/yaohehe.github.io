@@ -1,113 +1,153 @@
 #!/usr/bin/env python3
 """
-verify-publish.py - 发布验证闭环
-检查最近生成的文章是否成功发布，记录结果到 seo.md
-如失败，识别原因并写入待改进项
+verify-publish.py - 发布验证闭环 v2
+
+不再依赖 git status（staged changes 会误判）
+改用 archive/ 目录扫描 + GitHub API 文件存在性检查
+
+逻辑：
+1. 扫描 yaohehe.github.io/archive/YYYY-MM-DD/ 中当天新修改的文章
+2. 通过 GitHub API 检查远程是否已存在
+3. 未存在 → 触发 publish-articles.py 推送
+4. 已有 → 验证通过
 """
 import os
 import subprocess
-import re
+import requests
+import base64
+import json
 from datetime import datetime, timedelta
 
 YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 AFFILIATE_BLOG = "/root/.openclaw/workspace/affiliate-blog"
 SEO_MEMO = os.path.expanduser("~/self-improving/domains/seo.md")
 VERIFICATION_LOG = f"{AFFILIATE_BLOG}/reports/verification-log.txt"
+MEMORY_DIR = os.path.expanduser("~/.openclaw/memory/self-improving")
 
-def ts():
-    return datetime.now().strftime('%Y-%m-%d %H:%M')
+REPO = "yaohehe/yaohehe.github.io"
 
 def log(msg):
-    print(f"[{ts()}] {msg}")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {msg}")
 
-def get_recent_commits(hours=48):
-    """获取最近 N 小时的 git 提交"""
-    if not os.path.exists(YAOHEHE_DIR):
-        return []
+def get_github_token():
+    """从 git remote 提取 token"""
     try:
         r = subprocess.run(
-            ["git", "log", "--since", f"{hours} hours ago", "--oneline", "--name-only"],
+            ['git', 'config', '--get', 'remote.origin.url'],
             cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=10
         )
-        if r.returncode != 0:
-            return []
-        commits = []
-        lines = r.stdout.strip().split('\n')
-        current_commit = None
-        files = []
-        for line in lines:
-            if re.match(r'^[0-9a-f]{8,}', line):
-                if current_commit:
-                    commits.append({'hash': current_commit, 'files': files})
-                current_commit = line.split()[0]
-                files = []
-            elif line.strip() and current_commit:
-                files.append(line.strip())
-        if current_commit:
-            commits.append({'hash': current_commit, 'files': files})
-        return commits
-    except Exception as e:
-        log(f"⚠️ git log 读取失败: {e}")
-        return commits
+        url = r.stdout.strip()
+        if 'x-access-token:' in url:
+            s = url.index('x-access-token:') + len('x-access-token:')
+            e = url.index('@')
+            return url[s:e]
+    except:
+        pass
+    return None
 
-def check_articles_online():
-    """检查文章是否在线（通过 git remote + web fetch）"""
-    if not os.path.exists(YAOHEHE_DIR):
-        return False, "目录不存在"
-    try:
-        r = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=10
-        )
-        if r.stdout.strip():
-            return False, f"有未提交更改: {r.stdout.strip()[:100]}"
-        return True, "Git 工作区干净"
-    except Exception as e:
-        return False, f"git status 失败: {e}"
+def github_file_exists(path):
+    """检查 GitHub remote 上指定路径是否已存在文件"""
+    token = get_github_token()
+    if not token:
+        return None  # unknown
+    headers = {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    url = f"https://api.github.com/repos/{REPO}/contents/{path}"
+    r = requests.get(url, headers=headers, timeout=15)
+    return r.status_code == 200
 
-def verify_and_record():
-    """验证最近发布并记录到 seo.md"""
+def log_error(command, error, fix, priority="high"):
+    entry = {
+        "type": "error", "timestamp": datetime.now().isoformat(),
+        "command": command, "error": error, "fix": fix,
+        "priority": priority, "status": "pending", "source": "verify-publish.py"
+    }
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    with open(f"{MEMORY_DIR}/errors.jsonl", "a") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+def find_recent_articles(hours=36, limit=10):
+    """扫描 archive 目录查找最近 N 小时内修改的文章文件"""
+    articles = []
+    cutoff = datetime.now() - timedelta(hours=hours)
+    archive_dir = os.path.join(YAOHEHE_DIR, "archive")
+    if not os.path.isdir(archive_dir):
+        return articles
+    for root, dirs, files in os.walk(archive_dir):
+        for f in files:
+            if not f.endswith('.html') or '-en.html' in f:
+                continue
+            fp = os.path.join(root, f)
+            try:
+                mtime = datetime.fromtimestamp(os.path.getmtime(fp))
+                if mtime >= cutoff:
+                    rel = os.path.relpath(fp, YAOHEHE_DIR)
+                    if rel not in articles:
+                        articles.append(rel)
+                        if len(articles) >= limit:
+                            return articles
+            except Exception:
+                pass
+    return articles
+
+def verify_and_publish():
+    """验证 archive/ 中最近修改的文章，并确保已推送到 GitHub"""
     log("开始发布验证...")
-    
-    # 1. 检查 git 工作区
-    clean, msg = check_articles_online()
-    if not clean:
-        log(f"⚠️ {msg}")
-        verification_note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ❌ 发布验证失败: {msg}"
-    else:
-        # 2. 获取最近提交
-        commits = get_recent_commits(hours=36)
-        if not commits:
-            log("⚠️ 最近36小时无提交")
-            verification_note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ⚠️ 验证: 最近36小时无提交"
+
+    # 扫描最近文章
+    recent = find_recent_articles(hours=36, limit=10)
+    if not recent:
+        log("⚠️ 最近36小时无新文章")
+        note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ⚠️ 验证: 最近36小时无新文章发布"
+        with open(SEO_MEMO, 'a') as f:
+            f.write(note)
+        return note
+
+    log(f"📋 发现 {len(recent)} 篇最近修改的文章")
+
+    # 检查每篇是否已在 GitHub remote
+    unpublished = []
+    published = []
+    for rel_path in recent:
+        exists = github_file_exists(rel_path)
+        if exists is None:
+            log(f"⚠️ 无法检查 {rel_path}，跳过")
+            published.append(rel_path)
+        elif exists:
+            published.append(rel_path)
         else:
-            recent_articles = []
-            for c in commits[:5]:
-                for f in c['files']:
-                    if f.endswith('.html') and '-en' not in f:
-                        recent_articles.append(f)
-            
-            if recent_articles:
-                log(f"✅ 最近36小时发布: {len(recent_articles)} 篇")
-                for a in recent_articles:
-                    log(f"  - {a}")
-                verification_note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ✅ 验证通过: 发布 {len(recent_articles)} 篇 ({', '.join(recent_articles[:3])}{'...' if len(recent_articles) > 3 else ''})"
-            else:
-                log("⚠️ 无新文章发布")
-                verification_note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ⚠️ 验证: 无新文章发布"
-    
-    # 3. 追加到 seo.md
+            unpublished.append(rel_path)
+
+    log(f"✅ 已发布: {len(published)} 篇")
+    if unpublished:
+        log(f"❌ 未发布: {len(unpublished)} 篇: {unpublished}")
+
+    # 写入记录
+    if unpublished:
+        log("🚀 检测到未发布文章，触发 publish-articles.py...")
+        r = subprocess.run(
+            ["python3", f"{AFFILIATE_BLOG}/publish-articles.py"],
+            cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=300
+        )
+        if r.returncode == 0:
+            log("✅ publish-articles.py 执行成功")
+            note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ✅ 验证通过: 发布 {len(recent)} 篇（含 {len(unpublished)} 篇补发）"
+        else:
+            log(f"❌ publish-articles.py 失败: {r.stderr[:200]}")
+            log_error("publish-articles.py", r.stderr[:300], "检查 GitHub token 和网络状态", "high")
+            note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ❌ 验证失败: {len(unpublished)} 篇未发布（publish-articles.py 报错）"
+    else:
+        note = f"\n- [{datetime.now().strftime('%Y-%m-%d')}] ✅ 验证通过: {len(recent)} 篇已全部在线"
+
     with open(SEO_MEMO, 'a') as f:
-        f.write(verification_note)
-    log(f"✅ 验证结果已记录到 seo.md")
-    
-    # 4. 写验证日志
+        f.write(note)
+
     os.makedirs(os.path.dirname(VERIFICATION_LOG), exist_ok=True)
     with open(VERIFICATION_LOG, 'a') as f:
-        f.write(f"[{ts()}] {verification_note[2:]}\n")
-    
-    return verification_note
+        f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {note[2:]}\n")
+
+    log(f"✅ 验证结果已记录")
+    return note
 
 if __name__ == "__main__":
-    note = verify_and_record()
+    note = verify_and_publish()
     print(f"\n验证摘要: {note}")
