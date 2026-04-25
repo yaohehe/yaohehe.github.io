@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker GPU Configuration Traps: How I Spent 3 Days Getting NVIDIA Containers to Work - TechPassive</title>
+  <meta name="description" content="After 3 days debugging Docker GPU access, here's the complete error atlas: nvidia-container-toolkit missing, daemon.json conflicts, runtime priority, cgroup driver mismatch, and CUDA version incompatibility — with reproducible commands.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Docker GPU Configuration Errors and Solutions</h1>
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">NVIDIA</span><span class="tag">GPU</span><span class="tag">Container</span><span class="tag">Tutorial</span>
+  </div>
+  <div class="content">
+    <p><strong>This article contains affiliate links. I earn a small commission at no extra cost to you.</strong></p>
+<p>Running deep learning models inside <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> containers requires GPU access. Sounds simple, but the configuration has traps everywhere — it took me 3 full days to get the entire pipeline working. Here's everything I learned, with reproducible commands and verification steps.</p>
+<p>---</p>
+<h2>Understand the Full Stack First</h2>
+<p>Getting <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> containers to access a GPU requires 5 layers, and any one of them can fail:</p>
+<pre><code>Application layer (<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus)
+    → <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> CLI (parses --gpus flag)
+    → <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Daemon (configures runtime)
+    → nvidia-container-toolkit (translates <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> request to NVIDIA call)
+    → NVIDIA Driver (kernel-level GPU driver)
+    → Physical GPU (CUDA computation)</code></pre>
+<p>If any layer is missing or misconfigured, you get errors like <code>could not select device driver</code>.</p>
+<p>---</p>
+<h2>Trap 1: nvidia-container-toolkit Not Installed</h2>
+<p>**Symptom**: <code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus all nvidia-smi</code> fails with:</p>
+<pre><code>Error response from daemon: could not select device driver "" with capabilities: [[gpu]]</code></pre>
+<p><strong>Diagnostic</strong>:</p>
+<pre><code># Check if toolkit is installed
+which nvidia-container-toolkit
+nvidia-ctk --version
+
+# If no output, it's not installed</code></pre>
+<p><strong>Solution</strong> (Ubuntu/Debian):</p>
+<pre><code># Add NVIDIA repo
+distribution=$(. /etc/os-release &&echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/$distribution/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>.list | sudo tee /etc/apt/sources.list.d/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# Configure <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> runtime
+sudo nvidia-ctk runtime configure --runtime=<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>
+sudo systemctl restart <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a></code></pre>
+<p><strong>Verification</strong>:</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi</code></pre>
+<p>If GPU info appears, you're good.</p>
+<p>---</p>
+<h2>Trap 2: daemon.json Configuration Conflicts</h2>
+<p><strong>Symptom</strong>: Toolkit installed but still failing, or <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> fails to start.</p>
+<p>**Common mistake**: Adding <code>"exec-opts": ["native.cgroupdriver=cgroupfs"]</code> to <code>/etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json</code>, which conflicts with cgroup v2 systems.</p>
+<p><strong>Diagnostic</strong>:</p>
+<pre><code>cat /etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> info | grep -i cgroup</code></pre>
+<p><strong>Correct configuration</strong> (cgroup v2 systems, Ubuntu 22.04+ default):</p>
+<pre><code>{
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "args": []
+    }
+  }
+}</code></pre>
+<p>For cgroup v1 systems with systemd:</p>
+<pre><code>{
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "args": []
+    }
+  }
+}</code></pre>
+<p><strong>Critical</strong>: After editing daemon.json, restart <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>:</p>
+<pre><code>sudo systemctl restart <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a></code></pre>
+<p>Check if runtime is active:</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> info | grep -A10 Runtimes</code></pre>
+<p>---</p>
+<h2>Trap 3: Runtime Priority Conflicts</h2>
+<p>**Symptom**: <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> uses <code>nvidia</code> runtime but other runtimes aren't called correctly.</p>
+<p>**Problem**: Some systems default to <code>runc</code> instead of <code>nvidia</code>, breaking GPU passthrough.</p>
+<p><strong>Solutions</strong>:</p>
+<pre><code># Method 1: Use --gpus flag (recommended, most flexible)
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# Method 2: Set nvidia as default runtime
+# Edit /etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json
+{
+  "default-runtime": "nvidia",
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime"
+    }
+  }
+}</code></pre>
+<p>**Note**: Since <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 19.03, prefer <code>--gpus all</code> over <code>--runtime=nvidia</code>. The old syntax is deprecated.</p>
+<p>---</p>
+<h2>Trap 4: CUDA Version / Driver Version Mismatch</h2>
+<p>**Symptom**: <code>nvidia-smi</code> works fine on the host, but container reports CUDA incompatibility.</p>
+<p><strong>Common mismatches</strong>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Driver Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Max CUDA Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Recommended Image</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">>= 535</td><td style="border:1px solid #ddd;padding:8px;">CUDA 12.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:12.6.1-base-ubuntu22.04`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">470.x - 535.x</td><td style="border:1px solid #ddd;padding:8px;">CUDA 11.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:11.8.0-base-ubuntu20.04`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">< 470</td><td style="border:1px solid #ddd;padding:8px;">CUDA 10.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:10.2-base-ubuntu18.04`</td></tr></tbody></table>
+<p><strong>Diagnostic</strong>:</p>
+<pre><code># Check host driver version
+nvidia-smi | grep "Driver Version"
+
+# Check host CUDA version
+nvcc --version
+
+# Check available CUDA in container
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvcc --version</code></pre>
+<p>**Fix**: Choose the right image for your driver version. Using a newer CUDA image with an older driver will give you <code>cuda error: cuda version not supported</code>.</p>
+<p>---</p>
+<h2>Trap 5: GPU Not Visible Inside Container (Device Node Permission)</h2>
+<p>**Symptom**: <code>nvidia-smi</code> inside container reports <code>NVML: Permission denied</code>.</p>
+<p>**Cause**: GPU device nodes (<code>/dev/nvidia*</code>) have insufficient permissions.</p>
+<p><strong>Diagnostic</strong>:</p>
+<pre><code># Check device nodes on host
+ls -la /dev/nvidia*
+
+# Check current user groups
+groups</code></pre>
+<p><strong>Solutions</strong>:</p>
+<pre><code># Method 1: --privileged (testing only, not for production)
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all --privileged nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# Method 2: Mount devices with explicit permissions (recommended)
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm \
+  --gpus all \
+  --device=/dev/nvidia0:/dev/nvidia0 \
+  --device=/dev/nvidia-uvm:/dev/nvidia-uvm \
+  --device=/dev/nvidiactl:/dev/nvidiactl \
+  -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi \
+  nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# Method 3: Ensure user is in correct groups (recommended for production)
+sudo usermod -aG video $USER
+sudo usermod -aG <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> $USER
+# Then re-login</code></pre>
+<p>---</p>
+<h2>Quick Verification: Layer-by-Layer</h2>
+<pre><code># 1. Host layer: NVIDIA Driver
+nvidia-smi
+# Expected: shows GPU model, temperature, memory
+
+# 2. Container Toolkit layer
+nvidia-ctk --version
+# Expected: version number output
+
+# 3. <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> runtime layer
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+# Expected: GPU info displayed inside container
+
+# 4. Application layer (PyTorch)
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 \
+  python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
+# Expected: CUDA available: True, GPU model name</code></pre>
+<p>---</p>
+<h2>Configuration Order Summary</h2>
+<pre><code>1. Confirm host NVIDIA Driver works → nvidia-smi
+2. Install nvidia-container-toolkit
+3. Configure daemon.json (don't blindly add cgroupfs)
+4. Restart <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>
+5. Test with --gpus all (not --runtime=nvidia)
+6. Match CUDA image version to driver version</code></pre>
+<p>When you hit an error, use the layer-by-layer verification above to pinpoint which component is failing — don't randomly reinstall things.</p>
+<p>---</p>
+<p><strong>Recommended GPU Cloud Servers</strong>:</p>
+<ul><li><a href="https://www.digitalocean.com/?ref=techpassive" target="_blank" rel="nofollow sponsored">DigitalOcean GPU Instances</a></li><li><a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored">Vultr GPU Instances</a></li></ul>
+<p>👉 Sign up now: https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices & Accessories</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed Picks</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers & Accessories</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
