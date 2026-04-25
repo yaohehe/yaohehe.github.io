@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker与GPU配置陷阱：我花了3天才打通NVIDIA容器支持 - TechPassive</title>
+  <meta name="description" content="配置Docker GPU支持最常见的5个坑：nvidia-container-toolkit缺失、daemon.json配置错误、runtime优先级冲突、cgroup驱动不匹配、CUDA版本不兼容，完整排查流程。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Docker GPU配置常见错误与解决</h1>
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">NVIDIA</span><span class="tag">GPU</span><span class="tag">配置</span><span class="tag">容器</span>
+  </div>
+  <div class="content">
+    <p><strong>本文含联盟链接，购买后我可获得小额佣金（不影响您的价格）</strong></p>
+<p>跑深度学习模型时，需要在 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 里调用 GPU。听起来理所当然，配置起来却到处是坑——我花了 3 天才把整个链路打通。这篇文章把所有踩过的坑整理出来，配上可复现的命令和验证方法。</p>
+<p>---</p>
+<h2>先搞清楚整个链路</h2>
+<p>要让 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器访问 GPU，需要经过 5 层，每一层都可能出错：</p>
+<pre><code>应用层（<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus）
+    → <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> CLI（解析 --gpus 参数）
+    → <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Daemon（配置 runtime）
+    → nvidia-container-toolkit（翻译 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 请求为 NVIDIA 调用）
+    → NVIDIA Driver（内核态 GPU 驱动）
+    → 物理 GPU（CUDA 运算）</code></pre>
+<p>只要中间任何一层缺失或配置错误，就会报 <code>could not select device driver</code> 之类的错误。</p>
+<p>---</p>
+<h2>坑1：nvidia-container-toolkit 未安装</h2>
+<p>**表现**：<code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --gpus all nvidia-smi</code> 报错</p>
+<pre><code>Error response from daemon: could not select device driver "" with capabilities: [[gpu]]</code></pre>
+<p><strong>诊断命令</strong>：</p>
+<pre><code># 检查 toolkit 是否安装
+which nvidia-container-toolkit
+nvidia-ctk --version
+
+# 如果没有输出，说明根本没装</code></pre>
+<p><strong>解决方案</strong>（Ubuntu/Debian）：</p>
+<pre><code># 添加 NVIDIA 仓库
+distribution=$(. /etc/os-release &&echo $ID$VERSION_ID)
+curl -s -L https://nvidia.github.io/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/gpgkey | sudo apt-key add -
+curl -s -L https://nvidia.github.io/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/$distribution/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>.list | sudo tee /etc/apt/sources.list.d/nvidia-<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>.list
+
+sudo apt-get update
+sudo apt-get install -y nvidia-container-toolkit
+
+# 配置 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> runtime
+sudo nvidia-ctk runtime configure --runtime=<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>
+sudo systemctl restart <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a></code></pre>
+<p><strong>验证</strong>：</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi</code></pre>
+<p>输出 GPU 信息则成功。</p>
+<p>---</p>
+<h2>坑2：daemon.json 配置冲突</h2>
+<p><strong>表现</strong>：装了 toolkit 但仍然报错，或者 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 服务起不来。</p>
+<p>**常见错误**：在 <code>/etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json</code> 里错误地加了 <code>native.cgroupdriver=cgroupfs</code>，导致与 cgroup v2 系统冲突。</p>
+<p><strong>诊断命令</strong>：</p>
+<pre><code>cat /etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> info | grep -i cgroup</code></pre>
+<p><strong>正确配置</strong>（cgroup v2 系统，Ubuntu 22.04+ 默认）：</p>
+<pre><code>{
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "args": []
+    }
+  }
+}</code></pre>
+<p>如果系统是 cgroup v1 且 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 用 systemd，需要额外配置：</p>
+<pre><code>{
+  "exec-opts": ["native.cgroupdriver=cgroupfs"],
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime",
+      "args": []
+    }
+  }
+}</code></pre>
+<p><strong>重要</strong>：修改 daemon.json 后必须重启 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>：</p>
+<pre><code>sudo systemctl restart <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a></code></pre>
+<p>检查 runtime 是否生效：</p>
+<pre><code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> info | grep -A10 Runtimes</code></pre>
+<p>---</p>
+<h2>坑3：runtime 优先级问题</h2>
+<p>**表现**：<a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 默认使用了 <code>nvidia</code> runtime，但其他 runtime 没被正确调用。</p>
+<p>**问题**：某些系统默认 runtime 是 <code>runc</code>，而 nvidia runtime 没有被设为默认。</p>
+<p><strong>解决方案</strong>：</p>
+<pre><code># 方法一：用 --gpus 参数（推荐，最灵活）
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# 方法二：把 nvidia 设为默认 runtime
+# 编辑 /etc/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>/daemon.json
+{
+  "default-runtime": "nvidia",
+  "runtimes": {
+    "nvidia": {
+      "path": "nvidia-container-runtime"
+    }
+  }
+}</code></pre>
+<p>**注意**：从 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 19.03 开始，推荐用 <code>--gpus all</code> 而不是 <code>--runtime=nvidia</code>。旧语法 <code>--runtime=nvidia</code> 在新版本中已不推荐。</p>
+<p>---</p>
+<h2>坑4：CUDA 版本与驱动版本不匹配</h2>
+<p>**表现**：<code>nvidia-smi</code> 显示驱动版本正常，但容器内报 CUDA 版本不兼容。</p>
+<p><strong>常见组合错误</strong>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">驱动版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最高支持 CUDA 版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">建议镜像</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">>= 535</td><td style="border:1px solid #ddd;padding:8px;">CUDA 12.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:12.6.1-base-ubuntu22.04`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">470.x - 535.x</td><td style="border:1px solid #ddd;padding:8px;">CUDA 11.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:11.8.0-base-ubuntu20.04`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">< 470</td><td style="border:1px solid #ddd;padding:8px;">CUDA 10.x</td><td style="border:1px solid #ddd;padding:8px;">`nvidia/cuda:10.2-base-ubuntu18.04`</td></tr></tbody></table>
+<p><strong>诊断命令</strong>：</p>
+<pre><code># 查主机驱动版本
+nvidia-smi | grep "Driver Version"
+
+# 查主机 CUDA 版本
+nvcc --version
+
+# 在容器内查可用 CUDA 版本
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvcc --version</code></pre>
+<p>**修复**：选对镜像版本。如果主机是旧驱动，不要用新版 CUDA 镜像，会报 <code>cuda error: cuda version not supported</code>。</p>
+<p>---</p>
+<h2>坑5：容器内看不到 GPU（设备节点权限问题）</h2>
+<p>**表现**：<code>nvidia-smi</code> 在容器内报 <code>NVML: Permission denied</code>。</p>
+<p>**原因**：GPU 设备节点 (<code>/dev/nvidia*</code>) 的权限不足。</p>
+<p><strong>诊断命令</strong>：</p>
+<pre><code># 主机上查设备节点
+ls -la /dev/nvidia*
+
+# 查当前用户组
+groups</code></pre>
+<p><strong>解决方案</strong>：</p>
+<pre><code># 方法一：加 --privileged（测试用，不推荐生产）
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all --privileged nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# 方法二：挂载设备并设置组权限（推荐）
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm \
+  --gpus all \
+  --device=/dev/nvidia0:/dev/nvidia0 \
+  --device=/dev/nvidia-uvm:/dev/nvidia-uvm \
+  --device=/dev/nvidiactl:/dev/nvidiactl \
+  -v /usr/bin/nvidia-smi:/usr/bin/nvidia-smi \
+  nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+
+# 方法三：确保用户在高权限组（推荐长期方案）
+sudo usermod -aG video $USER
+sudo usermod -aG <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> $USER
+# 然后重新登录</code></pre>
+<p>---</p>
+<h2>快速验证链路完整性</h2>
+<p>从主机到容器，逐层验证：</p>
+<pre><code># 1. 主机层：NVIDIA Driver
+nvidia-smi
+# 预期：显示 GPU 型号、温度、显存
+
+# 2. Container Toolkit 层
+nvidia-ctk --version
+# 预期：输出版本号
+
+# 3. <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> runtime 层
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 nvidia-smi
+# 预期：在容器内显示 GPU 信息
+
+# 4. 应用层（PyTorch）
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> run --rm --gpus all nvidia/cuda:12.0-base-ubuntu22.04 \
+  python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); print(f'Device: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"None\"}')"
+# 预期：CUDA available: True，输出 GPU 型号</code></pre>
+<p>---</p>
+<h2>总结：配置顺序</h2>
+<pre><code>1. 确认主机 NVIDIA Driver 正常 → nvidia-smi
+2. 安装 nvidia-container-toolkit
+3. 配置 daemon.json（不要乱加 cgroupfs）
+4. 重启 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>
+5. 用 --gpus all 测试（不用 --runtime=nvidia）
+6. 匹配 CUDA 镜像版本与驱动版本</code></pre>
+<p>如果遇到任何报错，先用上面的逐层验证定位是哪个环节出问题，而不是盲目重装。</p>
+<p>---</p>
+<p><strong>购买 GPU 云服务器推荐</strong>：</p>
+<ul><li><a href="https://www.digitalocean.com/?ref=techpassive" target="_blank" rel="nofollow sponsored">DigitalOcean GPU 实例</a></li><li><a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored">Vultr GPU 实例</a></li></ul>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices & Accessories</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed Picks</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers & Accessories</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
