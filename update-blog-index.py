@@ -274,14 +274,15 @@ def main():
 
     # 生成 index.html
     index_cn = generate_index(cn_articles, INDEX_HEADER_CN, INDEX_FOOTER)
-    index_cn = index_cn.replace('</head>', ga_code + '\n  ' + clar_code + '\n</head>').replace('</body>', bd_code + '\n</body>')
+    # 替换模板字面量为真实统计代码
+    index_cn = index_cn.replace('{GOOGLE_ANALYTICS}', ga_code).replace('{CLARITY}', clar_code).replace('{BAIDU_STATS}', bd_code)
     with open(os.path.join(BLOG_DIR, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(index_cn)
     print(f"✅ index.html 已更新（{len(cn_articles)} 篇）")
 
     # 生成 index-en.html
     index_en = generate_index(en_articles, INDEX_HEADER_EN, INDEX_FOOTER)
-    index_en = index_en.replace('</head>', ga_code + '\n  ' + clar_code + '\n</head>').replace('</body>', bd_code + '\n</body>')
+    index_en = index_en.replace('{GOOGLE_ANALYTICS}', ga_code).replace('{CLARITY}', clar_code).replace('{BAIDU_STATS}', bd_code)
     with open(os.path.join(BLOG_DIR, 'index-en.html'), 'w', encoding='utf-8') as f:
         f.write(index_en)
     print(f"✅ index-en.html 已更新（{len(en_articles)} 篇）")
