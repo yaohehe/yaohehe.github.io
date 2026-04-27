@@ -25,7 +25,7 @@ from datetime import datetime
 
 MEMORY_DIR = os.path.expanduser("~/.openclaw/memory/self-improving")
 YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
-BLOG_DIR = "/root/.openclaw/workspace/affiliate-blog"
+BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 REPO = "yaohehe/yaohehe.github.io"
 
 def log(msg):
@@ -118,7 +118,7 @@ def run_update_index():
     """运行索引同步（这个已经在 yaohehe.github.io 本地操作）"""
     log("🔄 运行索引同步...")
     r = subprocess.run(
-        ["python3", f"{BLOG_DIR}/update-blog-index.py"],
+        ["python3", f"{YAOHEHE_DIR}/update-blog-index.py"],
         cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=60
     )
     if r.stdout:

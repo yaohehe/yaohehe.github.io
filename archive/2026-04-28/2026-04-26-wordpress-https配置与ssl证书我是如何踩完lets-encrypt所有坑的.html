@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress HTTPS配置与SSL证书：我是如何踩完Let's Encrypt所有坑的 - TechPassive</title>
+  <meta name="description" content="I set up HTTPS and SSL for WordPress, hitting every Let's Encrypt gotcha along the way: Nginx config, Certbot auto-renewal, mixed content fixes, cert chain validation">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1><a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a> HTTPS与SSL证书配置避坑指南</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a></span><span class="tag">HTTPS</span><span class="tag">SSL证书</span><span class="tag">Let's Encrypt</span><span class="tag">Nginx</span><span class="tag">建站</span>
+  </div>
+  <div class="content">
+    <p>开宗明义：这篇文章解决4个具体问题——Nginx HTTPS 配置、Let's Encrypt 证书申请、 Certbot 自动续期、mixed content 混内容警告修复。不是泛泛而谈，是我在生产环境里踩过的真实坑。</p>
+<p>---</p>
+<h2>为什么HTTPS对<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>比以前更重要</h2>
+<p>2024年起Google已将HTTP页面标记为"不安全"，更重要的是，现代浏览器对HTTP页面会屏蔽某些功能（比如地理位置、通知），而HTTP/2和HTTP/3都要求TLS。这意味着：<strong>不配置HTTPS，你的<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>网站在速度和功能上就输了一截</strong>。</p>
+<p>HTTP-01 验证需要 port 80，这个限制让很多人卡在第一步。我用的方案是 DNS-01，支持泛域名，但需要你的域名商支持APItoken。我在Cloudflare上配置了API token，整个申请过程不用开80端口，适合有特殊网络限制的用户。</p>
+<p>现在的主流工具中，Certbot仍是官方推荐，acme.sh是更轻量的替代方案。Certbot在2026年4月刚更新到v5.5.0，支持最新的EAB（External Account Binding）要求；acme.sh则在2025年11月更新到3.1.2，功能稳定。两者我都用过，结论是：如果你用Ubuntu 24.04 + Nginx，直接用Certbot最省事。</p>
+<p>---</p>
+<h2>踩坑1：Nginx配置HTTPS后<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>后台变白屏</h2>
+<p><strong>症状</strong>：配置好HTTPS后访问wp-admin，出现白屏或重定向循环。</p>
+<p><strong>根因</strong>：<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>不知道网站已经HTTPS了，还在生成HTTP链接。</p>
+<p><strong>解决</strong>：在wp-config.php添加以下两行：</p>
+<pre><code>define('WP_HOME', 'https://' . $_SERVER['HTTP_HOST']);
+define('WP_SITEURL', 'https://' . $_SERVER['HTTP_HOST']);</code></pre>
+<p>或者用wp-cli快速修复：</p>
+<pre><code>wp option update home 'https://yourdomain.com'
+wp option update siteurl 'https://yourdomain.com'</code></pre>
+<p>这里我犯的错误是先修改Nginx配置，但忽略了<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>本身的URL设置。正确的顺序是：<strong>先改<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>配置，再配Nginx HTTPS</strong>。</p>
+<p>---</p>
+<h2>踩坑2：Certbot申请证书时80端口被占用</h2>
+<p>**症状**：<code>Failed to connect to port 80</code> 错误，申请中断。</p>
+<p><strong>根因</strong>：Apache或另一个Nginx进程占用了80端口。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 查看谁在监听80端口
+sudo lsof -i :80
+# 或者
+sudo netstat -tlnp | grep :80</code></pre>
+<p><strong>解决</strong>：停止占用进程后重试，或者用DNS-01绕过：</p>
+<pre><code># 安装certbot插件
+sudo apt install python3-certbot-dns-cloudflare
+
+# 用Cloudflare DNS验证（不需要开80端口）
+sudo certbot certonly --dns-cloudflare \
+  --dns-cloudflare-credentials /path/to/cloudflare.ini \
+  -d yourdomain.com -d "*.yourdomain.com"</code></pre>
+<p>我用的是Cloudflare，所以DNS验证方案对我最合适。但要注意：DNS-01验证后生成的泛域名证书，Cloudflare会自动配置，不需要手动改Nginx配置里的证书路径。</p>
+<p>---</p>
+<h2>踩坑3：证书申请成功但浏览器显示"证书链不完整"</h2>
+<p><strong>症状</strong>：用在线工具检测（如 SSLLabs），提示"Certificate chain incomplete"。</p>
+<p><strong>根因</strong>：Let's Encrypt使用RSpec协议颁发证书，但服务器只配置了Leaf Certificate，没有包含中间证书。</p>
+<p><strong>解决</strong>：在Nginx配置里指定完整证书链：</p>
+<pre><code>ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;</code></pre>
+<p>注意：<code>fullchain.pem</code> 包含完整证书链（leaf + intermediate），而 <code>privkey.pem</code> 是私钥。常见错误是用 <code>cert.pem</code>（只是leaf证书），导致链不完整。</p>
+<p>SSLLabs检测结果从 C 升到 A 耗时约10分钟，因为证书已经申请成功，只是链配置错误的话修复后不需要重新申请，直接reload Nginx即可。</p>
+<p>---</p>
+<h2>踩坑4：Mixed Content 混内容警告（最常见）</h2>
+<p>**症状**：浏览器控制台报错 <code>Mixed Content: The page at 'https://...' was loaded over HTTPS, but requested an insecure resource 'http://...'</code>。</p>
+<p><strong>根因</strong>：页面引用了HTTP资源（图片/CSS/JS），即使网站本身已配置HTTPS。</p>
+<p><strong>排查方法</strong>：打开Chrome开发者工具 → Console，搜索"Mixed Content"，找到具体URL。</p>
+<p><strong>彻底解决方案</strong>：用wp-cli扫描并替换：</p>
+<pre><code># 先备份数据库
+wp db export backup.sql
+
+# 扫描所有混内容URL
+wp search-replace 'http://yourdomain.com' 'https://yourdomain.com' --dry-run
+
+# 确认无误后执行替换
+wp search-replace 'http://yourdomain.com' 'https://yourdomain.com'</code></pre>
+<p><strong>快速缓解方案</strong>：在Nginx配置里加入Strict-Transport-Security头，并让浏览器自动升级混内容：</p>
+<pre><code>add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header Content-Security-Policy "upgrade-insecure-requests" always;</code></pre>
+<p><code>upgrade-insecure-requests</code> 指令告诉浏览器自动将页面内的HTTP资源请求升级为HTTPS，这是让老文章（数据库里大量旧HTTP链接）正常显示的最快方法，不需要逐个修复数据库。</p>
+<p>---</p>
+<h2>踩坑5：Certbot自动续期失败</h2>
+<p><strong>症状</strong>：证书到期了网站突然变红（不安全），查看systemd日志发现renew失败。</p>
+<p>**根因**：Nginx reload需要平滑重启，直接restart会断连接；但有些人在reload时配置了<code>require tty</code>，导致cron下无法执行。</p>
+<p>**正确的续期配置**：编辑 <code>/etc/letsencrypt/renewal/yourdomain.com.conf</code>，确保pre_hook和post_hook配置正确：</p>
+<pre><code>pre_hook = systemctl stop nginx
+post_hook = systemctl start nginx</code></pre>
+<p>**不要用** <code>reload</code> 而要用 <code>start/stop</code>，因为Nginx的reload在某些配置下不会让新证书生效。</p>
+<p><strong>测试续期</strong>（不要等到过期才测）：</p>
+<pre><code># 模拟续期流程（不会真正申请）
+sudo certbot renew --dry-run
+
+# 如果测试通过，真正的续期会在后台自动运行
+# 如果失败，systemd timer会通知你</code></pre>
+<p>我的教训：续期测试通过了，但真正到期时却失败了，因为测试时用的是standalone模式（停了Nginx），而真正续期时Nginx在运行导致端口冲突。所以确保pre_hook确实停了Nginx。</p>
+<p>---</p>
+<h2>完整的Nginx HTTPS配置模板</h2>
+<p>以下是我在生产环境验证过的配置，适合Ubuntu 24.04 + Nginx 1.30：</p>
+<pre><code>server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name yourdomain.com www.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/yourdomain.com/chain.pem;
+
+    # TLS版本控制（禁用TLS 1.0/1.1）
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # 安全头
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # CSP头：自动升级混内容
+    add_header Content-Security-Policy "upgrade-insecure-requests" always;
+
+    # OCSP Stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+
+    # SSL session优化
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    root /var/www/html;
+    index index.php index.html;
+
+    client_max_body_size 100M;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.well-known/acme-challenge/ {
+        allow all;
+    }
+}</code></pre>
+<p>配置验证：<code>sudo nginx -t</code> 通过后再reload。</p>
+<p>---</p>
+<h2>验证配置的工具</h2>
+<p>申请完成后不要只靠浏览器测试，用专业工具：</p>
+<p>1. <strong>SSLLabs</strong>（https://www.ssllabs.com/ssltest/）：输A即完美，输C说明链有问题</p>
+<p>2. <strong>Mozilla SSL Config Generator</strong>（https://ssl-config.mozilla.org/）：生成最新安全配置</p>
+<p>3. <strong>CRT.sh</strong>（https://crt.sh/）：查询证书是否正确申请</p>
+<p>我用CRT.sh查到了Let's Encrypt的中间证书指纹，对比Nginx配置的 <code>chain.pem</code>，确认无误后才算完成整个配置。</p>
+<p>---</p>
+<h2>总结：配置HTTPS的完整流程</h2>
+<p>1. <strong>先改<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>后台URL</strong>（wp-cli或后台设置）→ 避免白屏</p>
+<p>2. <strong>申请证书</strong>（Certbot standalone 或 DNS-01）→ 80端口问题这里解决</p>
+<p>3. <strong>配置Nginx HTTPS</strong>（fullchain.pem，TLS 1.2+1.3）→ 解决链不完整</p>
+<p>4. <strong>加CSP头</strong>（upgrade-insecure-requests）→ 快速解决混内容</p>
+<p>5. <strong>彻底替换数据库URL</strong>（wp-cli search-replace）→ 根治混内容</p>
+<p>6. <strong>测试续期</strong>（certbot renew --dry-run）→ 确保自动续期正常</p>
+<p>这6步的顺序不能乱。<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>配置优先于Nginx，证书申请优先于Nginx reload，DNS验证可以在绕过80端口限制的场景下使用。</p>
+<p>---</p>
+<p><strong>你可能还关心</strong>：如果你用的是Docker方式部署<a href="/2026-04-21-wordpress子主题创建完整指南我是如何用子主题避免升级丢定制的.html" class="internal-link">WordPress</a>，SSL配置会更复杂（需要docker-compose中的证书路径挂载），这个我踩过，下次单独写一篇Docker + HTTPS的配置方案。</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p><em></em></p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 亚马逊热销品类</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 亚马逊设备及配件</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 亚马逊翻新产品</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 家电热门产品</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 应用和游戏</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 书籍热门产品</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 健康与家居</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 电影电视</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ 体育户外</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 电子游戏</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 电脑及配件</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

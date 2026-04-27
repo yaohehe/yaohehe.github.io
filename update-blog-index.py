@@ -11,6 +11,33 @@ from datetime import datetime
 
 BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 
+# 统计代码
+GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>'''
+CLARITY = '''<!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>'''
+BAIDU_STATS = '''<script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>'''
+
 INDEX_HEADER_CN = '''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -38,6 +65,8 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         .affiliate-disclaimer { background: #fff8e1; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #666; }
     </style>
 <meta name="google-site-verification" content="aRTYFCdyaEkhMFAdwmfx53qD9csq3FcWdJvnRXx5QUQ" />
+  {GOOGLE_ANALYTICS}
+  {CLARITY}
 </head>
 <body>
     <header>
@@ -81,6 +110,9 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         footer { text-align: center; padding: 40px 0; margin-top: 40px; border-top: 2px solid #eee; color: #666; }
         .affiliate-disclaimer { background: #fff8e1; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #666; }
     </style>
+  {GOOGLE_ANALYTICS}
+  {CLARITY}
+  {BAIDU_STATS}
 </head>
 <body>
     <header>
@@ -179,6 +211,9 @@ def generate_sitemap(articles, today):
 
 
 def main():
+    ga_code = GOOGLE_ANALYTICS
+    clar_code = CLARITY
+    bd_code = BAIDU_STATS
     today = datetime.now().strftime('%Y-%m-%d')
 
     # 扫描所有 HTML 文件（去重：同一文件名优先使用 archive/ 版本）
@@ -241,12 +276,15 @@ def main():
 
     # 生成 index.html
     index_cn = generate_index(cn_articles, INDEX_HEADER_CN, INDEX_FOOTER)
+    # 替换模板字面量为真实统计代码
+    index_cn = index_cn.replace('{GOOGLE_ANALYTICS}', ga_code).replace('{CLARITY}', clar_code).replace('{BAIDU_STATS}', bd_code)
     with open(os.path.join(BLOG_DIR, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(index_cn)
     print(f"✅ index.html 已更新（{len(cn_articles)} 篇）")
 
     # 生成 index-en.html
     index_en = generate_index(en_articles, INDEX_HEADER_EN, INDEX_FOOTER)
+    index_en = index_en.replace('{GOOGLE_ANALYTICS}', ga_code).replace('{CLARITY}', clar_code).replace('{BAIDU_STATS}', bd_code)
     with open(os.path.join(BLOG_DIR, 'index-en.html'), 'w', encoding='utf-8') as f:
         f.write(index_en)
     print(f"✅ index-en.html 已更新（{len(en_articles)} 篇）")
