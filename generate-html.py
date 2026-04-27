@@ -553,6 +553,12 @@ def generate_html(content, template, css):
     body_lines = lines[2:]  # 跳过元数据和空行
     html_body = text_to_html('\n'.join(body_lines))
 
+    # ---- 内容最小长度检查：防止空内容文章发布 ----
+    text_only = re.sub(r'<[^>]+>', '', html_body).strip()
+    if len(text_only) < 300:
+        print(f"❌ 文章正文内容过短（{len(text_only)}字符），疑似内容生成失败：{meta['title'][:50]}")
+        sys.exit(1)
+
     # 检查 h1 是否与正文第一个 h2 重复（AI 误将章节标题当作 h1）
     first_h2 = None
     m = re.search(r'<h2>([^<]+)</h2>', html_body)
