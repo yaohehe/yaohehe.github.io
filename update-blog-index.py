@@ -67,6 +67,7 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
 <meta name="google-site-verification" content="aRTYFCdyaEkhMFAdwmfx53qD9csq3FcWdJvnRXx5QUQ" />
   {GOOGLE_ANALYTICS}
   {CLARITY}
+  {BAIDU_STATS}
 </head>
 <body>
     <header>
