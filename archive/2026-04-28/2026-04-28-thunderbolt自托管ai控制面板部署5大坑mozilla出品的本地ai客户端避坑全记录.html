@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Thunderbolt自托管AI控制面板部署5大坑：Mozilla出品的本地AI客户端避坑全记录 - TechPassive</title>
+  <meta name="description" content="我在部署thunderbolt时踩了PostgreSQL端口、Bun而非Node.js、BETTER_AUTH_SECRET配置等5个坑，每个坑都有排查过程和解决方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Thunderbolt部署避坑全记录</h1>
+  <div class="post-tags">
+    <span class="tag">Thunderbolt</span><span class="tag">Mozilla</span><span class="tag">AI控制面板</span><span class="tag">自托管</span><span class="tag"><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">Docker</a></span><span class="tag">本地部署</span>
+  </div>
+  <div class="content">
+    <p>thunderbolt是Mozilla邮件客户端团队出的开源AI控制面板，2026年4月已有4341个GitHub stars。它支持所有主流平台（Web/iOS/Android/Mac/Linux/Windows），可以连接Ollama、llama.cpp或任何OpenAI兼容API。听起来很美好，但我花了整整两天才把它跑起来——过程中踩了5个真实的坑。</p>
+<p>这篇文章不是入门教程，而是踩坑复盘。我假设你已经读过了官方文档，重点讲官方文档没写清楚的地方。每个坑都附上了真实的错误信息和排查方法。</p>
+<h2>坑1：用了Node.js而不是Bun</h2>
+<p>**症状**：<code>npm install</code>报错，或者<code>bun tauri:dev</code>直接失败</p>
+<p><strong>原因</strong>：thunderbolt的frontend和backend都要求Bun 1.2+，不支持Node.js。</p>
+<p>这是最容易被忽略的坑。官方的quick-start.md开头就写了需要Bun，但很多开发者（包括我自己）习惯性地执行<code>npm install</code>，然后收获一堆奇奇怪怪的依赖错误。</p>
+<pre><code># 错误做法：使用Node.js包管理器
+npm install
+# 或
+yarn install
+
+# 报错示例（取决于你的Node版本）：
+# Error: @tauri-apps/cli@2.x requires Bun >= 1.2.0
+
+# 正确做法：先确认安装了Bun
+bun --version
+# 如果版本低于1.2：
+curl -fsSL https://bun.sh/install | bash
+# 重新加载shell后：
+bun --version  # 确认是1.2+
+bun install</code></pre>
+<p>快速验证方法：</p>
+<pre><code># 检查是否在正确的目录并且Bun可用
+bun --version && ls package.json
+# 输出应该类似：1.2.3 和 package.json存在</code></pre>
+<p>验证完Bun可用后，正常流程是：</p>
+<pre><code>git clone https://github.com/thunderbird/thunderbolt.git
+cd thunderbolt
+bun install
+cd backend && bun install && cd ..
+cp .env.example .env
+cp backend/.env.example backend/.env</code></pre>
+<h2>坑2：PostgreSQL容器端口5433而非默认的5432</h2>
+<p>**症状**：<code><a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose up</code>显示postgres容器启动后立即退出；或者应用连不上数据库</p>
+<p><strong>原因</strong>：thunderbolt的<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml里，PostgreSQL容器映射到了宿主机端口5433（内部仍然是5432），用于避免和本地可能存在的PostgreSQL冲突。</p>
+<p>这是官方仓库<code>deploy/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml</code>中的实际配置：</p>
+<pre><code>postgres:
+  image: postgres:18-alpine
+  environment:
+    POSTGRES_PASSWORD: postgres
+    POSTGRES_DB: postgres
+  ports:
+    - "${POSTGRES_PORT:-5433}:5432"  # 注意这里是5433，不是5432</code></pre>
+<p>如果你有本地PostgreSQL运行在5432，这个设计很合理。但问题是：<strong>文档和配置文件里大量地方直接写的是5432</strong>，只有<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml偷偷改成了5433。</p>
+<p>排查方法：</p>
+<pre><code># 1. 检查postgres容器状态
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose ps
+
+# 如果看到 postgres exited (1)，查看日志：
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose logs postgres
+
+# 2. 常见错误：端口已被占用
+# <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose logs postgres 会显示：
+# FATAL: could not create lock file "/var/run/postgresql/.s.PGSQL.5432.lock" : No such file or directory
+
+# 3. 解决方法：修改.env中的端口配置
+# 在 thunderbolt/deploy/.env 中添加：
+POSTGRES_PORT=5433
+
+# 4. 同时确认backend连接字符串也使用了正确端口
+# backend/.env 中应该是：
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres
+# 而不是：
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres</code></pre>
+<p>生产环境推荐：如果你已经有其他服务在用PostgreSQL，修改.env中的<code>POSTGRES_PORT</code>到一个不冲突的端口，然后同步更新<code>DATABASE_URL</code>。</p>
+<h2>坑3：忘记设置BETTER_AUTH_SECRET</h2>
+<p><strong>症状</strong>：应用启动后注册/登录失败，或者所有用户共享同一个账户</p>
+<p>**原因**：.env.example里有默认值<code>BETTER_AUTH_SECRET=better-auth-secret-change-in-production-12345678901234567890</code>。这个默认值在本地开发可以工作，但**多人访问或部署到服务器上时，如果SECRET相同，会有严重的安全问题**。</p>
+<p>这个问题在GitHub Issue #771中有记录：Kubernetes部署时漏掉了BETTER_AUTH_SECRET环境变量，导致后端无法正常工作。</p>
+<pre><code># 生成一个随机的SECRET（macOS/Linux）：
+openssl rand -base64 32
+# 输出类似：W9K3xL2pVN8mQrTlE5fH1sD6aJcM7nR4BvC8wGxT3kY=
+
+# 生成后，在 backend/.env 中设置：
+BETTER_AUTH_SECRET=W9K3xL2pVN8mQrTlE5fH1sD6aJcM7nR4BvC8wGxT3kY=</code></pre>
+<p>判断方法：应用日志中如果出现<code>Error: Better Auth secret is not set or is too short</code>，说明BETTER_AUTH_SECRET未设置或长度不足32字符。</p>
+<p>另外，如果你在一台服务器上为多个团队成员部署thunderbolt，<strong>每人需要不同的BETTER_AUTH_SECRET值</strong>（或者使用OIDC模式做SSO认证）。默认SECRET会导致所有用户被识别为同一个会话。</p>
+<h2>坑4：PowerSync服务未启动导致多设备同步失效</h2>
+<p><strong>症状</strong>：在手机和电脑上登录同一个账户，但数据不同步；或者每次打开应用都像全新安装</p>
+<p>**原因**：thunderbolt的多设备同步依赖PowerSync服务（第3个<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>容器），但快速入门指南里只写了<code>make up</code>命令，很多用户不知道还需要单独启动PowerSync。</p>
+<p>正确的完整启动流程：</p>
+<pre><code># 1. 先启动依赖服务（PostgreSQL + PowerSync）
+make up
+# 这实际上执行的是：
+# <a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose -f powersync-service/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml up -d
+
+# 2. 验证服务状态
+make status
+# 应该看到：postgres running, powersync running
+
+# 3. 如果PowerSync没启动，手动启动：
+cd powersync-service
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose up -d
+cd ..
+
+# 4. 确认PowerSync监听在8080端口
+curl http://localhost:8080/health
+# 正常响应：{"status":"ok"}
+
+# 5. 然后才启动应用
+bun run dev        # frontend on :5173
+# 或 bun run backend (如果你只需要API)</code></pre>
+<p>在<code>backend/.env</code>中确保设置了PowerSync相关变量：</p>
+<pre><code>DATABASE_DRIVER=postgres
+DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres
+POWERSYNC_URL=http://localhost:8080
+POWERSYNC_JWT_SECRET=powersync-dev-secret-change-in-production</code></pre>
+<p>如果你暂时不需要多设备同步功能（单机使用），可以在<code>backend/.env</code>中注释掉PowerSync相关变量，使用本地Pglite驱动：</p>
+<pre><code>DATABASE_DRIVER=pglite
+DATABASE_URL=.pglite/data
+# POWERSYNC_URL=   # 注释掉这行</code></pre>
+<h2>坑5：VITE_THUNDERBOLT_CLOUD_URL配置错误导致API请求全部失败</h2>
+<p><strong>症状</strong>：界面显示正常，但发送消息时报"网络错误"或"连接服务器失败"；Network标签里所有API请求都返回404</p>
+<p>**原因**：thunderbolt前端需要知道后端服务的地址，这个配置通过<code>VITE_THUNDERBOLT_CLOUD_URL</code>环境变量设置。默认值是<code>http://localhost:8000/v1</code>，但如果你的backend运行在不同的端口或域名，这个值必须同步更新。</p>
+<pre><code># 在 frontend/.env 或 .env (项目根目录) 中设置：
+VITE_THUNDERBOLT_CLOUD_URL=http://localhost:8000/v1
+
+# 如果你修改了backend端口（例如改成8080）：
+VITE_THUNDERBOLT_CLOUD_URL=http://localhost:8080/v1
+
+# 如果你是远程服务器部署（假设IP是 203.0.113.42，frontend端口3000）：
+VITE_THUNDERBOLT_CLOUD_URL=http://203.0.113.42:8000/v1
+# 同时需要更新backend/.env中的：
+TRUSTED_ORIGINS=http://203.0.113.42:3000
+CORS_ORIGINS=http://203.0.113.42:3000
+APP_URL=http://203.0.113.42:3000
+BETTER_AUTH_URL=http://203.0.113.42:8000</code></pre>
+<p>排查方法：</p>
+<pre><code># 1. 打开浏览器DevTools -> Network
+# 2. 找一个失败的API请求，查看Request URL
+# 3. 如果请求地址是 http://localhost:8000/v1/chat 这样的URL：
+#    - 确认backend确实在8000端口运行：curl http://localhost:8000/v1/health
+# 4. 如果backend正常运行，检查CORS错误：
+#    - DevTools Console里看到类似：
+#    "Access to fetch at 'http://localhost:8000' from origin 'http://localhost:5173'
+#     has been blocked by CORS policy"
+#    - 解决方案：在 backend/.env 中添加/修改：
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000</code></pre>
+<p>注意：这个问题在Nginx反向代理场景下更复杂，因为官方<code>deploy/config/nginx.conf</code>中后端地址是硬编码的（Issue #777），需要同时修改nginx配置和<code>VITE_THUNDERBOLT_CLOUD_URL</code>。</p>
+<p>---</p>
+<h2>完整的正确部署流程</h2>
+<p>基于以上所有踩坑经验，完整的本地开发环境搭建流程如下：</p>
+<pre><code># 1. 安装Bun（必须，Node.js不行）
+curl -fsSL https://bun.sh/install | bash
+source ~/.bashrc  # 或重新打开终端
+
+# 2. 克隆并安装
+git clone https://github.com/thunderbird/thunderbolt.git
+cd thunderbolt
+bun install
+cd backend && bun install && cd ..
+
+# 3. 配置环境变量
+cp .env.example .env
+cp backend/.env.example backend/.env
+
+# 编辑 backend/.env，设置以下必填项：
+# BETTER_AUTH_SECRET=$(openssl rand -base64 32)
+# ANTHROPIC_API_KEY=sk-...  (或OLLAMA_URL+其他API Key)
+# DATABASE_DRIVER=postgres
+# DATABASE_URL=postgresql://postgres:postgres@localhost:5433/postgres
+# POWERSYNC_URL=http://localhost:8080
+
+# 4. 启动依赖服务（必须）
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose -f powersync-service/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml up -d
+
+# 5. 验证依赖服务
+curl http://localhost:8080/health   # PowerSync健康检查
+<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a> compose -f powersync-service/<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">docker</a>-compose.yml ps  # PostgreSQL状态
+
+# 6. 启动frontend + backend
+bun run dev
+
+# 7. 访问 http://localhost:5173</code></pre>
+<h2>总结：thunderbolt值不值得折腾</h2>
+<p>踩完这5个坑之后，thunderbolt实际上是一个相当完整的AI客户端。它最大的优点是<strong>不绑定任何特定AI服务商</strong>，可以同时连接Ollama（本地模型）、OpenAI、Anthropic、Mistral、Fireworks等多个provider，跨provider对比回答质量非常方便。</p>
+<p>如果你主要是用Ollama跑本地模型，thunderbolt的跨平台UI比直接用curl命令体验好很多。但部署确实有门槛——它不是一个"下载即用"的产品，需要理解<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">Docker</a>、Bun、环境变量等概念。</p>
+<p><strong>适合人群</strong>：已有Ollama或其他AI API经验，想用统一界面管理多个模型/provider的开发者。</p>
+<p><strong>不适合人群</strong>：完全不懂<a href="/2026-04-21-ubuntu-2404-docker-ufw-firewall-on-vps-the-3-day-n-en.html" class="internal-link">Docker</a>和命令行的用户（建议等官方推出托管版本）。</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 亚马逊热销品类</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 亚马逊设备及配件</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 亚马逊翻新产品</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 家电热门产品</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 应用和游戏</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 书籍热门产品</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 健康与家居</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 电影电视</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ 体育户外</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 电子游戏</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 电脑及配件</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
