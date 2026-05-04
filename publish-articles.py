@@ -28,6 +28,36 @@ YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 REPO = "yaohehe/yaohehe.github.io"
 
+# 统计代码常量（防止 git pull 覆盖后注入）
+GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+    <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-YQZQY6XDXN');
+    </script>'''
+
+CLARITY_STATS = '''<!-- Microsoft Clarity -->
+    <script type="text/javascript">
+     (function(c,l,a,r,i,t,y){
+     c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+     t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+     y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+     })(window, document, "clarity", "script", "wdy3avd2j9");
+    </script>'''
+
+BAIDU_STATS = '''<!-- Baidu Tongji -->
+    <script>
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+    </script>'''
+
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] {msg}", flush=True)
 
@@ -156,6 +186,47 @@ def verify_no_broken_links():
     log("✅ 索引链接验证通过")
     return True
 
+def verify_and_fix_tracking_codes():
+    """验证并修复 index.html / index-en.html 的统计代码（最后防线）"""
+    log("🔍 验证统计代码完整性...")
+    fixed = 0
+    for fname in ['index.html', 'index-en.html']:
+        fpath = os.path.join(YAOHEHE_DIR, fname)
+        if not os.path.exists(fpath):
+            continue
+        with open(fpath, 'r', encoding='utf-8') as f:
+            content = f.read()
+
+        has_ga = 'G-YQZQY6XDXN' in content
+        has_clarity = 'wdy3avd2j9' in content
+        has_baidu = '5217d6a8f8299c6b114858ac6e719e2b' in content
+
+        if has_ga and has_clarity and has_baidu:
+            continue  # 完整，无需修复
+
+        # 注入缺失的统计代码
+        if not has_ga:
+            # 找到 </head> 前插入
+            content = content.replace('</head>', GOOGLE_ANALYTICS + '\n</head>')
+        if not has_clarity:
+            content = content.replace('</head>', CLARITY_STATS + '\n</head>')
+        if not has_baidu:
+            content = content.replace('</head>', BAIDU_STATS + '\n</head>')
+
+        with open(fpath, 'w', encoding='utf-8') as f:
+            f.write(content)
+
+        # 推送修复后的文件
+        with open(fpath, 'rb') as f:
+            push_file(fname, f.read())
+
+        log(f"✅ 已修复 {fname} 统计代码（GA={has_ga}, Clarity={has_clarity}, Baidu={has_baidu}）")
+        fixed += 1
+
+    if fixed == 0:
+        log("✅ 统计代码验证通过")
+    return True
+
 def main():
     log("=== 发布脚本开始 ===")
 
@@ -189,6 +260,11 @@ def main():
             with open(fpath, 'rb') as f:
                 content = f.read()
             push_file(fname, content)
+
+    # Step 7: 验证并修复统计代码（防止 git pull 覆盖导致丢失）
+    if not verify_and_fix_tracking_codes():
+        log("⚠️ 统计代码修复失败，重试...")
+        verify_and_fix_tracking_codes()
 
     if pushed == 0 and not articles:
         log("📭 无新文章待发布")
