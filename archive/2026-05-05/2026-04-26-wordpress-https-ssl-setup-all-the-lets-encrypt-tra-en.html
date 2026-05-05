@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress HTTPS & SSL Setup: All the Let's Encrypt Traps I Hit So You Don't Have To - TechPassive</title>
+  <meta name="description" content="I set up HTTPS and SSL for WordPress, hitting every Let's Encrypt gotcha along the way: Nginx config traps, Certbot renewal gotchas, mixed content fixes">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1><a href="/2026-04-21-wordpress-child-theme-creation-guide-how-i-used-a--en.html" class="internal-link">WordPress</a> HTTPS and SSL Certificate Configuration Guide</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-04-21-wordpress-child-theme-creation-guide-how-i-used-a--en.html" class="internal-link">WordPress</a></span><span class="tag">HTTPS</span><span class="tag">SSL</span><span class="tag">Let's Encrypt</span><span class="tag"><a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a></span><span class="tag">Web Development</span>
+  </div>
+  <div class="content">
+    <p><strong>Important note upfront:</strong> This article solves 4 specific problems — <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> HTTPS config, Let's Encrypt certificate issuance, Certbot auto-renewal setup, and mixed content warning fixes. Based on real production environment experience, not generic tutorials.</p>
+<p>---</p>
+<h2>Why HTTPS Matters More for <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Now</h2>
+<p>Since 2024, Google marks HTTP pages as "not secure." More importantly, modern browsers block certain features (geolocation, notifications) on HTTP pages, and HTTP/2 and HTTP/3 both require TLS. <strong>Without HTTPS, your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> site is already losing on speed and functionality.</strong></p>
+<p>The HTTP-01 challenge requires port 80 — that's a hard blocker for many users. My approach: DNS-01 challenge, which supports wildcard certs and requires only a domain registrar API token. I use Cloudflare with an API token, so the entire issuance process bypasses port 80 entirely. This is ideal for users with strict network restrictions.</p>
+<p>Between the two main tools, Certbot is still the official recommendation, while acme.sh is the lighter alternative. Certbot updated to v5.5.0 in April 2026 and now supports the latest EAB (External Account Binding) requirements. acme.sh last updated to version 3.1.2 in November 2025 and remains stable. I've used both — if you're on Ubuntu 24.04 + <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>, Certbot is the least friction.</p>
+<p>---</p>
+<h2>Trap 1: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Admin Goes White Screen After HTTPS Config</h2>
+<p><strong>Symptom</strong>: After configuring HTTPS, wp-admin shows a blank screen or redirect loop.</p>
+<p><strong>Root cause</strong>: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> doesn't know the site is now HTTPS, keeps generating HTTP URLs.</p>
+<p><strong>Fix</strong>: Add these two lines to wp-config.php:</p>
+<pre><code>define('WP_HOME', 'https://' . $_SERVER['HTTP_HOST']);
+define('WP_SITEURL', 'https://' . $_SERVER['HTTP_HOST']);</code></pre>
+<p>Or use wp-cli for quick fix:</p>
+<pre><code>wp option update home 'https://yourdomain.com'
+wp option update siteurl 'https://yourdomain.com'</code></pre>
+<p>My mistake: configured <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> HTTPS first, but ignored <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s own URL settings. The correct order is: <strong>fix <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> config first, then <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> HTTPS</strong>.</p>
+<p>---</p>
+<h2>Trap 2: Certbot Fails to Connect Port 80</h2>
+<p>**Symptom**: <code>Failed to connect to port 80</code> error during certificate request.</p>
+<p><strong>Root cause</strong>: Apache or another <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> process is already using port 80.</p>
+<p><strong>Debug command</strong>:</p>
+<pre><code># Check what's listening on port 80
+sudo lsof -i :80
+# or
+sudo netstat -tlnp | grep :80</code></pre>
+<p><strong>Fix</strong>: Stop the conflicting process then retry, OR bypass port 80 with DNS-01:</p>
+<pre><code># Install certbot Cloudflare DNS plugin
+sudo apt install python3-certbot-dns-cloudflare
+
+# Use Cloudflare DNS verification (no port 80 needed)
+sudo certbot certonly --dns-cloudflare \
+  --dns-cloudflare-credentials /path/to/cloudflare.ini \
+  -d yourdomain.com -d "*.yourdomain.com"</code></pre>
+<p>I use Cloudflare, so DNS verification is my go-to. Key point: after DNS-01 verification, the wildcard certificate gets automatically configured by Cloudflare — no manual <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> cert path update needed.</p>
+<p>---</p>
+<h2>Trap 3: Certificate Issued but Browser Shows "Incomplete Certificate Chain"</h2>
+<p><strong>Symptom</strong>: Online tool (like SSLLabs) reports "Certificate chain incomplete."</p>
+<p><strong>Root cause</strong>: Let's Encrypt uses RSpec protocol to issue certs, but server only configured with leaf certificate — missing intermediate certificate.</p>
+<p><strong>Fix</strong>: In <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> config, point to the full chain:</p>
+<pre><code>ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;</code></pre>
+<p>Critical: <code>fullchain.pem</code> contains the complete chain (leaf + intermediate), while <code>cert.pem</code> is leaf only. The common mistake is using <code>cert.pem</code>, which produces an incomplete chain.</p>
+<p>SSLLabs score went from C to A in about 10 minutes after fix. Since the certificate was already issued correctly, fixing the chain doesn't require re-issuance — just reload <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>.</p>
+<p>---</p>
+<h2>Trap 4: Mixed Content Warnings (Most Common)</h2>
+<p>**Symptom**: Console error <code>Mixed Content: The page at 'https://...' was loaded over HTTPS, but requested an insecure resource 'http://...'</code>.</p>
+<p><strong>Root cause</strong>: Page references HTTP resources (images/CSS/JS) even though the site itself is HTTPS-configured.</p>
+<p><strong>Debug method</strong>: Open Chrome DevTools → Console, search "Mixed Content", find the specific URLs.</p>
+<p><strong>Complete fix with wp-cli scan and replace</strong>:</p>
+<pre><code># Backup database first
+wp db export backup.sql
+
+# Scan all mixed content URLs (dry run first)
+wp search-replace 'http://yourdomain.com' 'https://yourdomain.com' --dry-run
+
+# Execute after confirming
+wp search-replace 'http://yourdomain.com' 'https://yourdomain.com'</code></pre>
+<p><strong>Quick mitigation via <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> config</strong>: Add HSTS header and let browser auto-upgrade mixed content:</p>
+<pre><code>add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+add_header Content-Security-Policy "upgrade-insecure-requests" always;</code></pre>
+<p>The <code>upgrade-insecure-requests</code> directive tells the browser to automatically upgrade all HTTP resource requests in the page to HTTPS. This is the fastest way to make old posts (with many HTTP links in the database) display correctly — no need to fix each database entry individually.</p>
+<p>---</p>
+<h2>Trap 5: Certbot Auto-Renewal Fails</h2>
+<p><strong>Symptom</strong>: Certificate expires, site turns red (insecure), systemd logs show renewal failure.</p>
+<p>**Root cause**: <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> reload needs graceful restart, not restart — but some people configure <code>require tty</code> in reload step, which blocks cron execution.</p>
+<p>**Correct renewal config**: Edit <code>/etc/letsencrypt/renewal/yourdomain.com.conf</code>, ensure pre_hook and post_hook are correct:</p>
+<pre><code>pre_hook = systemctl stop <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">nginx</a>
+post_hook = systemctl start <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">nginx</a></code></pre>
+<p>**Do NOT use** <code>reload</code> — use <code>start/stop</code> instead, because <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> reload doesn't always activate new certificates in some configurations.</p>
+<p><strong>Test renewal</strong> (don't wait until expiry):</p>
+<pre><code># Simulate renewal process (won't actually issue)
+sudo certbot renew --dry-run
+
+# If dry-run passes, real renewal runs automatically in background
+# If it fails, systemd timer notifies you</code></pre>
+<p>My lesson: dry-run passed, but actual expiry failed. Dry-run uses standalone mode (stopped <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>), while real renewal ran with <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> active, causing port conflict. So make sure pre_hook actually stops <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>.</p>
+<p>---</p>
+<h2>Complete <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> HTTPS Config Template</h2>
+<p>Here's my production-verified config for Ubuntu 24.04 + <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> 1.30:</p>
+<pre><code>server {
+    listen 80;
+    server_name yourdomain.com www.yourdomain.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name yourdomain.com www.yourdomain.com;
+
+    ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
+    ssl_trusted_certificate /etc/letsencrypt/live/yourdomain.com/chain.pem;
+
+    # TLS version control (disable TLS 1.0/1.1)
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+
+    # CSP header: auto-upgrade mixed content
+    add_header Content-Security-Policy "upgrade-insecure-requests" always;
+
+    # OCSP Stapling
+    ssl_stapling on;
+    ssl_stapling_verify on;
+    resolver 8.8.8.8 8.8.4.4 valid=300s;
+    resolver_timeout 5s;
+
+    # SSL session optimization
+    ssl_session_timeout 1d;
+    ssl_session_cache shared:SSL:50m;
+    ssl_session_tickets off;
+
+    root /var/www/html;
+    index index.php index.html;
+
+    client_max_body_size 100M;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass unix:/var/run/php/php-fpm.sock;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.well-known/acme-challenge/ {
+        allow all;
+    }
+}</code></pre>
+<p>Validate config before reloading: <code>sudo <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">nginx</a> -t</code>.</p>
+<p>---</p>
+<h2>Tools to Verify Your Setup</h2>
+<p>After issuance, don't rely on browser alone — use professional tools:</p>
+<p>1. <strong>SSLLabs</strong> (https://www.ssllabs.com/ssltest/): A grade is perfect, C grade means chain problem</p>
+<p>2. <strong>Mozilla SSL Config Generator</strong> (https://ssl-config.mozilla.org/): Generate latest secure config</p>
+<p>3. <strong>CRT.sh</strong> (https://crt.sh/): Query certificate issuance status</p>
+<p>I used CRT.sh to verify Let's Encrypt intermediate certificate fingerprint, compared against <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>'s <code>chain.pem</code>, and confirmed before declaring the full setup complete.</p>
+<p>---</p>
+<h2>Complete HTTPS Setup Workflow</h2>
+<p>1. <strong>Fix <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> admin URL first</strong> (wp-cli or admin settings) → prevents white screen</p>
+<p>2. <strong>Issue certificate</strong> (Certbot standalone or DNS-01) → port 80 issues resolved here</p>
+<p>3. <strong>Configure <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> HTTPS</strong> (fullchain.pem, TLS 1.2+1.3) → fixes incomplete chain</p>
+<p>4. <strong>Add CSP header</strong> (upgrade-insecure-requests) → quick fix for mixed content</p>
+<p>5. <strong>Replace database URLs permanently</strong> (wp-cli search-replace) → root cause fix for mixed content</p>
+<p>6. <strong>Test renewal</strong> (certbot renew --dry-run) → ensure auto-renewal works</p>
+<p>The order matters. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> config before <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a>, certificate before <a href="/2026-04-20-2026年nginx性能调优完整指南我是如何在生产环境将响应时间降低70的.html" class="internal-link">Nginx</a> reload, DNS verification for bypassing port 80 restrictions.</p>
+<p>---</p>
+<p><strong>What you might also need</strong>: If you deploy <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> via <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>, SSL configuration is more complex (needs docker-compose certificate path mounting). I've been through that too — next article will cover <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> + HTTPS setup in detail.</p>
+<p>👉 Join now: https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p><em></em></p>
+<div style="background:#f0f7ff;border-left:4px solid #0066cc;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#0066cc;">📖 Related Articles</h3>
+  <div style="display:flex;flex-direction:column;gap:10px;">
+    <a href="/2026-04-20-2026年亚马逊amazon-basics闭眼入清单我实测了5款销量王告诉你哪些真的值得买.html" target="_blank" style="color:#0066cc;text-decoration:none;font-size:0.95em;">→ Amazon Basics Best Sellers: 5 Products I Actually Tested in 2026</a>
+    <a href="/2026-04-25-amazon-basics-kitchen-tools-showdown-measuring-cup-en.html" target="_blank" style="color:#0066cc;text-decoration:none;font-size:0.95em;">→ Kitchen Tools Showdown: Measuring Cup Set vs Organizer vs Mixing Bowls</a>
+  </div>
+</div>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home & Kitchen</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Household</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers & Accessories</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

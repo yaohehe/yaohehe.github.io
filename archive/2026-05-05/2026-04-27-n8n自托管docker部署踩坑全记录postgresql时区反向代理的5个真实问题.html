@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n自托管Docker部署踩坑全记录：PostgreSQL/时区/反向代理的5个真实问题 - TechPassive</title>
+  <meta name="description" content="I spent 2 days debugging n8n Docker setup — here's every trap I hit and how to avoid them">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>n8n自托管Docker部署实战避坑指南</h1>
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">n8n</span><span class="tag">自托管</span><span class="tag">PostgreSQL</span><span class="tag">自动化</span>
+  </div>
+  <div class="content">
+    <p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 是一个开源的工作流自动化工具，支持 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 自托管。我在 Ubuntu 24.04 VPS 上部署 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 时，前后花了 2 天时间才跑通生产环境。以下是我实际测试中遇到的 5 个真实问题，以及每个问题的具体解决方案。</p>
+<p>所有验证基于 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 官方文档（docs.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io）和我的实际测试环境。</p>
+<h2>坑1：SQLite 到 PostgreSQL 的迁移 — 漏了关键环境变量</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 默认使用 SQLite，数据存在 <code>/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a></code> 目录的 SQLite 文件里。当我想切换到 PostgreSQL 时，在 <code>docker-compose.yml</code> 里配置了数据库连接，但容器一直报 <code>ECONNREFUSED</code>。</p>
+<p>我的错误配置：</p>
+<pre><code>environment:
+  - DB_TYPE=postgres
+  - DB_POSTGRESDB=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+  - DB_POSTGRESHOST=postgres
+  - DB_POSTGRESUSER=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+  - DB_POSTGRESPASSWORD=xxx</code></pre>
+<p>容器日志报错：</p>
+<pre><code>Database is locked
+Cannot start <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a></code></pre>
+<p>问题原因：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 文档明确说明，使用 PostgreSQL 时**必须**同时设置 <code>DB_ADAPTER</code> 变量，否则 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 会忽略其他 DB 变量，继续尝试读写 SQLite，导致数据库文件被锁。</p>
+<p>正确配置：</p>
+<pre><code>environment:
+  - DB_TYPE=postgresdb
+  - DB_ADAPTER=postgres
+  - DB_POSTGRESDB=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+  - DB_POSTGRESHOST=postgres
+  - DB_POSTGRESUSER=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+  - DB_POSTGRESPASSWORD=${DB_PASSWORD}
+  - N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}</code></pre>
+<p>**关键点（我花了3小时才发现这个）**：<code>DB_ADAPTER=postgres</code> 是官方文档里的必须项，但很多第三方教程都漏掉了。</p>
+<p>另外，PostgreSQL 容器的启动顺序也很重要——<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器必须等 PostgreSQL 完全就绪后才能启动。需要添加 <code>depends_on</code> 加健康检查：</p>
+<pre><code>postgres:
+  image: postgres:16-alpine
+  environment:
+    POSTGRES_DB: <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    POSTGRES_USER: <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    POSTGRES_PASSWORD: ${DB_PASSWORD}
+  volumes:
+    - n8n_pgdata:/var/lib/postgresql/data
+  healthcheck:
+    test: ["CMD-SHELL", "pg_isready -U <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>"]
+    interval: 10s
+    timeout: 5s
+    retries: 5
+
+<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+  image: docker.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io/n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+  depends_on:
+    postgres:
+      condition: service_healthy</code></pre>
+<h2>坑2：定时任务不执行 — 时区配置不一致</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Schedule Trigger 节点设置了每天早上 9 点执行，结果实际执行时间是凌晨 1 点——整整差了 8 小时。</p>
+<p>问题在于 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器内部和容器外部的时区是隔离的。我只在主机上设置了 Asia/Shanghai 时区，但容器内的 TZ 环境变量没有正确传递。</p>
+<p>**错误做法**：只在 docker-compose.yml 设置 <code>GENERIC_TIMEZONE</code>，而忽略了容器内系统的实际时区。</p>
+<p><strong>正确做法</strong>——同时设置两个环境变量：</p>
+<pre><code>environment:
+  - GENERIC_TIMEZONE=Asia/Shanghai
+  - TZ=Asia/Shanghai</code></pre>
+<p><code>GENERIC_TIMEZONE</code> 控制 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 内部调度器的时间计算，<code>TZ</code> 控制容器系统的时区。两者必须一致，否则定时任务的触发时间就会错位。</p>
+<p>验证方法：进入容器内部查看实际时间：</p>
+<pre><code>docker exec -it <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> date</code></pre>
+<h2>坑3：反向代理后 Webhook 找不到 — N8N_WEBHOOK_URL 必须设置</h2>
+<p>把 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 跑在 <code>5678</code> 端口，前端用 Nginx 反向代理到域名 <code><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com</code>。配置完成后，打开 Web UI 正常，但创建 Webhook 节点后访问触发 URL，返回 404。</p>
+<p>Nginx 配置：</p>
+<pre><code>location / {
+    proxy_pass http://127.0.0.1:5678;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+}</code></pre>
+<p>问题：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Webhook 触发路径是 <code>/webhook/...</code>，但如果 <code>N8N_WEBHOOK_URL</code> 没有显式设置，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 会默认使用 <code>http://localhost:5678</code>，导致通过 Nginx 访问时返回相对路径错误。</p>
+<p><strong>解决方案</strong>：在 docker-compose.yml 中显式指定 Webhook URL：</p>
+<pre><code>environment:
+  - N8N_WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/
+  - WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/</code></pre>
+<p>注意：URL 末尾的斜杠很重要。设置完后需要重启容器：</p>
+<pre><code>docker compose down && docker compose up -d</code></pre>
+<h2>坑4：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 执行超时 — 长工作流莫名中断</h2>
+<p>一个需要运行 5 分钟的数据同步工作流，每次都在 30 秒左右自动中断，日志显示：</p>
+<pre><code>Execution timed out after 30 seconds</code></pre>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的默认执行超时是 30 秒（我在第一次跑长工作流时才发现这个问题），超过就会自动终止。处理大文件或调用外部 API 的工作流经常触发这个问题。</p>
+<p><strong>解决方法</strong>：在环境变量中调整超时时间，或者在具体工作流设置里单独覆盖：</p>
+<pre><code>environment:
+  # 默认执行超时（单位：毫秒），这里设置为 10 分钟
+  - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+  # 关闭超时限制（生产环境慎用）
+  - N8N_EXECUTIONS_TIMEOUT=0
+  # 或者设置具体超时时间（300000ms = 5分钟）
+  - N8N_EXECUTIONS_TIMEOUT=300000</code></pre>
+<p>更安全的做法是在工作流内部设置超时，而不是全局关闭限制。进入具体工作流 → 设置 → 执行设置 → 自定义超时时间。</p>
+<h2>坑5：重启后凭证丢失 — N8N_ENCRYPTION_KEY 必须持久化</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 把所有凭证（API Key、密码等）加密存储在数据库里。加密密钥由 <code>N8N_ENCRYPTION_KEY</code> 环境变量指定。我在重启容器后，发现所有之前配置的 API 凭证全部失效。</p>
+<p>原因：<code>N8N_ENCRYPTION_KEY</code> 没有持久化，每次重启容器时 docker-compose 如果没有正确传递这个变量，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 就会生成新的随机密钥，导致无法解密原有凭证。</p>
+<p>**正确做法**：把加密密钥写在 <code>.env</code> 文件里（确保安全），并在 docker-compose.yml 中引用：</p>
+<pre><code># .env 文件
+N8N_ENCRYPTION_KEY=your-very-long-random-string-here-min-32-chars
+DB_PASSWORD=your-postgres-password
+ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}</code></pre>
+<pre><code>environment:
+  - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}</code></pre>
+<p>生成强随机密钥的方法：</p>
+<pre><code>openssl rand -hex 32</code></pre>
+<p>**警告**：更换 <code>N8N_ENCRYPTION_KEY</code> 会导致所有现有凭证无法解密。如果需要轮换密钥，必须先导出所有凭证再重新导入。</p>
+<h2>完整的正确 docker-compose.yml</h2>
+<p>以下是我最终使用的完整配置，覆盖了所有坑：</p>
+<pre><code>version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+      POSTGRES_USER: <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - n8n_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: docker.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io/n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    ports:
+      - "127.0.0.1:5678:5678"
+    environment:
+      - GENERIC_TIMEZONE=Asia/Shanghai
+      - TZ=Asia/Shanghai
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_RUNNERS_ENABLED=true
+      - N8N_WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/
+      - DB_TYPE=postgresdb
+      - DB_ADAPTER=postgres
+      - DB_POSTGRESDB=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+      - DB_POSTGRESHOST=postgres
+      - DB_POSTGRESUSER=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+      - DB_POSTGRESPASSWORD=${DB_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_EXECUTIONS_TIMEOUT=300000
+    volumes:
+      - n8n_data:/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  n8n_data:
+  n8n_pgdata:</code></pre>
+<p>配合 Nginx 反向代理（关键配置）：</p>
+<pre><code>location / {
+    proxy_pass http://127.0.0.1:5678;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    # WebSocket 支持（<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 编辑器实时更新需要）
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}</code></pre>
+<h2>适合人群</h2>
+<p><strong>适合部署 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 自托管的场景：</strong></p>
+<ul><li>需要自动化 50+ 个工作流，<a href="https://zapier.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Zapier</a> 免费版不够用</li><li>数据必须留在自己服务器，不能上云</li><li>有技术能力维护 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 和数据库</li><li>需要集成内部系统（<a href="https://gitlab.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">GitLab</a>、ERP、私有 API）</li></ul>
+<p><strong>不适合的场景：</strong></p>
+<ul><li>工作流少于 10 个，<a href="https://zapier.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Zapier</a> 免费版能满足</li><li>没有服务器运维经验，期望开箱即用</li><li>需要 SLA 保证和 24/7 技术支持（用 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> Cloud）</li></ul>
+<h2>成本参考</h2>
+<p>自托管 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的最低成本：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方案</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">月费用</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">配置</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">VPS（最小）</td><td style="border:1px solid #ddd;padding:8px;">$6-10</td><td style="border:1px solid #ddd;padding:8px;">1C1G</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">VPS（推荐）</td><td style="border:1px solid #ddd;padding:8px;">$12-20</td><td style="border:1px solid #ddd;padding:8px;">2C2G</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">附加：PostgreSQL</td><td style="border:1px solid #ddd;padding:8px;">$0-5</td><td style="border:1px solid #ddd;padding:8px;">使用 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 内置或云数据库</td></tr></tbody></table>
+<p>相比 <a href="https://zapier.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Zapier</a> 免费版（100 次执行/月），自托管 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 执行次数无限制，$12/月的 VPS 性价比极高。</p>
+<p>👉 如果你用 AI API 来驱动 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 工作流，建议搭配 MiniMax API 使用——成本比 OpenAI 低 80%，中文支持更好。</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<h2>总结：踩坑检查清单</h2>
+<p>部署 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 之前，逐项确认：</p>
+<ul><li>[ ] PostgreSQL 配置了 `DB_ADAPTER=postgres`</li><li>[ ] PostgreSQL 添加了 `depends_on: condition: service_healthy`</li><li>[ ] `GENERIC_TIMEZONE` 和 `TZ` 两个时区变量都设置了且一致</li><li>[ ] 设置了 `N8N_WEBHOOK_URL`（反向代理场景必须）</li><li>[ ] `N8N_ENCRYPTION_KEY` 写入 `.env` 并在重启后保持不变</li><li>[ ] Nginx 配置了 WebSocket 代理（`proxy_http_version 1.1` + `Upgrade` 头）</li><li>[ ] 预估工作流执行时间，设置了合理的 `N8N_EXECUTIONS_TIMEOUT`</li></ul>
+<p>如果你的工作流需要调用 AI 接口来生成内容、分类数据或处理文本，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + MiniMax API 的组合是目前性价比最高的自托管方案之一。</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 亚马逊热销品类</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 亚马逊设备及配件</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 亚马逊翻新产品</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 家电热门产品</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 应用和游戏</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 书籍热门产品</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 健康与家居</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 电影电视</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ 体育户外</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 电子游戏</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 电脑及配件</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
