@@ -129,18 +129,39 @@ def push_file(filepath, content, message=None):
         return False
 
 def find_articles_to_publish():
-    """扫描 yaohehe.github.io/archive/ 找出当天需要发布的文章"""
+    """扫描 yaohehe.github.io/archive/ 找出未推送到 GitHub 的所有文章
+    
+    修复：不再只扫描当天目录，而是扫描所有 archive 子目录，
+    只排除 git 索引中已有的文件（避免重复推送整个历史）。
+    """
+    import subprocess
     articles = []
-    today = datetime.now().strftime('%Y-%m-%d')
     archive_dir = os.path.join(YAOHEHE_DIR, "archive")
 
-    # 扫描当天目录
-    today_dir = os.path.join(archive_dir, today)
-    if os.path.isdir(today_dir):
-        for f in os.listdir(today_dir):
-            if f.endswith('.html') and '-en.html' not in f:
-                fp = os.path.join(today_dir, f)
-                articles.append((f"archive/{today}/{f}", fp))
+    # 获取 git 已跟踪的文件列表（相对于仓库根目录）
+    tracked = set()
+    result = subprocess.run(
+        ['git', 'ls-files', 'archive/'],
+        cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=10
+    )
+    for line in result.stdout.strip().split('\n'):
+        if line.strip():
+            tracked.add(line.strip())
+
+    # 扫描所有 archive 子目录
+    for sub_dir in os.listdir(archive_dir):
+        sub_path = os.path.join(archive_dir, sub_dir)
+        if not os.path.isdir(sub_path):
+            continue
+        for f in os.listdir(sub_path):
+            if not f.endswith('.html') or f.startswith('.'):
+                continue
+            remote_path = f"archive/{sub_dir}/{f}"
+            # 跳过 git 已跟踪的文件
+            if remote_path in tracked:
+                continue
+            fp = os.path.join(sub_path, f)
+            articles.append((remote_path, fp))
 
     return articles
 

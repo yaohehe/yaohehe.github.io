@@ -326,7 +326,8 @@ print("\n" + "=" * 60)
 print("🚀 Phase 5: 同步文章到 blog 仓库 + 发布")
 print("=" * 60)
 
-# 关键修复：把 drafts 里的文章复制到 yaohehe.github.io/archive/（目标仓库）
+# 修复：把 drafts 里的文章复制到 yaohehe.github.io/archive/（目标仓库）
+# 复制前先清理同名文件（存在于任何 archive/ 子目录），避免同一文章多副本乱飞
 import shutil as _shutil
 YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 drafts_dir = f"{WORKSPACE}/drafts"
@@ -336,12 +337,21 @@ if os.path.exists(drafts_dir):
     draft_files = [f for f in os.listdir(drafts_dir) if f.endswith('.html') and not f.startswith('.')]
     if draft_files:
         os.makedirs(target_archive, exist_ok=True)
+        # 收集所有 archive 子目录中已存在的同名文件
+        archive_base = os.path.join(YAOHEHE_DIR, "archive")
         for f in draft_files:
+            # 检查是否已在其他日期目录存在同名文件，有则删旧
+            for sub_dir in os.listdir(archive_base):
+                existing = os.path.join(archive_base, sub_dir, f)
+                if sub_dir != today_str and os.path.exists(existing):
+                    os.remove(existing)
+                    print(f"  🗑 删除旧副本: archive/{sub_dir}/{f}")
+            # 复制到当天目录
             src = os.path.join(drafts_dir, f)
             dst = os.path.join(target_archive, f)
             _shutil.copy2(src, dst)
-            print(f"  📋 同步: {f} -> {target_archive}/")
-        print(f"  ✅ 已同步 {len(draft_files)} 篇到 {target_archive}")
+            print(f"  📋 同步: {f} -> archive/{today_str}/")
+        print(f"  ✅ 已同步 {len(draft_files)} 篇到 archive/{today_str}/")
 
 run_cmd(f"python3 {WORKSPACE}/publish-articles.py", timeout=300)
 
