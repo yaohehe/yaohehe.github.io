@@ -25,12 +25,12 @@ var _hmt = _hmt || [];
 </script>'''
 
 GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
 <script>
 window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
-gtag('config', 'G-YQZQY6XDXN');
+gtag('config', 'G-JX42K3RMSC');
 </script>'''
 
 CLARITY = '''<!-- Microsoft Clarity -->
