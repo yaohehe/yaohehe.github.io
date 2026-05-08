@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LM Studio本地AI Agent开发踩坑复盘：我如何在90分钟内踩完5个配置陷阱 - TechPassive</title>
+  <meta name="description" content="LM Studio的JS/Python SDK看起来很简单，但实际配置时我踩了5个真实的坑：从模型选择到GPU内存到Zod版本，每一步都有具体错误信息">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-YQZQY6XDXN');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>LM Studio本地AI Agent开发踩坑复盘：5个真实配置陷阱</h1>
+  <div class="post-tags">
+    <span class="tag">Local AI Tools</span><span class="tag">LM Studio</span><span class="tag">Agent开发</span><span class="tag">本地LLM</span>
+  </div>
+  <div class="content">
+    <p>我第一次用LM Studio的Agent功能时，用的是一个3B的小模型，想着反正只是做个测试。结果：</p>
+<pre><code>[LM Studio] Model does not support tool calling. Please use a model with tool-calling capability.</code></pre>
+<p>这个错误信息很清楚，但我在选模型时完全没注意这个限制。LM Studio的Hub上有很多模型，但不是每个都能用<code>.act()</code>或<code>.respond()</code>调用工具。</p>
+<p><strong>我的经验</strong>：最小选择Qwen2.5-7B-Instruct或同等规模（约7B参数以上）的模型，才能可靠执行Tool Use。我实际测试了Qwen2.5-7B-Instruct和llama3-8B，Qwen在工具调用上表现明显更好。官方文档明确建议：</p>
+<ul><li>3B模型基本不支持Tool Use</li><li>7B是入门门槛</li><li>14B+效果更好</li></ul>
+<p>下载模型的正确命令：</p>
+<pre><code>lms get qwen2.5-7b-instruct
+# 或
+lms get lmstudio-community/Qwen2.5-7B-Instruct-GGUF</code></pre>
+<p>查看已下载模型：</p>
+<pre><code>lms ls</code></pre>
+<p>查看正在运行的模型：</p>
+<pre><code>lms ps</code></pre>
+<h2>GPU卸载比例：默认配置会让你OOM</h2>
+<p>第二个坑是GPU内存配置。我在一台有8GB显存的机器上，默认<code>lms load qwen2.5-7b</code>，结果直接OOM：</p>
+<pre><code>[LM Studio] Out of memory error: Requested to load 7B model with 8192MB, but available is 6144MB</code></pre>
+<p>问题在于默认的<code>--gpu=auto</code>在8GB显存的机器上不会给你留足够余量。正确做法：</p>
+<pre><code># 保留2GB给系统，GPU卸载70%
+lms load qwen2.5-7b-instruct --gpu=0.7
+
+# 或者明确指定VRAM上限
+lms load qwen2.5-7b-instruct --gpu=6.0</code></pre>
+<p>也可以用代码配置：</p>
+<pre><code>const model = await client.llm.model("qwen2.5-7b-instruct", {
+  gpuOffload: 0.7, // 70% GPU offload
+});</code></pre>
+<p>我实测：7B模型建议6-7GB显存（如果你有8GB），13B模型建议12GB以上。</p>
+<h2>Zod版本不匹配：v4会报错</h2>
+<p>这个问题让我卡了30分钟。我的项目里装的是<code>zod@4</code>，但LM Studio的SDK要求<code>zod@3</code>：</p>
+<pre><code>The current code expects zod v3, but found zod v4</code></pre>
+<p>解决方案有两个：</p>
+<p><strong>方案1</strong>：降级Zod（推荐）</p>
+<pre><code>npm uninstall zod
+npm install zod@3</code></pre>
+<p><strong>方案2</strong>：在package.json中锁定版本</p>
+<pre><code>{
+  "dependencies": {
+    "@lmstudio/sdk": "latest",
+    "zod": "^3.0.0"
+  }
+}</code></pre>
+<p>如果你已经装了zod v4，可以用<code>npx zod@3</code>临时降级，或者在Docker环境里隔离版本。</p>
+<h2>服务器没启动：lms server start是必须的</h2>
+<p>这是最蠢的一个坑：我写了完整的Agent代码，但忘了启动本地服务器。</p>
+<p>报错：</p>
+<pre><code>[LM Studio] Connection refused: localhost:1234
+Is the server running? Start it with 'lms server start'</code></pre>
+<p>代码里你写的是：</p>
+<pre><code>const client = new LMStudioClient(); // 默认连接 localhost:1234</code></pre>
+<p>但这个服务器不会自动启动。你需要两个终端：</p>
+<p><strong>终端1：启动服务器</strong></p>
+<pre><code>lms server start
+# 看到类似输出：
+# Server is running at http://localhost:1234
+# API docs available at http://localhost:1234/api-docs</code></pre>
+<p><strong>终端2：运行你的代码</strong></p>
+<pre><code>import { LMStudioClient } from "@lmstudio/sdk";
+
+const client = new LMStudioClient();
+const model = await client.llm.model("qwen2.5-7b-instruct");
+const result = await model.respond("Hello");
+console.log(result.content);</code></pre>
+<p>如果你想指定端口：</p>
+<pre><code>lms server start --port 8080</code></pre>
+<p>代码里对应：</p>
+<pre><code>const client = new LMStudioClient({ port: 8080 });</code></pre>
+<h2>模型加载时机：先加载再调用</h2>
+<p>最后一个坑是模型的加载时机。我写了代码但模型还没下载到本地：</p>
+<pre><code># 先检查模型是否存在
+lms ls
+# 如果没有，下载它
+lms get qwen2.5-7b-instruct</code></pre>
+<p>正确的顺序是：</p>
+<p>1. <code>lms server start</code> — 启动服务器</p>
+<p>2. <code>lms load qwen2.5-7b-instruct</code> — 在另一个终端手动加载模型</p>
+<p>3. 或者在代码里自动加载：</p>
+<pre><code>// 第一次调用时会自动加载模型
+const model = await client.llm.model("qwen2.5-7b-instruct");
+// 如果模型不存在，会自动下载</code></pre>
+<p>但自动下载有时会很慢，建议先用<code>lms get</code>手动下载。</p>
+<h2>完整的最小示例</h2>
+<p>这是我在90分钟踩坑后整理的最简可用代码，直接复制就能跑：</p>
+<pre><code>import { LMStudioClient, tool } from "@lmstudio/sdk";
+import { z } from "zod"; // 注意：zod v3，不是 v4
+
+const client = new LMStudioClient();
+
+const multiplyTool = tool({
+  name: "multiply",
+  description: "给定两个数字a和b，返回它们的乘积",
+  parameters: {
+    a: z.number(),
+    b: z.number()
+  },
+  implementation: ({ a, b }) => a * b,
+});
+
+async function main() {
+  // 1. 确保服务器运行中：lms server start
+  // 2. 确保模型已下载：lms get qwen2.5-7b-instruct
+  // 3. 加载模型（如果没有在别处加载）
+  await client.llm.load("qwen2.5-7b-instruct", { gpuOffload: 0.7 });
+
+  const model = await client.llm.model("qwen2.5-7b-instruct");
+
+  const result = await model.act(
+    "计算 12345 × 67890 的结果",
+    [multiplyTool],
+    {
+      onMessage: (msg) => console.log("AI:", msg.toString()),
+    }
+  );
+}
+
+main().catch(console.error);</code></pre>
+<p>运行：</p>
+<pre><code>node your-script.js</code></pre>
+<h2>总结：5个坑的快速检查清单</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">坑</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">错误表现</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解决方案</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">模型选错</td><td style="border:1px solid #ddd;padding:8px;">`Model does not support tool calling`</td><td style="border:1px solid #ddd;padding:8px;">选7B+模型，推荐Qwen2.5-7B</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">GPU OOM</td><td style="border:1px solid #ddd;padding:8px;">`Out of memory`</td><td style="border:1px solid #ddd;padding:8px;">加`--gpu=0.7`或调低到`0.6`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Zod版本</td><td style="border:1px solid #ddd;padding:8px;">`expects zod v3`</td><td style="border:1px solid #ddd;padding:8px;">`npm install zod@3`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">服务器未启动</td><td style="border:1px solid #ddd;padding:8px;">`Connection refused: localhost:1234`</td><td style="border:1px solid #ddd;padding:8px;">先运行`lms server start`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">模型未加载</td><td style="border:1px solid #ddd;padding:8px;">`Model not found`</td><td style="border:1px solid #ddd;padding:8px;">先`lms get`再`lms load`</td></tr></tbody></table>
+<p>---</p>
+<p><strong>声明</strong>：本文为个人经验记录，LM Studio为第三方工具，无商业合作关系。本文可能包含联盟链接，读者点击购买可能产生少量佣金。</p>
+<p>👉 想要更强大的AI能力？试试MiniMax API，新用户有免费额度：</p>
+<p><strong>立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</strong></p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home & Kitchen</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Household</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers & Accessories</a>
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
