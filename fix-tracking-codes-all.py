@@ -10,12 +10,12 @@ import glob
 BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 
 GA_CODE = '''<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
 <script>
 window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
-gtag('config', 'G-YQZQY6XDXN');
+gtag('config', 'G-JX42K3RMSC');
 </script>'''
 
 CLARITY_CODE = '''<!-- Microsoft Clarity -->
@@ -38,7 +38,7 @@ var _hmt = _hmt || [];
 })();
 </script>'''
 
-GA_ID = "G-YQZQY6XDXN"
+GA_ID = "G-JX42K3RMSC"
 CLARITY_ID = "wdy3avd2j9"
 BAIDU_ID = "5217d6a8f8299c6b114858ac6e719e2b"
 

@@ -13,12 +13,12 @@ BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 
 # 统计代码
 GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
-<script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
 <script>
 window.dataLayer = window.dataLayer || [];
 function gtag(){dataLayer.push(arguments);}
 gtag('js', new Date());
-gtag('config', 'G-YQZQY6XDXN');
+gtag('config', 'G-JX42K3RMSC');
 </script>'''
 CLARITY = '''<!-- Microsoft Clarity -->
 <script type="text/javascript">
@@ -66,12 +66,12 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
     </style>
 <meta name="google-site-verification" content="aRTYFCdyaEkhMFAdwmfx53qD9csq3FcWdJvnRXx5QUQ" />
     <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
     <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-    gtag('config', 'G-YQZQY6XDXN');
+    gtag('config', 'G-JX42K3RMSC');
     </script>
     <!-- Microsoft Clarity -->
     <script type="text/javascript">
@@ -135,12 +135,12 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         .affiliate-disclaimer { background: #fff8e1; padding: 15px; border-radius: 8px; margin-bottom: 30px; font-size: 0.9em; color: #666; }
     </style>
     <!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
     <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-    gtag('config', 'G-YQZQY6XDXN');
+    gtag('config', 'G-JX42K3RMSC');
     </script>
     <!-- Microsoft Clarity -->
     <script type="text/javascript">

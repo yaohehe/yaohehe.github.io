@@ -30,12 +30,12 @@ REPO = "yaohehe/yaohehe.github.io"
 
 # 统计代码常量（防止 git pull 覆盖后注入）
 GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-YQZQY6XDXN"></script>
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
     <script>
     window.dataLayer = window.dataLayer || [];
     function gtag(){dataLayer.push(arguments);}
     gtag('js', new Date());
-    gtag('config', 'G-YQZQY6XDXN');
+    gtag('config', 'G-JX42K3RMSC');
     </script>'''
 
 CLARITY_STATS = '''<!-- Microsoft Clarity -->
@@ -218,7 +218,7 @@ def verify_and_fix_tracking_codes():
         with open(fpath, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        has_ga = 'G-YQZQY6XDXN' in content
+        has_ga = 'G-JX42K3RMSC' in content
         has_clarity = 'wdy3avd2j9' in content
         has_baidu = '5217d6a8f8299c6b114858ac6e719e2b' in content
 
