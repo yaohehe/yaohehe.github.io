@@ -249,8 +249,26 @@ def verify_and_fix_tracking_codes():
         log("✅ 统计代码验证通过")
     return True
 
+def push_to_backup():
+    """发布前备份：推送当前 HEAD 到 backup-main 分支"""
+    log("📦 正在备份当前状态到 backup-main...")
+    try:
+        r = subprocess.run(
+            ['git', 'push', 'origin', 'main:backup-main', '-f'],
+            cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=60
+        )
+        if r.returncode == 0:
+            log(f"✅ 备份完成（backup-main 已更新）")
+        else:
+            log(f"⚠️ 备份失败: {r.stderr[:200]}")
+    except Exception as e:
+        log(f"⚠️ 备份异常: {e}")
+
 def main():
     log("=== 发布脚本开始 ===")
+
+    # Step 0: 发布前备份
+    push_to_backup()
 
     # Step 1: 运行索引同步（更新 index.html, index-en.html, sitemap.xml）
     if not run_update_index():
