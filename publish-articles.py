@@ -161,7 +161,8 @@ def find_articles_to_publish():
             if remote_path in tracked:
                 continue
             fp = os.path.join(sub_path, f)
-            articles.append((remote_path, fp))
+            # 关键修复：推送到根目录而非 archive/，确保文章直接服务于根路径
+            articles.append((f, fp))
 
     return articles
 
