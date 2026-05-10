@@ -297,8 +297,25 @@ def main():
         fpath = os.path.join(YAOHEHE_DIR, fname)
         if os.path.exists(fpath):
             with open(fpath, 'rb') as f:
-                content = f.read()
-            push_file(fname, content)
+                c = f.read()
+            push_file(fname, c)
+
+    # Step 6: 提交新文章到 IndexNow（快速让 Bing/Yandex 索引）
+    if articles:
+        try:
+            import subprocess as sub
+            r = sub.run(
+                ['python3', 'submit-indexnow.py'] + [a[0] for a in articles],
+                capture_output=True, text=True, timeout=60,
+                cwd=YAOHEHE_DIR
+            )
+            if r.returncode == 0 and 'Submitted' in r.stdout:
+                log("✅ IndexNow 提交成功")
+            else:
+                log(f"⚠️ IndexNow: {r.stdout[:100]}")
+        except Exception as e:
+            log(f"⚠️ IndexNow 提交失败: {e}")
+
 
     # Step 7: 验证并修复统计代码（防止 git pull 覆盖导致丢失）
     if not verify_and_fix_tracking_codes():
