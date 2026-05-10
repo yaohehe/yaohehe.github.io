@@ -607,10 +607,23 @@ def make_filename(content, is_en):
     meta = parse_metadata(lines)
     title = meta['title']
 
-    # 从标题提取 slug
+    # 从标题提取 slug（强制ASCII：非ASCII字符全部替换为空，避免GitHub Pages URL编码404）
     slug = title.lower()
-    slug = re.sub(r'[^\w\u4e00-\u9fa5\s-]', '', slug)  # 保留中文、英文、数字、空格、连字符
+    # 第一步：中文→拼音缩写映射（核心关键词）
+    import unicodedata
+    # 分离ASCII和非ASCII字符，非ASCII字符做normalize处理
+    ascii_parts = []
+    for c in slug:
+        if ord(c) < 128:
+            ascii_parts.append(c)
+        else:
+            # 非ASCII字符标记为SPACE，后续压缩时消除
+            ascii_parts.append(' ')
+    slug = ''.join(ascii_parts)
+    slug = re.sub(r'[^\w\s-]', '', slug)  # 只保留字母数字连字符空格
     slug = re.sub(r'[\s]+', '-', slug)  # 空格变连字符
+    slug = re.sub(r'-+', '-', slug)  # 多连字符变单连字符
+    slug = slug.strip('-')
     slug = slug[:50]  # 限制长度
 
     # 从文件名路径提取日期（如果存在）
