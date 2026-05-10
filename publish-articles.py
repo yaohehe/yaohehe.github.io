@@ -141,7 +141,7 @@ def find_articles_to_publish():
     # 获取 git 已跟踪的文件列表（相对于仓库根目录）
     tracked = set()
     result = subprocess.run(
-        ['git', 'ls-files', 'archive/'],
+        ['git', 'ls-files'],
         cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=10
     )
     for line in result.stdout.strip().split('\n'):
@@ -156,13 +156,12 @@ def find_articles_to_publish():
         for f in os.listdir(sub_path):
             if not f.endswith('.html') or f.startswith('.'):
                 continue
-            remote_path = f"archive/{sub_dir}/{f}"
-            # 跳过 git 已跟踪的文件
-            if remote_path in tracked:
+            # 跳过 git 已跟踪的文件（已发布到 GitHub 的不重复推送）
+            if f in tracked:
                 continue
             fp = os.path.join(sub_path, f)
-            # 关键修复：推送到根目录而非 archive/，确保文章直接服务于根路径
-            articles.append((f, fp))
+            remote_path = f  # 根目录（非 archive/），确保文章直接服务根路径 URL
+            articles.append((remote_path, fp))
 
     return articles
 
