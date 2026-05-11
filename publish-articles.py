@@ -105,7 +105,7 @@ def get_file_sha(path):
     return None
 
 def push_file(filepath, content, message=None):
-    """通过 GitHub API 推送单个文件"""
+    """通过 GitHub API 推送单个文件，带3次指数退避重试"""
     url = f"https://api.github.com/repos/{REPO}/contents/{filepath}"
     if message is None:
         message = f"auto: publish {os.path.basename(filepath)}"
@@ -116,17 +116,36 @@ def push_file(filepath, content, message=None):
     sha = get_file_sha(filepath)
     if sha:
         data["sha"] = sha
-    try:
-        r = requests.put(url, headers=HEADERS, json=data, timeout=30)
-        if r.status_code in (200, 201):
-            log(f"✅ {filepath}")
-            return True
-        else:
-            log(f"❌ {filepath}: {r.status_code} {r.text[:200]}")
-            return False
-    except Exception as e:
-        log(f"❌ {filepath}: {type(e).__name__}: {e}")
-        return False
+
+    # 重试策略：指数退避（1s → 2s → 4s）
+    delays = [1, 2, 4]
+    last_error = None
+    for attempt, delay in enumerate(delays, 1):
+        try:
+            r = requests.put(url, headers=HEADERS, json=data, timeout=30)
+            if r.status_code in (200, 201):
+                log(f"✅ {filepath}")
+                return True
+            elif r.status_code == 409:
+                # 409 = SHA冲突，先获取最新SHA再重试
+                sha = get_file_sha(filepath)
+                if sha:
+                    data["sha"] = sha
+                    continue
+            else:
+                last_error = f"{r.status_code} {r.text[:100]}"
+                log(f"❌ [{attempt}] {filepath}: {last_error}")
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e}"
+            log(f"❌ [{attempt}] {filepath}: {last_error}")
+
+        if attempt < len(delays):
+            log(f"  ⏳ {delay}s后重试...")
+            import time
+            time.sleep(delay)
+
+    log(f"❌ {filepath}: 3次重试全部失败 ({last_error})")
+    return False
 
 def find_articles_to_publish():
     """扫描 yaohehe.github.io/archive/ 找出未推送到 GitHub 的所有文章
@@ -249,19 +268,28 @@ def verify_and_fix_tracking_codes():
     return True
 
 def push_to_backup():
-    """发布前备份：推送当前 HEAD 到 backup-main 分支"""
-    log("📦 正在备份当前状态到 backup-main...")
+    """发布前备份：异步推送当前 HEAD 到 backup-main 分支，不阻塞流水线"""
+    log("📦 正在备份当前状态到 backup-main（后台）...")
+    import subprocess
     try:
-        r = subprocess.run(
+        # 异步后台推送，不等待结果
+        proc = subprocess.Popen(
             ['git', 'push', 'origin', 'main:backup-main', '-f'],
-            cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=60
+            cwd=YAOHEHE_DIR, stdout=subprocess.PIPE, stderr=subprocess.PIPE
         )
-        if r.returncode == 0:
+        # 立即返回，不卡住流水线（最多等5秒看结果）
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            log("📦 备份已后台运行，不等待")
+            return
+        if proc.returncode == 0:
             log(f"✅ 备份完成（backup-main 已更新）")
         else:
-            log(f"⚠️ 备份失败: {r.stderr[:200]}")
+            log(f"⚠️ 备份失败（不影响主流程）")
     except Exception as e:
-        log(f"⚠️ 备份异常: {e}")
+        log(f"⚠️ 备份异常（不影响主流程）: {e}")
 
 def main():
     log("=== 发布脚本开始 ===")
@@ -285,12 +313,15 @@ def main():
 
     # Step 4: 推送文章文件
     pushed = 0
+    failed_files = []  # 收集推送失败的文件，用于兜底恢复
     for remote_path, local_path in articles:
         if os.path.exists(local_path):
             with open(local_path, 'rb') as f:
                 content = f.read()
             if push_file(remote_path, content):
                 pushed += 1
+            else:
+                failed_files.append((remote_path, local_path))
 
     # Step 5: 推送 index + sitemap
     for fname in ['index.html', 'index-en.html', 'sitemap.xml']:
@@ -322,10 +353,28 @@ def main():
         log("⚠️ 统计代码修复失败，重试...")
         verify_and_fix_tracking_codes()
 
+    if failed_files:
+        log(f"⚠️ {len(failed_files)} 篇文章推送失败，触发自动兜底...")
+        recovery_scripts = [
+            f"python3 {YAOHEHE_DIR}/push-recovery.py",
+            f"python3 {YAOHEHE_DIR}/push-batch.py"
+        ]
+        for script in recovery_scripts:
+            try:
+                r = subprocess.run(script, shell=True, capture_output=True, text=True, timeout=120,
+                                   cwd=YAOHEHE_DIR)
+                if r.returncode == 0 and r.stdout:
+                    log(f"🩹 兜底 {script} 输出: {r.stdout[:200]}")
+                    break
+                else:
+                    log(f"⚠️ 兜底 {script}: {r.stderr[:100] if r.stderr else r.stdout[:100]}")
+            except Exception as e:
+                log(f"⚠️ 兜底异常 {script}: {e}")
+
     if pushed == 0 and not articles:
         log("📭 无新文章待发布")
     elif pushed == 0:
-        log(f"❌ 推送失败：{len(articles)} 篇文章全部失败")
+        log(f"❌ 推送失败：{len(articles)} 篇文章全部失败，已尝试兜底")
         sys.exit(1)
 
     log(f"✅ 发布完成 | 文章：{pushed}")
