@@ -117,6 +117,16 @@ def push_file(filepath, content, message=None):
     if sha:
         data["sha"] = sha
 
+    # 同时写入本地根目录（保持git索引同步，文章能在GitHub Pages根路径访问）
+    local_path = os.path.join(YAOHEHE_DIR, filepath)
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    with open(local_path, 'wb') as f_out:
+        f_out.write(content)
+    try:
+        subprocess.run(['git', 'add', filepath], cwd=YAOHEHE_DIR, capture_output=True, timeout=10)
+    except Exception:
+        pass
+
     # 重试策略：指数退避（1s → 2s → 4s）
     delays = [1, 2, 4]
     last_error = None
