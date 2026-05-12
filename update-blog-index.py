@@ -301,7 +301,7 @@ def main():
     en_articles = []
 
     for filepath in html_files:
-        filename = os.path.basename(filepath)  # 根目录优先：去除 archive/ 前缀
+        filename = filepath.replace(BLOG_DIR + '/', '')  # keep archive/ prefix
         date = get_date_from_filename(filename)
         if not date:
             continue
