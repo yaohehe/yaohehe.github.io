@@ -34,16 +34,20 @@ for sub in sorted(os.listdir(archive_dir)):
     sp = os.path.join(archive_dir, sub)
     if not os.path.isdir(sp): continue
     for f in sorted(os.listdir(sp)):
-        if f.endswith('.html') and f not in tracked:
-            files.append((f, os.path.join(sp, f)))
+        if f.endswith('.html'):
+            full_path = os.path.join(sub, f)  # 完整路径，避免 basename 重复导致的误判
+            if full_path not in tracked:
+                files.append((sub, f, os.path.join(sp, f)))
 
 print(f"Total: {len(files)}")
 ok, fail = 0, []
-for i, (fname, fpath) in enumerate(files):
+for i, (sub, fname, fpath) in enumerate(files):
+    # 用完整路径推送（如 archive/2026-05-15/2026-05-15-article.html），避免重复文件名冲突
+    remote_path = os.path.join(sub, fname)
     with open(fpath, 'rb') as fp: c = fp.read()
-    success, code = push_file(fname, c)
+    success, code = push_file(remote_path, c)
     if success: ok += 1
-    else: fail.append((fname, code))
+    else: fail.append((remote_path, code))
     if (i+1) % 10 == 0: print(f"[{i+1}/{len(files)}] ok={ok}")
 
 print(f"DONE: {ok}/{len(files)} ok, {len(fail)} failed")

@@ -61,24 +61,29 @@ for sub in sorted(os.listdir(archive_dir)):
     if not os.path.isdir(sub_path):
         continue
     for f in sorted(os.listdir(sub_path)):
-        if f.endswith('.html') and f not in api_files:
-            files_to_push.append((f, os.path.join(sub_path, f)))
+        if f.endswith('.html'):
+            full_path = os.path.join(sub, f)  # 完整路径，避免 basename 重复导致的误判
+            if full_path not in api_files:
+                files_to_push.append((sub, f, os.path.join(sub_path, f)))
 
 print(f"📄 待推送: {len(files_to_push)} 篇")
 
 ok, fail = 0, []
 total = len(files_to_push)
-for i, (fname, fpath) in enumerate(files_to_push):
-    success, code = push_one(fname, fpath)
+for i, (sub, fname, fpath) in enumerate(files_to_push):
+    # 用完整路径推送（如 archive/2026-05-15/2026-05-15-article.html），避免重复文件名冲突
+    remote_path = os.path.join(sub, fname)
+    with open(fpath, 'rb') as fp: c = fp.read()
+    success, code = push_one(remote_path, c)
     if success:
         ok += 1
     else:
-        fail.append((fname, code))
+        fail.append((remote_path, code))
     if (i+1) % 20 == 0 or success:
-        print(f"[{i+1}/{total}] {'✅' if success else '❌'} {fname[:40]}")
+        print(f"[{i+1}/{total}] {'✅' if success else '❌'} {remote_path[:60]}")
 
 print(f"\n✅ 完成: {ok}/{total} 成功")
 if fail:
     print(f"❌ 失败 {len(fail)} 篇:")
-    for fname, code in fail[:5]:
-        print(f"  {fname}: {code}")
+    for remote_path, code in fail[:5]:
+        print(f"  {remote_path}: {code}")
