@@ -186,7 +186,8 @@ def find_articles_to_publish():
             if not f.endswith('.html') or f.startswith('.'):
                 continue
             # 跳过 git 已跟踪的文件（已发布到 GitHub 的不重复推送）
-            if f in tracked:
+            full_path = os.path.join(sub_dir, f)
+            if full_path in tracked:
                 continue
             fp = os.path.join(sub_path, f)
             remote_path = f  # 根目录（非 archive/），确保文章直接服务根路径 URL
