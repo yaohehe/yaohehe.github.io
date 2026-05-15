@@ -132,7 +132,24 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
 .back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
 
-/* 响应式设计 - 移动端适配 */
+/* TL;DR 区块样式 */
+.tldr-block { background: linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%); border: 2px solid #f0c040; border-radius: 12px; padding: 20px 24px; margin: 20px 0 30px; }
+.tldr-block h2 { color: #b7791f; margin: 0 0 15px; font-size: 1.1em; border: none; padding: 0; }
+.tldr-item { display: flex; align-items: flex-start; margin: 12px 0; gap: 10px; }
+.tldr-badge { background: #f39c12; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; white-space: nowrap; font-weight: bold; }
+.tldr-text { flex: 1; font-size: 0.95em; line-height: 1.5; }
+.tldr-cta { display: inline-block; background: #e74c3c; color: white; padding: 6px 14px; border-radius: 5px; text-decoration: none; font-size: 0.85em; font-weight: bold; white-space: nowrap; }
+.tldr-cta:hover { background: #c0392b; color: white; text-decoration: none; }
+
+/* 产品横评表格样式 */
+.product-table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 0.9em; }
+.product-table th { background: #0066cc; color: white; padding: 10px 12px; text-align: left; }
+.product-table td { padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
+.product-table tr:hover { background: #f5f5f5; }
+.product-pros { color: #27ae60; }
+.product-cons { color: #e74c3c; font-size: 0.9em; }
+
+/* 响应式设计 */
 @media (max-width: 600px) {
   body { padding: 12px; }
   h1 { font-size: 1.6em; }
@@ -520,27 +537,27 @@ def insert_affiliate_links(html_body, is_en):
 
 
 AFFILIATE_BOX_CN = '''
-<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
-  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 推荐阅读</h3>
-  <p style="margin:0 0 15px;color:#666;">以下是我们精心挑选的优质工具，使用推荐链接支持我们持续产出高质量内容：</p>
+<div style="background:linear-gradient(135deg,#fff8e1 0%,#fff3cd 100%);border:2px solid #f0c040;border-radius:12px;padding:20px 24px;margin:30px 0;">
+  <h3 style="margin:0 0 8px;color:#b7791f;">🔗 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
-    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon 云服务</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">☁️ DigitalOcean 云服务器</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⚡ Vultr 高性能 VPS</a>
+    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">📦 Amazon AWS</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''
 
 AFFILIATE_BOX_EN = '''
-<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
-  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
-  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+<div style="background:linear-gradient(135deg,#fff8e1 0%,#fff3cd 100%);border:2px solid #f0c040;border-radius:12px;padding:20px 24px;margin:30px 0;">
+  <h3 style="margin:0 0 8px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">Clicking these links to make a purchase helps support our work at no extra cost to you:</p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
-    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Amazon Web Services</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">☁️ DigitalOcean Cloud</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⚡ Vultr VPS</a>
+    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">📦 Amazon AWS</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''

@@ -210,13 +210,123 @@ def _review_single_html(html_path, lang):
 
 import json
 
+# ============================================================
+# Phase 0: AI 生成内容
+# ============================================================
+def call_ai_generate(topic_cn, topic_en=None):
+    """
+    使用 sessions_spawn 启动 subagent 生成中英文文章内容。
+    topic_en 默认等于 topic_cn（如果是中英文同一主题）。
+    """
+    print("\n" + "=" * 60)
+    print("🤖 Phase 0: AI 生成文章内容")
+    print("=" * 60)
+    
+    import subprocess
+    
+    # 读取文章模板
+    template_path = f"{WORKSPACE}/article-template.md"
+    rubric_path = f"{WORKSPACE}/content-rubric.md"
+    
+    if not os.path.exists(template_path):
+        print(f"⚠️ article-template.md 不存在，跳过 AI 生成")
+        return False
+    
+    with open(template_path, encoding='utf-8') as f:
+        template_content = f.read()
+    
+    rubric_content = ""
+    if os.path.exists(rubric_path):
+        with open(rubric_path, encoding='utf-8') as f:
+            rubric_content = f.read()
+    
+    prompt = f"""你是 TechPassive 博客的资深内容编辑。根据以下主题生成中英文文章，严格遵循模板规范。
+
+## 主题
+- 中文文章主题: {topic_cn}
+- 英文文章主题: {topic_en or topic_cn}
+
+## 文章模板规范（必须严格遵守）
+{template_content[:8000]}
+
+## 输出文件路径
+- 中文文章 → `/tmp/article-gen/cn.txt`
+- 英文文章 → `/tmp/article-gen/en.txt`
+
+## 强制要求
+1. 元数据第一行必须是单行 pipe 格式：`标题|描述|一级标题|标签1,标签2,标签3`
+2. 禁止章节标题：`## 开头`、`## 引言`（CN）；`## Introduction`、`## Overview`（EN）
+3. 亚马逊推荐类必须包含 TL;DR 区块（含产品名+价格+联盟链接）
+4. IT 技术教程必须包含 Troubleshooting 章节（≥2 个真实报错+解决方案）
+5. 禁止绝对化表述（最好/第一/唯一）
+6. Amazon 链接必须是 ASIN 直链（amazon.com/dp/ASIN），禁止通用搜索链接
+7. 元数据中禁止出现 "Tags:" 或 "tags:" 字样
+8. 中文 ≥ 1500 字符，英文 ≥ 800 词
+9. 加粗格式：`**内容**`（**和内容之间无空格）
+
+请生成文章并写入指定文件路径。只写文件，不要解释。
+"""
+    
+    print(f"📝 生成中英文文章: {topic_cn}")
+    
+    # 写入 prompt 到临时文件，供 sessions_spawn 读取
+    prompt_file = f"{TMP_DIR}/.ai_generate_prompt.txt"
+    os.makedirs(TMP_DIR, exist_ok=True)
+    with open(prompt_file, 'w', encoding='utf-8') as f:
+        f.write(prompt)
+    
+    print(f"✅ Prompt 已写入 {prompt_file}")
+    print(f"📋 请在 OpenClaw 会话中执行以下操作生成文章：")
+    print(f"""
+   使用 sessions_spawn 工具，runtime="subagent"，message 内容读取自：
+   {prompt_file}
+   
+   或者直接让 AI 基于以下 prompt 生成 cn.txt 和 en.txt：
+   主题：{topic_cn}
+   """)
+    return True
+
+def ask_user_topic():
+    """交互式获取文章主题（仅在 cn.txt 不存在时调用）"""
+    print("\n" + "=" * 60)
+    print("📝 文章生成模式")
+    print("=" * 60)
+    print("提供文章主题（格式：中文主题 | 英文主题），按 Enter 跳过：")
+    print("  示例: Amazon Basics AA电池评测 | Amazon Basics AA Battery Review")
+    try:
+        user_input = input("\n主题> ").strip()
+    except EOFError:
+        return None, None
+    
+    if not user_input:
+        return None, None
+    
+    parts = user_input.split('|')
+    topic_cn = parts[0].strip()
+    topic_en = parts[1].strip() if len(parts) > 1 else None
+    return topic_cn, topic_en
+
 print("=" * 60)
 print("🤖 流水线 v3:规则审稿 + HTML审稿 + 发布")
 print("=" * 60)
 
+# Phase 0: 如果 cn.txt 不存在，尝试 AI 生成
 if not os.path.exists(f"{TMP_DIR}/cn.txt"):
-    print("❌ cn.txt 不存在")
-    sys.exit(1)
+    print("⚠️ cn.txt 不存在")
+    topic_cn, topic_en = ask_user_topic()
+    if topic_cn:
+        call_ai_generate(topic_cn, topic_en)
+        print("\n请生成文章后重新运行: python3 run-pipeline.py")
+        sys.exit(0)
+    else:
+        print("\n❌ cn.txt 不存在，请先手动生成或让 AI 生成：")
+        print("   1. 手动：写入 /tmp/article-gen/cn.txt 和 /tmp/article-gen/en.txt")
+        print("   2. AI 辅助：在 OpenClaw 会话中使用 sessions_spawn 生成")
+        print("   3. 重试：重新运行 python3 run-pipeline.py")
+        sys.exit(1)
+else:
+    print(f"✅ cn.txt 已存在，跳过 AI 生成（手动/外部生成模式）")
+
 if not os.path.exists(f"{TMP_DIR}/en.txt"):
     print("❌ en.txt 不存在")
     sys.exit(1)
