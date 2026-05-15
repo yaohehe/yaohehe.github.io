@@ -133,11 +133,16 @@ def insert_internal_links_to_html(html_content, links):
 
 
 def _add_links_to_text(text, keyword, url):
-    """Add internal links to text (non-anchor parts only)."""
-    parts = re.split(r'(<a\s[^>]*?>.*?</a>)', text, flags=re.DOTALL)
+    """Add internal links to text (non-anchor, non-h1 parts only)."""
+    # Split on both <a> tags AND <h1> tags — never modify h1 text
+    parts = re.split(r'(<a\s[^>]*?>.*?</a>|<h1[^>]*>.*?</h1>)', text, flags=re.DOTALL)
     new_parts = []
     for part in parts:
         if re.match(r'<a\s', part, re.IGNORECASE):
+            # Preserve existing anchor tags as-is
+            new_parts.append(part)
+        elif re.match(r'<h1', part, re.IGNORECASE):
+            # Preserve h1 content as-is (never wrap it in internal links)
             new_parts.append(part)
         else:
             pattern = re.compile(r'\b(' + re.escape(keyword) + r')\b')
