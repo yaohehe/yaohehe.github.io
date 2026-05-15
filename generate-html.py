@@ -132,7 +132,24 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
 .back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
 
-/* 响应式设计 - 移动端适配 */
+/* TL;DR 区块样式 */
+.tldr-block { background: linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%); border: 2px solid #f0c040; border-radius: 12px; padding: 20px 24px; margin: 20px 0 30px; }
+.tldr-block h2 { color: #b7791f; margin: 0 0 15px; font-size: 1.1em; border: none; padding: 0; }
+.tldr-item { display: flex; align-items: flex-start; margin: 12px 0; gap: 10px; }
+.tldr-badge { background: #f39c12; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; white-space: nowrap; font-weight: bold; }
+.tldr-text { flex: 1; font-size: 0.95em; line-height: 1.5; }
+.tldr-cta { display: inline-block; background: #e74c3c; color: white; padding: 6px 14px; border-radius: 5px; text-decoration: none; font-size: 0.85em; font-weight: bold; white-space: nowrap; }
+.tldr-cta:hover { background: #c0392b; color: white; text-decoration: none; }
+
+/* 产品横评表格样式 */
+.product-table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 0.9em; }
+.product-table th { background: #0066cc; color: white; padding: 10px 12px; text-align: left; }
+.product-table td { padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
+.product-table tr:hover { background: #f5f5f5; }
+.product-pros { color: #27ae60; }
+.product-cons { color: #e74c3c; font-size: 0.9em; }
+
+/* 响应式设计 */
 @media (max-width: 600px) {
   body { padding: 12px; }
   h1 { font-size: 1.6em; }
