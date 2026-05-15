@@ -109,8 +109,20 @@ def check_file(filepath, lang):
     if not has_data:
         warnings.append(f"{lang}: 缺少具体价格或数据支撑")
     
-    # =========== 字数检查（警告）==========
+    # =========== TL;DR 检查（警告 - 亚马逊推荐类）==========
+    # 亚马逊推荐类文章必须有 TL;DR 区块
+    is_affiliate = 'amazon.com' in content.lower() and any(kw in content.lower() for kw in ['推荐', '评测', '对比', 'review', 'compare', 'best', 'top'])
+    if is_affiliate and 'TL;DR' not in content and '太长不看' not in content and '⏳' not in content:
+        warnings.append(f"{lang}: 亚马逊推荐类文章缺少 TL;DR 区块（需包含产品推荐+联盟链接）")
     
+    # =========== Troubleshooting 检查（警告 - IT 技术教程类）==========
+    # IT 技术教程必须有 Troubleshooting/踩坑 部分
+    is_tech = any(kw in first_line.lower() for kw in ['docker', 'nginx', '部署', 'deploy', 'ubuntu', 'linux', 'api', '安装', 'install', '配置', 'config', 'set up'])
+    if is_tech and not re.search(r'(踩坑|报错|错误|问题|troubleshoot|error|problem|issue|warning)', body, re.I):
+        warnings.append(f"{lang}: IT 技术教程类文章缺少 Troubleshooting/踩坑录 章节（需包含≥2个真实报错+解决方案）")
+    
+    # =========== 字数检查（警告）==========
+
     if lang == "CN":
         # 粗略字数（中文）
         char_count = len(content)
@@ -125,7 +137,7 @@ def check_file(filepath, lang):
             critical.append(f"{lang}: 词数不足800词（当前约{word_count}词）")
         elif word_count < 1000:
             warnings.append(f"{lang}: 词数偏低（{word_count}词），建议≥1000词")
-    
+
     return critical, warnings
 
 def main():
