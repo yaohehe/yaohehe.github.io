@@ -9,6 +9,14 @@ import re
 import sys
 import glob
 
+try:
+    from title_scenarizer import transform_boring_title, detect_if_boring
+    _HAS_SCENARIZER = True
+except ImportError:
+    _HAS_SCENARIZER = False
+    transform_boring_title = lambda t, **kw: t
+    detect_if_boring = lambda t: False
+
 # ===== 配置 =====
 TEMP_DIR = "/tmp/article-gen"
 DRAFTS_DIR = "/root/.openclaw/workspace/affiliate-blog/drafts"
@@ -278,6 +286,13 @@ def parse_metadata(content_lines):
     if parts0_dirty:
         print(f"⚠️ 检测到 parts[0] 被污染: '{title[:60]}...'，尝试清理...")
         title = _clean_metadata_title(title)
+
+    # ---- 修复0.5: 标题场景化改写（Amazon Basics 导购风 → 极客场景化） ----
+    if _HAS_SCENARIZER and detect_if_boring(title):
+        new_title = transform_boring_title(title)
+        if new_title != title:
+            print(f"  🎯 场景化改写: '{title}' → '{new_title}'")
+            title = new_title
 
     # ---- 修复2: parts[1] 描述字段校验 ----
     raw_desc = parts[1].strip()
