@@ -14,7 +14,7 @@ try:
     _HAS_SCENARIZER = True
 except ImportError:
     _HAS_SCENARIZER = False
-    transform_boring_title = lambda t, **kw: t
+    transform_boring_title = lambda t, **kw: t  # passthrough if not available
     detect_if_boring = lambda t: False
 
 # ===== 配置 =====
@@ -140,24 +140,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 .back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
 .back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
 
-/* TL;DR 区块样式 */
-.tldr-block { background: linear-gradient(135deg, #fff8e1 0%, #fff3cd 100%); border: 2px solid #f0c040; border-radius: 12px; padding: 20px 24px; margin: 20px 0 30px; }
-.tldr-block h2 { color: #b7791f; margin: 0 0 15px; font-size: 1.1em; border: none; padding: 0; }
-.tldr-item { display: flex; align-items: flex-start; margin: 12px 0; gap: 10px; }
-.tldr-badge { background: #f39c12; color: white; padding: 2px 8px; border-radius: 4px; font-size: 0.8em; white-space: nowrap; font-weight: bold; }
-.tldr-text { flex: 1; font-size: 0.95em; line-height: 1.5; }
-.tldr-cta { display: inline-block; background: #e74c3c; color: white; padding: 6px 14px; border-radius: 5px; text-decoration: none; font-size: 0.85em; font-weight: bold; white-space: nowrap; }
-.tldr-cta:hover { background: #c0392b; color: white; text-decoration: none; }
-
-/* 产品横评表格样式 */
-.product-table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 0.9em; }
-.product-table th { background: #0066cc; color: white; padding: 10px 12px; text-align: left; }
-.product-table td { padding: 8px 12px; border-bottom: 1px solid #e0e0e0; }
-.product-table tr:hover { background: #f5f5f5; }
-.product-pros { color: #27ae60; }
-.product-cons { color: #e74c3c; font-size: 0.9em; }
-
-/* 响应式设计 */
+/* 响应式设计 - 移动端适配 */
 @media (max-width: 600px) {
   body { padding: 12px; }
   h1 { font-size: 1.6em; }
@@ -552,27 +535,47 @@ def insert_affiliate_links(html_body, is_en):
 
 
 AFFILIATE_BOX_CN = '''
-<div style="background:linear-gradient(135deg,#fff8e1 0%,#fff3cd 100%);border:2px solid #f0c040;border-radius:12px;padding:20px 24px;margin:30px 0;">
-  <h3 style="margin:0 0 8px;color:#b7791f;">🔗 精选推荐工具</h3>
-  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 推荐阅读</h3>
+  <p style="margin:0 0 15px;color:#666;">以下是我们精心挑选的优质工具，使用推荐链接支持我们持续产出高质量内容：</p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">☁️ DigitalOcean 云服务器</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⚡ Vultr 高性能 VPS</a>
-    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">📦 Amazon AWS</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⭐ MiniMax Token Plan</a>
+    <a href="{do_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
+    <a href="{amzn_sellers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="{amzn_devices}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
+    <a href="{amzn_renewed}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
+    <a href="{amzn_home}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="{amzn_app}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="{amzn_books}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="{amzn_health}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="{amzn_movies}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="{amzn_sports}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="{amzn_games}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="{amzn_computers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''
 
 AFFILIATE_BOX_EN = '''
-<div style="background:linear-gradient(135deg,#fff8e1 0%,#fff3cd 100%);border:2px solid #f0c040;border-radius:12px;padding:20px 24px;margin:30px 0;">
-  <h3 style="margin:0 0 8px;color:#b7791f;">🔗 Recommended Tools</h3>
-  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">Clicking these links to make a purchase helps support our work at no extra cost to you:</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
   <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{digitalocean_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">☁️ DigitalOcean Cloud</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⚡ Vultr VPS</a>
-    <a href="{amazon_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">📦 Amazon AWS</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:10px 18px;border-radius:6px;text-decoration:none;font-size:0.9em;font-weight:bold;">⭐ MiniMax Token Plan</a>
+    <a href="{do_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="{amzn_sellers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="{amzn_devices}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
+    <a href="{amzn_renewed}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
+    <a href="{amzn_home}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="{amzn_app}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="{amzn_books}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="{amzn_health}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="{amzn_movies}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="{amzn_sports}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="{amzn_games}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="{amzn_computers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers</a>
+    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
   </div>
 </div>
 '''
@@ -604,17 +607,30 @@ def generate_html(content, template, css):
     is_en = 'en' in css.lower() or 'lang="en"' in template
     html_body = insert_affiliate_links(html_body, is_en)
 
+    # ---- 作者身份透明化（所有新文章必须） ----
+    AUTHOR_LINE_CN = '<p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>'
+    AUTHOR_LINE_EN = '<p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>'
+    author_line = AUTHOR_LINE_EN if is_en else AUTHOR_LINE_CN
+
     # 追加联盟推荐箱
     box = AFFILIATE_BOX_EN if is_en else AFFILIATE_BOX_CN
     box_html = box.format(
-        digitalocean_url=AFFILIATE_LINKS['DigitalOcean'],
+        do_url=AFFILIATE_LINKS['DigitalOcean'],
         vultr_url=AFFILIATE_LINKS['Vultr'],
-        cloudflare_url='',
-        namecheap_url='',
-        amazon_url=AFFILIATE_LINKS['Amazon'],
         minimax_url=AFFILIATE_LINKS['MiniMax'],
+        amzn_sellers='https://amzn.to/4sRiwLh',
+        amzn_devices='https://amzn.to/4vRnScj',
+        amzn_renewed='https://amzn.to/3Qu6SZw',
+        amzn_home='https://amzn.to/3OoDsvh',
+        amzn_app='https://amzn.to/4vO3Teq',
+        amzn_books='https://amzn.to/4e4qc9t',
+        amzn_health='https://amzn.to/4sXFYXv',
+        amzn_movies='https://amzn.to/4cKVOi5',
+        amzn_sports='https://amzn.to/49aR8AW',
+        amzn_games='https://amzn.to/41U6JkE',
+        amzn_computers='https://amzn.to/4tHThfN',
     )
-    html_body = html_body + box_html
+    html_body = html_body + author_line + box_html
 
     tags_html = ''.join([f'<span class="tag">{tag}</span>' for tag in meta['tags']])
 
@@ -641,16 +657,10 @@ def make_filename(content, is_en):
 
     # 从标题提取 slug（强制ASCII：非ASCII字符全部替换为空，避免GitHub Pages URL编码404）
     slug = title.lower()
-    # 第一步：中文→拼音缩写映射（核心关键词）
-    import unicodedata
-    # 分离ASCII和非ASCII字符，非ASCII字符做normalize处理
+    # 非ASCII字符转空格，后续压缩时消除
     ascii_parts = []
     for c in slug:
-        if ord(c) < 128:
-            ascii_parts.append(c)
-        else:
-            # 非ASCII字符标记为SPACE，后续压缩时消除
-            ascii_parts.append(' ')
+        ascii_parts.append(c if ord(c) < 128 else ' ')
     slug = ''.join(ascii_parts)
     slug = re.sub(r'[^\w\s-]', '', slug)  # 只保留字母数字连字符空格
     slug = re.sub(r'[\s]+', '-', slug)  # 空格变连字符
