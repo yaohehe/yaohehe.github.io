@@ -452,10 +452,25 @@ if os.path.exists(drafts_dir):
         for f in draft_files:
             # 检查是否已在其他日期目录存在同名文件，有则删旧
             for sub_dir in os.listdir(archive_base):
+                if sub_dir == today_str:
+                    continue
                 existing = os.path.join(archive_base, sub_dir, f)
-                if sub_dir != today_str and os.path.exists(existing):
+                idx_path = os.path.join(sub_dir, f)  # relative to archive base, for git
+                # 1. 删除本地文件（如果存在）
+                if os.path.exists(existing):
                     os.remove(existing)
                     print(f"  🗑 删除旧副本: archive/{sub_dir}/{f}")
+                # 2. 无论文件是否存在，检查 Git 索引是否有此路径（防止已发布文件跨文件夹污染）
+                r = subprocess.run(
+                    ['git', 'ls-files', '--error-unmatch', idx_path],
+                    cwd=YAOHEHE_DIR, capture_output=True, text=True, timeout=10
+                )
+                if r.returncode == 0:
+                    subprocess.run(
+                        ['git', 'rm', '--cached', '--', idx_path],
+                        cwd=YAOHEHE_DIR, capture_output=True, timeout=10
+                    )
+                    print(f"  🗑 移除索引已发布文件: archive/{sub_dir}/{f}")
             # 复制到当天目录
             src = os.path.join(drafts_dir, f)
             dst = os.path.join(target_archive, f)
