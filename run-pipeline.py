@@ -439,10 +439,44 @@ print("=" * 60)
 # 修复：把 drafts 里的文章复制到 yaohehe.github.io/archive/（目标仓库）
 # 复制前先清理同名文件（存在于任何 archive/ 子目录），避免同一文章多副本乱飞
 import shutil as _shutil
+import re as _re
 YAOHEHE_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
 drafts_dir = f"{WORKSPACE}/drafts"
 today_str = datetime.now().strftime('%Y-%m-%d')
 target_archive = os.path.join(YAOHEHE_DIR, "archive", today_str)
+
+def _extract_topic_slug(filename):
+    """Extract core topic slug from date-prefixed filename.
+    e.g. '2026-05-16-amazon-basics-50l.html' -> 'amazon-basics-50l'
+         '2026-05-16-amazon-basics-50l-en.html' -> 'amazon-basics-50l'
+    """
+    # Remove YYYY-MM-DD- prefix
+    slug = _re.sub(r'^\d{4}-\d{2}-\d{2}-', '', filename)
+    # Remove -en suffix (English marker)
+    slug = _re.sub(r'-en(\.html)$', r'\1', slug)
+    # Remove .html
+    slug = slug.replace('.html', '')
+    return slug
+
+def _find_published_by_slug(slug, exclude_date):
+    """Find if a file with matching topic slug already exists in archive (any date).
+    Returns (date_folder, filename) or None if not found.
+    """
+    archive_base = os.path.join(YAOHEHE_DIR, "archive")
+    if not os.path.exists(archive_base):
+        return None
+    for sub_dir in os.listdir(archive_base):
+        if sub_dir == exclude_date:
+            continue
+        sub_path = os.path.join(archive_base, sub_dir)
+        if not os.path.isdir(sub_path):
+            continue
+        for f in os.listdir(sub_path):
+            if f.endswith('.html') and not f.startswith('.'):
+                if _extract_topic_slug(f) == slug:
+                    return (sub_dir, f)
+    return None
+
 if os.path.exists(drafts_dir):
     draft_files = [f for f in os.listdir(drafts_dir) if f.endswith('.html') and not f.startswith('.')]
     if draft_files:
@@ -450,6 +484,13 @@ if os.path.exists(drafts_dir):
         # 收集所有 archive 子目录中已存在的同名文件
         archive_base = os.path.join(YAOHEHE_DIR, "archive")
         for f in draft_files:
+            topic_slug = _extract_topic_slug(f)
+            # 检查是否有其他日期的同名主题文章（内容级查重）
+            published = _find_published_by_slug(topic_slug, today_str)
+            if published:
+                date_folder, existing_file = published
+                print(f"  ⏭ 跳过 [{topic_slug}]: 已在 archive/{date_folder}/ 发布，将使用已发布版本")
+                continue  # 不重复发布相同主题
             # 检查是否已在其他日期目录存在同名文件，有则删旧
             for sub_dir in os.listdir(archive_base):
                 if sub_dir == today_str:
