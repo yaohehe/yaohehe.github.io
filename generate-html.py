@@ -535,50 +535,20 @@ def insert_affiliate_links(html_body, is_en):
 
 
 AFFILIATE_BOX_CN = '''
-<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
-  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 推荐阅读</h3>
-  <p style="margin:0 0 15px;color:#666;">以下是我们精心挑选的优质工具，使用推荐链接支持我们持续产出高质量内容：</p>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{do_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean 云服务器</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr 高性能 VPS</a>
-    <a href="{amzn_sellers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
-    <a href="{amzn_devices}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
-    <a href="{amzn_renewed}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
-    <a href="{amzn_home}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
-    <a href="{amzn_app}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
-    <a href="{amzn_books}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
-    <a href="{amzn_health}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
-    <a href="{amzn_movies}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
-    <a href="{amzn_sports}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
-    <a href="{amzn_games}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
-    <a href="{amzn_computers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
-  </div>
+<div style="background:#f0f8ff;border-left:4px solid #3498db;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 8px;color:#2c3e50;">&#x1F517; 技术相关阅读</h3>
+  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">深入阅读相关技术文章：</p>
+  <div id="related-articles-placeholder"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>
 </div>
-'''
+''' 
 
 AFFILIATE_BOX_EN = '''
-<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
-  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
-  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
-  <div style="display:flex;flex-wrap:wrap;gap:10px;">
-    <a href="{do_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
-    <a href="{vultr_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
-    <a href="{amzn_sellers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
-    <a href="{amzn_devices}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
-    <a href="{amzn_renewed}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
-    <a href="{amzn_home}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
-    <a href="{amzn_app}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
-    <a href="{amzn_books}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
-    <a href="{amzn_health}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
-    <a href="{amzn_movies}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
-    <a href="{amzn_sports}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
-    <a href="{amzn_games}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
-    <a href="{amzn_computers}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers</a>
-    <a href="{minimax_url}" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
-  </div>
+<div style="background:#f0f8ff;border-left:4px solid #3498db;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 8px;color:#2c3e50;">&#x1F517; Related Tech Articles</h3>
+  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">Deep dive into related technical topics:</p>
+  <div id="related-articles-placeholder"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
 </div>
-'''
+''' 
 
 
 def generate_html(content, template, css):
@@ -612,25 +582,9 @@ def generate_html(content, template, css):
     AUTHOR_LINE_EN = '<p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>'
     author_line = AUTHOR_LINE_EN if is_en else AUTHOR_LINE_CN
 
-    # 追加联盟推荐箱
+    # 追加推荐箱（技术相关阅读，placeholder由insert-internal-links.py后续填充）
     box = AFFILIATE_BOX_EN if is_en else AFFILIATE_BOX_CN
-    box_html = box.format(
-        do_url=AFFILIATE_LINKS['DigitalOcean'],
-        vultr_url=AFFILIATE_LINKS['Vultr'],
-        minimax_url=AFFILIATE_LINKS['MiniMax'],
-        amzn_sellers='https://amzn.to/4sRiwLh',
-        amzn_devices='https://amzn.to/4vRnScj',
-        amzn_renewed='https://amzn.to/3Qu6SZw',
-        amzn_home='https://amzn.to/3OoDsvh',
-        amzn_app='https://amzn.to/4vO3Teq',
-        amzn_books='https://amzn.to/4e4qc9t',
-        amzn_health='https://amzn.to/4sXFYXv',
-        amzn_movies='https://amzn.to/4cKVOi5',
-        amzn_sports='https://amzn.to/49aR8AW',
-        amzn_games='https://amzn.to/41U6JkE',
-        amzn_computers='https://amzn.to/4tHThfN',
-    )
-    html_body = html_body + author_line + box_html
+    html_body = html_body + author_line + box
 
     tags_html = ''.join([f'<span class="tag">{tag}</span>' for tag in meta['tags']])
 
