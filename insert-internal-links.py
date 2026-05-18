@@ -125,6 +125,8 @@ def inject_related_articles_to_placeholder(html_content, related_articles, is_en
     
     items_html = ""
     for art in related_articles:
+        if isinstance(art, tuple):
+            art = art[1]  # unpack (score, article_dict) if passed as tuple
         url = f"/{art['filename']}"
         title = art['title']
         tags_str = ", ".join(art['tags'][:2]) if art['tags'] else ""
