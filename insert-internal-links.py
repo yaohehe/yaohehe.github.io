@@ -42,7 +42,7 @@ def load_existing_articles():
     return articles
 
 
-def find_related_articles(new_article_content, articles, limit=2):
+def find_related_articles(new_article_content, articles, limit=4):
     """基于文章内容/标签，找出最相关的已发布文章"""
     # 提取新文章标签
     tags_m = re.findall(r'class="tag"[^>]*>([^<]+)</a>', new_article_content)
@@ -110,6 +110,40 @@ def build_links(new_article_content, related):
         links.append((main_word, url))
     
     return links
+
+
+def inject_related_articles_to_placeholder(html_content, related_articles, is_en):
+    """向 placeholder 中注入相关阅读文章（基于标签匹配）"""
+    if not related_articles:
+        return html_content.replace(
+            '<div id="related-articles-placeholder"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>',
+            '<p style="color:#888;font-size:0.9em;">暂无相关阅读推荐</p>'
+        ).replace(
+            '<div id="related-articles-placeholder"><!-- Dynamic related articles injected by insert-internal-links.py --></div>',
+            '<p style="color:#888;font-size:0.9em;">No related articles yet</p>'
+        )
+    
+    items_html = ""
+    for art in related_articles:
+        url = f"/{art['filename']}"
+        title = art['title']
+        tags_str = ", ".join(art['tags'][:2]) if art['tags'] else ""
+        items_html += f'''
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="{url}" style="color:#3498db;text-decoration:none;">{title}</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">{tags_str}</div>
+    </div>'''
+    
+    replacement = f'<div style="display:flex;flex-direction:column;gap:8px;">{items_html}\n  </div>'
+    
+    if is_en:
+        placeholder = '<div id="related-articles-placeholder"><!-- Dynamic related articles injected by insert-internal-links.py --></div>'
+    else:
+        placeholder = '<div id="related-articles-placeholder"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>'
+    
+    return html_content.replace(placeholder, replacement)
 
 
 def insert_internal_links_to_html(html_content, links):
@@ -208,7 +242,8 @@ def process_single_file(target_file, existing):
     content = open(target_file, "r", encoding="utf-8").read()
 
     # 找相关文章（最多2篇）
-    related = find_related_articles(content, existing, limit=2)
+    # 找相关文章（最多4篇）
+    related = find_related_articles(content, existing, limit=4)
     if not related:
         print(f"⚠️ [{os.path.basename(target_file)}] 未找到相关文章，跳过")
         return False
@@ -223,6 +258,10 @@ def process_single_file(target_file, existing):
     # 插入内链
     new_content = insert_internal_links_to_html(content, links)
 
+    # 向placeholder注入相关阅读
+    is_en = 'Recommended Tools' in content or 'lang="en"' in content
+    new_content = inject_related_articles_to_placeholder(new_content, related, is_en)
+
     # 自检：清理不可点击的链接
     new_content, removed = self_heal_internal_links(new_content)
     if removed > 0:
@@ -232,7 +271,7 @@ def process_single_file(target_file, existing):
     with open(target_file, "w", encoding="utf-8") as f:
         f.write(new_content)
 
-    print(f"✅ [{os.path.basename(target_file)}] 内链插入完成: {len(links)} 条（清理后保留 {len(links) - removed} 条）")
+    print(f"✅ [{os.path.basename(target_file)}] 内链插入完成: {len(links)} 条（清理后保留 {len(links) - removed} 条），相关阅读已注入placeholder")
     return True
 
 
