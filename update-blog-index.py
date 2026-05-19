@@ -116,51 +116,7 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         ⚠️ 本文包含联盟链接。如果您通过这些链接购买，我可能会获得佣金，但不会增加您的费用。这有助于我们持续产出优质内容。
     </div>
 
-    <div class="popular-section">
-        <h2>&#x1F525; 热门文章</h2>
-        <div class="popular-grid">
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-29/2026-04-29-github-actions-troubleshooting-8-hour-pages-freeze.html">GitHub Actions疑难杂症：Pages冻结8小时复盘实录</a></div>
-                <div class="popular-meta">发布于 2026年4月29日 · 52条内链</div>
-                <div class="popular-tags"><span class="tag">GitHub Actions</span><span class="tag">DevOps</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-12/2026-04-12-complete-wordpress-website-setup-guide-2026-from-d.html">2026从零开始：WordPress建站完整指南（域名到上线）</a></div>
-                <div class="popular-meta">发布于 2026年4月12日 · 45条内链</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">Web Dev</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-22/2026-04-22-amazon-basics-aa-batteries-which-pack-size-actuall.html">Amazon Basics AA电池哪款值得买：8款测试后说实话</a></div>
-                <div class="popular-meta">发布于 2026年4月22日 · 30条内链</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Battery Review</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-26/2026-04-26-wordpress-https-ssl-setup-all-the-lets-encrypt-tra.html">WordPress + HTTPS + Let's Encrypt：所有踩过的坑</a></div>
-                <div class="popular-meta">发布于 2026年4月26日 · 27条内链</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">Security</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-27/2026-04-27-amazon-basics-vs-gir-silicone-kitchen-utensils-in-depth-comparison.html">Amazon Basics vs GIR硅胶厨具：深度对比哪款值得买</a></div>
-                <div class="popular-meta">发布于 2026年4月27日 · 26条内链</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Kitchen</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-25/2026-04-25-docker-gpu-configuration-traps-how-i-spent-3-days-.html">Docker GPU配置：我花了3天才打通NVIDIA容器支持</a></div>
-                <div class="popular-meta">发布于 2026年4月25日 · 24条内链</div>
-                <div class="popular-tags"><span class="tag">Docker</span><span class="tag">DevOps</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-12/2026-04-12-the-ultimate-guide-to-ai-powered-wordpress-site-bu.html">AI驱动的WordPress建站：2026完整指南（从入门到上线）</a></div>
-                <div class="popular-meta">发布于 2026年4月12日 · 22条内链</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">AI</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-27/2026-04-27-amazon-basics-food-storage-containers-glass-vs-pla.html">Amazon Basics食品保鲜盒：玻璃款vs塑料款深度横评</a></div>
-                <div class="popular-meta">发布于 2026年4月27日 · 20条内链</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Kitchen</span></div>
-            </div>
-        </div>
-    </div>
+    {{POPULAR_CN}}
 
     <ul class="post-list">
 '''
@@ -242,51 +198,7 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         ⚠️ This site contains affiliate links. If you purchase through them, I may earn a commission at no extra cost to you. This helps us keep producing quality content.
     </div>
 
-    <div class="popular-section">
-        <h2>&#x1F525; Popular Articles</h2>
-        <div class="popular-grid">
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-29/2026-04-29-github-actions-troubleshooting-8-hour-pages-freeze-en.html">GitHub Actions Troubleshooting: A Real 8-Hour Pages Freeze</a></div>
-                <div class="popular-meta">Published Apr 29, 2026 · 52 internal links</div>
-                <div class="popular-tags"><span class="tag">GitHub Actions</span><span class="tag">DevOps</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-12/2026-04-12-complete-wordpress-website-setup-guide-2026-from-d-en.html">Complete WordPress Website Setup Guide 2026: From Domain to Live Site</a></div>
-                <div class="popular-meta">Published Apr 12, 2026 · 45 internal links</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">Web Dev</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-22/2026-04-22-amazon-basics-aa-batteries-which-pack-size-actuall-en.html">Amazon Basics AA Batteries: Which Pack Size Actually Gives You the Best Value?</a></div>
-                <div class="popular-meta">Published Apr 22, 2026 · 30 internal links</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Battery Review</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-26/2026-04-26-wordpress-https-ssl-setup-all-the-lets-encrypt-tra-en.html">WordPress HTTPS & SSL Setup: All the Let's Encrypt Traps</a></div>
-                <div class="popular-meta">Published Apr 26, 2026 · 27 internal links</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">Security</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-27/2026-04-27-amazon-basics-vs-gir-silicone-kitchen-utensils-in-depth-comparison-en.html">Amazon Basics vs GIR Silicone Kitchen Utensils: Which Is Worth It?</a></div>
-                <div class="popular-meta">Published Apr 27, 2026 · 26 internal links</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Kitchen</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-25/2026-04-25-docker-gpu-configuration-traps-how-i-spent-3-days--en.html">Docker GPU Configuration: 3 Days Getting NVIDIA Containers to Work</a></div>
-                <div class="popular-meta">Published Apr 25, 2026 · 24 internal links</div>
-                <div class="popular-tags"><span class="tag">Docker</span><span class="tag">DevOps</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-12/2026-04-12-the-ultimate-guide-to-ai-powered-wordpress-site-bu-en.html">The Ultimate Guide to AI-Powered WordPress Site Building</a></div>
-                <div class="popular-meta">Published Apr 12, 2026 · 22 internal links</div>
-                <div class="popular-tags"><span class="tag">WordPress</span><span class="tag">AI</span></div>
-            </div>
-            <div class="popular-item">
-                <div class="popular-title"><a href="archive/2026-04-27/2026-04-27-amazon-basics-food-storage-containers-glass-vs-pla-en.html">Amazon Basics Food Storage Containers: Glass vs Plastic</a></div>
-                <div class="popular-meta">Published Apr 27, 2026 · 20 internal links</div>
-                <div class="popular-tags"><span class="tag">Amazon Basics</span><span class="tag">Kitchen</span></div>
-            </div>
-        </div>
-    </div>
+    {{POPULAR_EN}}
 
     <ul class="post-list">
 '''
@@ -330,16 +242,119 @@ def get_title_from_html(filepath):
     return os.path.splitext(os.path.basename(filepath))[0]
 
 
-def generate_index(articles, header, footer):
-    """生成索引 HTML"""
+def get_popular_articles(limit=8, lang='cn'):
+    """扫描 archive/ 目录，按内链数量降序取 TopN"""
+    archive_dir = os.path.join(BLOG_DIR, 'archive')
+    articles = []
+    for root, dirs, files in os.walk(archive_dir):
+        for f in files:
+            if not f.endswith('.html') or f.startswith('.'):
+                continue
+            # 英文文章文件名含 -en.
+            if lang == 'en':
+                if '-en.' not in f and not f.endswith('-en.html'):
+                    continue
+            else:
+                if '-en.' in f or f.endswith('-en.html'):
+                    continue
+            path = os.path.join(root, f)
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    content = fh.read()
+                link_count = content.count('class="internal-link"')
+                # 提取标题
+                m = re.search(r'<h1[^>]*>(.*?)</h1>', content)
+                title = re.sub(r'<[^>]+>', '', m.group(1)).strip() if m else f
+                # 提取发布日期（从路径或文件名前缀）
+                date_m = re.search(r'(\d{4}-\d{2}-\d{2})', root)
+                date_str = date_m.group(1) if date_m else '2026-01-01'
+                rel_path = os.path.relpath(path, BLOG_DIR)
+                articles.append((link_count, date_str, rel_path, title))
+            except Exception:
+                continue
+    # 按内链数量降序
+    articles.sort(key=lambda x: x[0], reverse=True)
+    return articles[:limit]
+
+
+def generate_popular_html_cn(limit=8):
+    """生成中文热门文章 HTML"""
+    articles = get_popular_articles(limit=limit, lang='cn')
+    if not articles:
+        return ''
+    items_html = []
+    for link_count, date_str, rel_path, title in articles:
+        date_display = date_str.replace('-', '年', 1).replace('-', '月') + '日'
+        month_map = {'01':'1','02':'2','03':'3','04':'4','05':'5','06':'6',
+                     '07':'7','08':'8','09':'9','10':'10','11':'11','12':'12'}
+        parts = date_str.split('-')
+        date_display = f"{parts[0]}年{int(parts[1])}月{int(parts[2])}日"
+        items_html.append(
+            f'            <div class="popular-item">\n'
+            f'                <div class="popular-title"><a href="{rel_path}">{title}</a></div>\n'
+            f'                <div class="popular-meta">发布于 {date_display} · {link_count}条内链</div>\n'
+            f'            </div>'
+        )
+    return (
+        '    <div class="popular-section">\n'
+        '        <h2>&#x1F525; 热门文章</h2>\n'
+        '        <div class="popular-grid">\n'
+        + '\n'.join(items_html) +
+        '        </div>\n'
+        '    </div>\n\n'
+    )
+
+
+def generate_popular_html_en(limit=8):
+    """生成英文热门文章 HTML"""
+    articles = get_popular_articles(limit=limit, lang='en')
+    if not articles:
+        return ''
+    items_html = []
+    month_names = {'01':'Jan','02':'Feb','03':'Mar','04':'Apr','05':'May','06':'Jun',
+                  '07':'Jul','08':'Aug','09':'Sep','10':'Oct','11':'Nov','12':'Dec'}
+    for link_count, date_str, rel_path, title in articles:
+        parts = date_str.split('-')
+        date_display = f"{month_names.get(parts[1],parts[1])} {int(parts[2])}, {parts[0]}"
+        items_html.append(
+            f'            <div class="popular-item">\n'
+            f'                <div class="popular-title"><a href="{rel_path}">{title}</a></div>\n'
+            f'                <div class="popular-meta">Published {date_display} · {link_count} internal links</div>\n'
+            f'            </div>'
+        )
+    return (
+        '    <div class="popular-section">\n'
+        '        <h2>&#x1F525; Popular Articles</h2>\n'
+        '        <div class="popular-grid">\n'
+        + '\n'.join(items_html) +
+        '        </div>\n'
+        '    </div>\n\n'
+    )
+
+
+def generate_index(articles, header, footer, lang='cn'):
+    """生成索引 HTML，动态注入热门文章模块"""
+    # 替换占位符为动态生成的热门文章
+    placeholder = '{{POPULAR_CN}}' if lang == 'cn' else '{{POPULAR_EN}}'
+    popular_html = generate_popular_html_cn() if lang == 'cn' else generate_popular_html_en()
+    header = header.replace(placeholder, popular_html)
+    # 生成文章列表
     items = []
     for date, filename, title in articles:
-        items.append(
-            f'        <li class="post-item">\n'
-            f'            <h2 class="post-title"><a href="{filename}">{title}</a></h2>\n'
-            f'            <p class="post-meta">发布于 {date}</p>\n'
-            f'        </li>'
-        )
+        if lang == 'cn':
+            items.append(
+                f'        <li class="post-item">\n'
+                f'            <h2 class="post-title"><a href="{filename}">{title}</a></h2>\n'
+                f'            <p class="post-meta">发布于 {date}</p>\n'
+                f'        </li>'
+            )
+        else:
+            items.append(
+                f'        <li class="post-item">\n'
+                f'            <h2 class="post-title"><a href="{filename}">{title}</a></h2>\n'
+                f'            <p class="post-meta">Published {date}</p>\n'
+                f'        </li>'
+            )
     return header + '\n'.join(items) + '\n' + footer
 
 
@@ -433,13 +448,13 @@ def main():
     print(f"📊 扫描完成：{len(cn_articles)} 篇中文文章，{len(en_articles)} 篇英文文章")
 
     # 生成 index.html
-    index_cn = generate_index(cn_articles, INDEX_HEADER_CN, INDEX_FOOTER)
+    index_cn = generate_index(cn_articles, INDEX_HEADER_CN, INDEX_FOOTER, lang='cn')
     with open(os.path.join(BLOG_DIR, 'index.html'), 'w', encoding='utf-8') as f:
         f.write(index_cn)
     print(f"✅ index.html 已更新（{len(cn_articles)} 篇）")
 
     # 生成 index-en.html
-    index_en = generate_index(en_articles, INDEX_HEADER_EN, INDEX_FOOTER)
+    index_en = generate_index(en_articles, INDEX_HEADER_EN, INDEX_FOOTER, lang='en')
     with open(os.path.join(BLOG_DIR, 'index-en.html'), 'w', encoding='utf-8') as f:
         f.write(index_en)
     print(f"✅ index-en.html 已更新（{len(en_articles)} 篇）")
