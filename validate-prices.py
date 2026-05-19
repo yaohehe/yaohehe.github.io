@@ -469,7 +469,7 @@ def check_asin_availability(asin):
 def extract_asins(text):
     """从文本中提取所有 ASIN"""
     asins = set()
-    for m in re.finditer(r'amazon\.com/[^/]*/dp/([A-Z0-9]{10})', text, re.IGNORECASE):
+    for m in re.finditer(r'amazon\.com/(?:[^/]+/)?dp/([A-Z0-9]{10})', text, re.IGNORECASE):
         asins.add(m.group(1))
     return list(asins)
 

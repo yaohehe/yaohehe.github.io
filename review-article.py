@@ -74,7 +74,7 @@ def check_file(filepath, lang):
                 critical.append(f"{lang}: 第{lineno}行加粗格式有空格（'{m.group(0)}'），应为 **内容** 无空格（内容首尾空格需去除）")
     
     # 4. ASIN 链接检查
-    asin_pattern = re.compile(r'amazon\.com/(dp|gp/product)/([A-Z0-9]{10})', re.I)
+    asin_pattern = re.compile(r'amazon\.com/(?:[^/]+/)?(dp|gp/product)/([A-Z0-9]{10})', re.I)
     generic_search = 'amazon.com/s?' in content
     
     if lang == "CN":
