@@ -71,16 +71,16 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>Langfuse自托管部署踩坑全记录</h1>
   <div class="post-tags">
-    <span class="tag">n8n</span><span class="tag">MCP</span><span class="tag">Langfuse</span><span class="tag">LLM工程平台</span><span class="tag">自托管</span><span class="tag">AI工具</span><span class="tag">Docker</span>
+    <span class="tag">n8n</span><span class="tag">MCP</span><span class="tag"><a href="/2026-05-18-langfuse-postgresqlclickhouseredis-6.html" class="internal-link">Langfuse</a></span><span class="tag">LLM工程平台</span><span class="tag">自托管</span><span class="tag">AI工具</span><span class="tag">Docker</span>
   </div>
   <div class="content">
     <p># Langfuse自托管踩坑全记录：PostgreSQL/ClickHouse/Redis的6个真实问题</p>
-<p>Langfuse（GitHub 27,403 ⭐，截至2026年5月验证）是我在搭建AI开发平台时必须用到的工具。作为开源LLM工程平台，它可以对接OpenTelemetry、Langchain、OpenAI SDK和LiteLLM等主流框架，支持LLM可观测性、指标评估、提示管理和数据集管理。</p>
+<p><a href="/2026-05-18-langfuse-postgresqlclickhouseredis-6.html" class="internal-link">Langfuse</a>（GitHub 27,403 ⭐，截至2026年5月验证）是我在搭建AI开发平台时必须用到的工具。作为开源LLM工程平台，它可以对接OpenTelemetry、Langchain、OpenAI SDK和LiteLLM等主流框架，支持LLM可观测性、指标评估、提示管理和数据集管理。</p>
 <p>但当我从v2升级到v3时，发现这个过程的复杂度远超预期。v3的架构发生了重大变化：新增了ClickHouse（OLAP存储）、Redis（缓存）和S3/MinIO（对象存储）三个依赖组件，单个PostgreSQL已无法支撑生产级负载。</p>
 <p>本文复盘我在Ubuntu 24.04 VPS上部署Langfuse v3时遇到的6个真实踩坑点，以及具体解决方案。</p>
 <h2>架构变化：为什么v3比v2复杂得多</h2>
-<p>Langfuse v2只需要一个容器加PostgreSQL即可运行。但v3（2024年12月6日发布stable版本）引入了全新的架构：</p>
-<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用途</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最低配置</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Langfuse Server + Worker</td><td style="border:1px solid #ddd;padding:8px;">API和Web UI + 后台任务处理</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 3 GB RAM（Server），2 CPU + 4 GB RAM（Worker）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PostgreSQL >=12</td><td style="border:1px solid #ddd;padding:8px;">事务数据存储</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ClickHouse</td><td style="border:1px solid #ddd;padding:8px;">traces/observations/scores存储</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 4 GB RAM</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Redis/Valkey</td><td style="border:1px solid #ddd;padding:8px;">队列管理和缓存</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">S3/MinIO</td><td style="border:1px solid #ddd;padding:8px;">文件存储</td><td style="border:1px solid #ddd;padding:8px;">50 GB SSD</td></tr></tbody></table>
+<p><a href="/2026-05-18-langfuse-postgresqlclickhouseredis-6.html" class="internal-link">Langfuse</a> v2只需要一个容器加PostgreSQL即可运行。但v3（2024年12月6日发布stable版本）引入了全新的架构：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用途</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最低配置</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-05-18-langfuse-postgresqlclickhouseredis-6.html" class="internal-link">Langfuse</a> Server + Worker</td><td style="border:1px solid #ddd;padding:8px;">API和Web UI + 后台任务处理</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 3 GB RAM（Server），2 CPU + 4 GB RAM（Worker）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PostgreSQL >=12</td><td style="border:1px solid #ddd;padding:8px;">事务数据存储</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ClickHouse</td><td style="border:1px solid #ddd;padding:8px;">traces/observations/scores存储</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 4 GB RAM</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Redis/Valkey</td><td style="border:1px solid #ddd;padding:8px;">队列管理和缓存</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">S3/MinIO</td><td style="border:1px solid #ddd;padding:8px;">文件存储</td><td style="border:1px solid #ddd;padding:8px;">50 GB SSD</td></tr></tbody></table>
 <p>这意味着v3至少需要4核CPU + 9GB RAM的服务器。如果你用VPS低于这个配置，Worker容器会直接OOM崩溃。</p>
 <h2>踩坑一：PostgreSQL表权限导致迁移失败</h2>
 <p>部署完成后，容器日志里出现以下错误：</p>
@@ -151,7 +151,7 @@ docker compose up -d</code></pre>
 <p>价格参考（2026年5月）：</p>
 <ul><li>4核16GB VPS ≈ $20-40/月（如Vultr HKG或DigitalOcean SGP节点）</li><li>8核32GB裸机服务器 ≈ $80-150/月（如Hetzner EX42）</li></ul>
 <h2>总结</h2>
-<p>Langfuse v3的架构复杂度大幅提升，从v2的单容器变成了需要协调5个组件的系统。自托管需要重点关注：</p>
+<p><a href="/2026-05-18-langfuse-postgresqlclickhouseredis-6.html" class="internal-link">Langfuse</a> v3的架构复杂度大幅提升，从v2的单容器变成了需要协调5个组件的系统。自托管需要重点关注：</p>
 <p>1. <strong>资源规划</strong>：v3最低需要4核9GB RAM，比v2高3倍</p>
 <p>2. <strong>权限配置</strong>：PostgreSQL迁移用户需要正确授权</p>
 <p>3. <strong>时区统一</strong>：UTC是唯一支持的时区</p>
