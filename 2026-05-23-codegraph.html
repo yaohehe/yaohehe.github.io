@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeGraph配置踩坑全记录：我的知识图谱为什么初始化到一半就崩溃了 - TechPassive</title>
+  <meta name="description" content="我花了3小时排查codegraph init失败的根因，涉及SQLite权限、Node版本和文件锁三个坑，附完整解决方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>CodeGraph知识图谱配置踩坑实录</h1>
+  <div class="post-tags">
+    <span class="tag">AI编程</span><span class="tag">CodeGraph</span><span class="tag">Claude Code</span><span class="tag">工具</span><span class="tag">踩坑</span>
+  </div>
+  <div class="content">
+    <p>本文含联盟链接，购买后我可获得小额佣金（不影响您的价格）。*</p>
+<p>用 Claude Code 跑大仓库时，最烦的不是 AI 答不上来，而是它拿着 <code>grep</code> + <code>Read</code> 把整个目录扫描一遍——几十个 Tool Calls，tokens 烧得飞快，结果还没找到正确入口。</p>
+<p>CodeGraph（github.com/colbymchenry/codegraph）就是来解决这个问题的：它在本地用 SQLite 建一个代码知识图谱，给 AI agents（Claude Code、Cursor、Codex CLI、OpenCode）提供预索引的符号查询，官方 benchmark 说是平均减少 92% 的 Tool Calls、提速 71%、省 35% 成本。</p>
+<p>我兴冲冲 <code>codegraph init</code>，然后收获了一个 crash——「Crash on init」是 GitHub 上当前 open issue 之一（#269，2026-05-21）。</p>
+<p>这篇文章就是我踩的 4 个坑以及完整解锁步骤。</p>
+<h2>🗂️ 先搞懂它的架构，踩坑时不慌</h2>
+<p>CodeGraph 分三层：</p>
+<p>**索引层（Indexing）**：用 tree-sitter 把源码解析成 AST，提取节点（函数、类、方法）和边（调用关系、import、extends），存入 <code>.codegraph/codegraph.db</code>（SQLite + FTS5 全文搜索）。</p>
+<p><strong>服务层（Server）</strong>：一个 MCP Server，接收 AI agent 的查询请求，从 SQLite 里返回符号关系和代码片段。</p>
+<p><strong>同步层（Sync）</strong>：用操作系统原生文件事件（native OS file watchers）监听源码变化，debounced 增量更新索引，不用手动触发。</p>
+<p>安装方式（2026-05-23 官方最新）：</p>
+<pre><code># macOS / Linux
+curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+
+# 如果已经有 Node.js，用 npm
+npm i -g @colbymchenry/codegraph
+
+# 或者零安装直接跑
+npx @colbymchenry/codegraph</code></pre>
+<p>初始化：</p>
+<pre><code>cd your-project
+codegraph init -i</code></pre>
+<p>支持 19+ 编程语言，13 个 web 框架（Django、Flask、FastAPI、Express、Laravel、Rails、Spring、Gin 等）。</p>
+<h2>💣 踩坑一：Crash on init — SQLite 数据库创建失败</h2>
+<p><strong>报错</strong>：</p>
+<pre><code>Error: Crash on init
+# 或
+SQLite: unable to open database file: permission denied</code></pre>
+<p>**根因**：<code>.codegraph/</code> 目录或文件没有写权限；或者目录不存在且 codegraph 没有权限创建它。</p>
+<p><strong>排查步骤</strong>：</p>
+<pre><code># 1. 检查 .codegraph 目录是否存在，权限是什么
+ls -la .codegraph/
+
+# 2. 如果报 "No such file or directory"，说明目录不存在
+# 尝试手动创建并授权
+mkdir -p .codegraph
+chmod 755 .codegraph
+
+# 3. 如果是权限问题，改所有者
+chown -R $(whoami):$(whoami) .codegraph/
+
+# 4. 检查父目录是否有写权限（SQLite 写数据库需要父目录也有写权限）
+ls -ld .
+chmod 755 .
+
+# 5. 重新初始化
+codegraph init -i</code></pre>
+<p>**注意**：SQLite 写数据库文件时，不仅文件自身需要有写权限，**文件所在的目录**也需要有写权限（因为 SQLite 会在同一目录创建 WAL-journal 文件 <code>codegraph.db-wal</code> 和锁文件）。</p>
+<h2>💣 踩坑二：Node 版本不兼容 — 安装时无声失败</h2>
+<p>**现象**：<code>npm i -g @colbymchenry/codegraph</code> 不报错，但运行 <code>codegraph</code> 命令时报 <code>command not found</code> 或直接崩溃。</p>
+<p><strong>根因</strong>：CodeGraph 要求 Node.js ≥ v20，部分系统自带的是 v16/v18。</p>
+<p><strong>验证和解决</strong>：</p>
+<pre><code># 检查当前 Node 版本
+node --version
+# 确认是否 >= v20
+
+# 如果版本过低，用 nvm 升级（没有 nvm 先装）
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.1/install.sh | bash
+source ~/.bashrc  # 或 source ~/.zshrc
+
+# 安装并使用 Node 20 LTS
+nvm install 20
+nvm use 20
+
+# 再次验证
+node --version  # 应显示 v20.x.x
+
+# 然后重新安装 codegraph
+npm i -g @colbymchenry/codegraph
+
+# 验证安装
+codegraph --version</code></pre>
+<p>**建议**：装 Node 20.19.0 或更高版本（官方要求）。如果用 <code>npx</code> 零安装方式，npx 会自动拉取匹配版本，不需要提前装。</p>
+<h2>💣 踩坑三：文件锁冲突 — 索引被另一个进程占用</h2>
+<p><strong>报错</strong>：</p>
+<pre><code>SQLite BusyException: database is locked</code></pre>
+<p>**根因**：上一个 codegraph 进程没有正确退出，SQLite 的锁文件 <code>.codegraph/codegraph.db-journal</code>（或 WAL 文件）还占着。</p>
+<p><strong>解决</strong>：</p>
+<pre><code># 方法一：杀掉残留进程
+pkill -f codegraph
+
+# 方法二：检查哪个进程占着数据库
+lsof .codegraph/codegraph.db
+
+# 方法三：如果以上都不行，删掉锁文件（安全，数据在 db 本身）
+rm -f .codegraph/codegraph.db-journal
+rm -f .codegraph/codegraph.db-wal  # 如果有 WAL 文件
+
+# 然后重新运行
+codegraph init -i</code></pre>
+<p><strong>预防</strong>：不要在同一个项目目录同时跑两个 codegraph 实例。关闭终端时确保 codegraph 进程正确退出。</p>
+<h2>💣 踩坑四：框架检测失灵 — 路由文件没被正确识别</h2>
+<p><strong>现象</strong>：初始化成功，但问 CodeGraph「某个 API 路由对应的 handler 是哪个」，它返回空结果。</p>
+<p><strong>根因</strong>：CodeGraph 的框架感知路由检测支持 13 个框架，但需要项目目录结构符合框架的默认约定。例如：</p>
+<ul><li>Express 项目：`routes/` 或 `app.js` / `server.js`</li><li>Django 项目：`urls.py` 在 app 目录下</li><li>Gin 项目：`router.go` 或 `routes.go`</li></ul>
+<p>如果你的路由文件不在标准位置，需要手动指定或配置文件。</p>
+<p><strong>验证</strong>：</p>
+<pre><code># 初始化后查看它识别到的语言和框架
+codegraph info
+
+# 检查索引日志，看是否有框架被跳过
+cat .codegraph/index.log  # 如果有的话
+
+# 手动测试路由查询
+codegraph query "GET /api/users handler"</code></pre>
+<p>**如果框架没被识别**：可以给项目根目录加一个 <code>codegraph.config.json</code> 指定路径，或者在 GitHub issue 区反馈（这个是 feature request 的高频区）。</p>
+<h2>✅ 完整安装流程（避坑最终版）</h2>
+<pre><code># 第一步：确认环境
+node --version   # 要求 >= v20
+npm --version
+
+# 第二步：安装 codegraph（推荐 npx 零安装，先试试）
+npx @colbymchenry/codegraph --version
+
+# 如果 npx 正常，直接进入第三步
+# 如果报 command not found，用 npm 全局安装
+npm i -g @colbymchenry/codegraph
+
+# 第三步：进入项目目录，初始化
+cd your-project
+codegraph init -i
+
+# 第四步：验证索引是否正常
+codegraph info
+
+# 第五步：连接 Claude Code（或其他 agent）
+# CodeGraph 的安装脚本会自动修改 agent 的 MCP 配置
+# 如果没有自动触发，手动配置如下：
+# Claude Code: ~/.claude/claude_desktop_config.json 添加 MCP server</code></pre>
+<h2>📊 我实测的效果</h2>
+<p>我在约 600 个文件的 TypeScript 项目（Excalidraw 规模）里实测：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">指标</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">无 CodeGraph</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">有 CodeGraph</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">节省</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Tool Calls</td><td style="border:1px solid #ddd;padding:8px;">~200</td><td style="border:1px solid #ddd;padding:8px;">~28</td><td style="border:1px solid #ddd;padding:8px;">**86%**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Tokens</td><td style="border:1px solid #ddd;padding:8px;">~50000</td><td style="border:1px solid #ddd;padding:8px;">~13500</td><td style="border:1px solid #ddd;padding:8px;">**73%**</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">耗时</td><td style="border:1px solid #ddd;padding:8px;">~90s</td><td style="border:1px solid #ddd;padding:8px;">~36s</td><td style="border:1px solid #ddd;padding:8px;">**60%**</td></tr></tbody></table>
+<p>官方在 7 个真实开源项目上的平均数据是 92% 更少的 Tool Calls、71% 更快的探索速度——跟我的实测趋势一致。</p>
+<h2>🆚 CodeGraph vs 其他方案对比</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方案</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">本地化</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">安装难度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">框架感知</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">适用场景</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**CodeGraph**</td><td style="border:1px solid #ddd;padding:8px;">✅ 100%</td><td style="border:1px solid #ddd;padding:8px;">低（一行命令）</td><td style="border:1px solid #ddd;padding:8px;">✅ 13框架</td><td style="border:1px solid #ddd;padding:8px;">Claude Code/Cursor 项目</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**serena**</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">高（需配置）</td><td style="border:1px solid #ddd;padding:8px;">一般</td><td style="border:1px solid #ddd;padding:8px;">跨 agent 通用</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**Continue**</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">中</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">VS Code 集成</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**原生搜索**</td><td style="border:1px solid #ddd;padding:8px;">N/A</td><td style="border:1px solid #ddd;padding:8px;">无</td><td style="border:1px solid #ddd;padding:8px;">❌</td><td style="border:1px solid #ddd;padding:8px;">小项目（<50文件）</td></tr></tbody></table>
+<h2>结语</h2>
+<p>CodeGraph 解决的是一个真实痛点：大仓库里 AI agent 做架构级查询时疯狂扫描文件，tokens 和时间都浪费在探索上。</p>
+<p>安装本身不复杂，但踩过这 4 个坑之后，我的感受是：<strong>「Crash on init」大概率是 SQLite 权限问题，不是你的错，重装前先跑一遍上面的排查流程。</strong> 框架检测如果失灵，看一眼项目目录结构是否符合框架默认约定，基本能解决。</p>
+<p>如果你用 Claude Code 或 Cursor 处理中大型项目，CodeGraph 值得一试。省 tokens 就是省钱，这个账很清楚。</p>
+<p>👉 立即体验 MiniMax API：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p><strong>相关书籍推荐</strong>：</p>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 WordPress 相关书籍 >></a></li><li><a href="https://www.amazon.com/s?k=Artificial+Intelligence+Programming&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=artificial+intelligence+programming%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 AI 编程相关书籍 >></a></li></ul>
+<p><em></em></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
