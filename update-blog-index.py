@@ -112,7 +112,64 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         </div>
     </header>
 
-    <div id="search" style="margin: 20px 0;"></div>
+    <style>
+      #search {
+        margin: 30px auto 40px auto !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+      }
+      .pagefind-ui__search-input {
+        width: 100% !important;
+        background-color: #fafafa !important;
+        border: 1px solid #e0e0e0 !important;
+        border-radius: 6px !important;
+        font-size: 1rem !important;
+        padding: 12px 15px 12px 42px !important;
+        box-shadow: none !important;
+        transition: all 0.2s ease-in-out;
+      }
+      .pagefind-ui__search-input:focus {
+        background-color: #fff !important;
+        border-color: #1890ff !important;
+        box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
+        outline: none;
+      }
+      .pagefind-ui__search-clear {
+        background-color: #f5f5f5 !important;
+        color: #555 !important;
+        border-radius: 4px !important;
+        padding: 4px 10px !important;
+        font-size: 0.85rem !important;
+      }
+      .pagefind-ui__drawer {
+        background: #ffffff !important;
+        border: 1px solid #e8e8e8 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
+        padding: 20px !important;
+        margin-top: 10px !important;
+        position: absolute !important;
+        width: 100% !important;
+        box-sizing: border-box;
+        z-index: 9999;
+      }
+      .pagefind-ui__result-title a {
+        color: #1890ff !important;
+        font-weight: 600 !important;
+        text-decoration: none;
+      }
+      .pagefind-ui__result-title a:hover { text-decoration: underline; }
+      .pagefind-ui__result-excerpt mark {
+        background-color: #fff1b8 !important;
+        color: #000 !important;
+        padding: 0 3px;
+        border-radius: 3px;
+      }
+    </style>
+    <div style="position: relative; width: 100%; box-sizing: border-box;">
+      <div id="search"></div>
+    </div>
     <script src="/_pagefind/pagefind-ui.js"></script>
     <script>
       window.addEventListener('DOMContentLoaded', function() {
@@ -207,7 +264,64 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         </div>
     </header>
 
-    <div id="search" style="margin: 20px 0;"></div>
+    <style>
+      #search {
+        margin: 30px auto 40px auto !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        box-sizing: border-box;
+      }
+      .pagefind-ui__search-input {
+        width: 100% !important;
+        background-color: #fafafa !important;
+        border: 1px solid #e0e0e0 !important;
+        border-radius: 6px !important;
+        font-size: 1rem !important;
+        padding: 12px 15px 12px 42px !important;
+        box-shadow: none !important;
+        transition: all 0.2s ease-in-out;
+      }
+      .pagefind-ui__search-input:focus {
+        background-color: #fff !important;
+        border-color: #1890ff !important;
+        box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
+        outline: none;
+      }
+      .pagefind-ui__search-clear {
+        background-color: #f5f5f5 !important;
+        color: #555 !important;
+        border-radius: 4px !important;
+        padding: 4px 10px !important;
+        font-size: 0.85rem !important;
+      }
+      .pagefind-ui__drawer {
+        background: #ffffff !important;
+        border: 1px solid #e8e8e8 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
+        padding: 20px !important;
+        margin-top: 10px !important;
+        position: absolute !important;
+        width: 100% !important;
+        box-sizing: border-box;
+        z-index: 9999;
+      }
+      .pagefind-ui__result-title a {
+        color: #1890ff !important;
+        font-weight: 600 !important;
+        text-decoration: none;
+      }
+      .pagefind-ui__result-title a:hover { text-decoration: underline; }
+      .pagefind-ui__result-excerpt mark {
+        background-color: #fff1b8 !important;
+        color: #000 !important;
+        padding: 0 3px;
+        border-radius: 3px;
+      }
+    </style>
+    <div style="position: relative; width: 100%; box-sizing: border-box;">
+      <div id="search"></div>
+    </div>
     <script src="/_pagefind/pagefind-ui.js"></script>
     <script>
       window.addEventListener('DOMContentLoaded', function() {
