@@ -112,9 +112,22 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         </div>
     </header>
 
-    <div class="affiliate-disclaimer">
-        ⚠️ 本文包含联盟链接。如果您通过这些链接购买，我可能会获得佣金，但不会增加您的费用。这有助于我们持续产出优质内容。
-    </div>
+    <div id="search" style="margin: 20px 0;"></div>
+    <script src="/_pagefind/pagefind-ui.js"></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', function() {
+        new PagefindUI({
+          element: "#search",
+          showSubResults: true,
+          translations: {
+            placeholder: "搜索报错日志、技术关键字或产品...",
+            clear_search: "清除",
+            zero_results: "未找到与 [SEARCH] 相关的技术踩坑复盘",
+            many_results: "找到 [COUNT] 条相关结果"
+          }
+        });
+      });
+    </script>
 
     {{POPULAR_CN}}
 
@@ -194,9 +207,22 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         </div>
     </header>
 
-    <div class="affiliate-disclaimer">
-        ⚠️ This site contains affiliate links. If you purchase through them, I may earn a commission at no extra cost to you. This helps us keep producing quality content.
-    </div>
+    <div id="search" style="margin: 20px 0;"></div>
+    <script src="/_pagefind/pagefind-ui.js"></script>
+    <script>
+      window.addEventListener('DOMContentLoaded', function() {
+        new PagefindUI({
+          element: "#search",
+          showSubResults: true,
+          translations: {
+            placeholder: "Search errors, tech keywords or products...",
+            clear_search: "Clear",
+            zero_results: "No results for [SEARCH]",
+            many_results: "Found [COUNT] results"
+          }
+        });
+      });
+    </script>
 
     {{POPULAR_EN}}
 
@@ -205,7 +231,8 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
 
 INDEX_FOOTER = '''    </ul>
     <footer>
-        <p>&copy; 2026 TechPassive. All rights reserved.</p>
+        <p>© 2026 TechPassive. All rights reserved.</p>
+        <p style="font-size: 0.8rem; color: #999; margin-top: 8px;">Disclaimer: This site contains affiliate links. Purchases through these links may earn me a small commission at no extra cost to you.</p>
     </footer>
 </body>
 </html>
@@ -243,9 +270,11 @@ def get_title_from_html(filepath):
 
 
 def get_popular_articles(limit=8, lang='cn'):
-    """扫描 archive/ 目录，按内链数量降序取 TopN"""
+    """扫描 archive/ 目录，按内链数量降序取 TopN，同 slug 去重（保留最高内链量）"""
     archive_dir = os.path.join(BLOG_DIR, 'archive')
     articles = []
+    seen_slugs = set()  # 全局 slug 去重
+
     for root, dirs, files in os.walk(archive_dir):
         for f in files:
             if not f.endswith('.html') or f.startswith('.'):
@@ -269,7 +298,23 @@ def get_popular_articles(limit=8, lang='cn'):
                 date_m = re.search(r'(\d{4}-\d{2}-\d{2})', root)
                 date_str = date_m.group(1) if date_m else '2026-01-01'
                 rel_path = os.path.relpath(path, BLOG_DIR)
-                articles.append((link_count, date_str, rel_path, title))
+                # 提取 slug 用于去重（去掉日期前缀和语言后缀）
+                slug = re.sub(r'^\d{4}-\d{2}-\d{2}[-_]', '', f)
+                slug = re.sub(r'-en\.html$', '', slug)
+                slug = re.sub(r'\.html$', '', slug)
+                # slug 去重：同一 slug 只保留内链数最高的路径
+                if slug not in seen_slugs:
+                    seen_slugs.add(slug)
+                    articles.append((link_count, date_str, rel_path, title))
+                else:
+                    # 已在列表中但当前内链更多 → 替换
+                    for i, (lc, ds, rp, t) in enumerate(articles):
+                        s = re.sub(r'^\d{4}-\d{2}-\d{2}[-_]', '', os.path.basename(rp))
+                        s = re.sub(r'-en\.html$', '', s)
+                        s = re.sub(r'\.html$', '', s)
+                        if s == slug and link_count > lc:
+                            articles[i] = (link_count, date_str, rel_path, title)
+                            break
             except Exception:
                 continue
     # 按内链数量降序
@@ -292,7 +337,25 @@ def generate_popular_html_cn(limit=8):
         items_html.append(
             f'            <div class="popular-item">\n'
             f'                <div class="popular-title"><a href="{rel_path}">{title}</a></div>\n'
-            f'                <div class="popular-meta">发布于 {date_display} · {link_count}条内链</div>\n'
+            f'                <div class="popular-meta">'
+            f'                    <span style="color: #666; font-size: 0.85rem;">发布于 {date_display}</span>\n'
+            f'                    <span class="link-badge" style="'
+            f'                        background: #e6f7ff;'
+            f'                        color: #1890ff;'
+            f'                        padding: 2px 6px;'
+            f'                        border-radius: 4px;'
+            f'                        font-size: 0.75rem;'
+            f'                        margin-left: 8px;'
+            f'                        display: inline-flex;'
+            f'                        align-items: center;'
+            f'                        gap: 4px;'
+            f'                        border: 1px solid #91d5ff;'
+            f'                        font-weight: 500;'
+            f'                        vertical-align: middle;'
+            f'                    ">\n'
+            f'                        🔗 {link_count} 条内链织网\n'
+            f'                    </span>\n'
+            f'                </div>\n'
             f'            </div>'
         )
     return (
@@ -319,7 +382,25 @@ def generate_popular_html_en(limit=8):
         items_html.append(
             f'            <div class="popular-item">\n'
             f'                <div class="popular-title"><a href="{rel_path}">{title}</a></div>\n'
-            f'                <div class="popular-meta">Published {date_display} · {link_count} internal links</div>\n'
+            f'                <div class="popular-meta">'
+            f'                    <span style="color: #666; font-size: 0.85rem;">Published {date_display}</span>\n'
+            f'                    <span class="link-badge" style="'
+            f'                        background: #f6ffed;'
+            f'                        color: #52c41a;'
+            f'                        padding: 2px 6px;'
+            f'                        border-radius: 4px;'
+            f'                        font-size: 0.75rem;'
+            f'                        margin-left: 8px;'
+            f'                        display: inline-flex;'
+            f'                        align-items: center;'
+            f'                        gap: 4px;'
+            f'                        border: 1px solid #b7eb8f;'
+            f'                        font-weight: 500;'
+            f'                        vertical-align: middle;'
+            f'                    ">\n'
+            f'                        🔗 {link_count} Internal Links\n'
+            f'                    </span>\n'
+            f'                </div>\n'
             f'            </div>'
         )
     return (
