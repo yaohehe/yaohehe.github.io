@@ -9,7 +9,7 @@ import re
 import glob
 from datetime import datetime
 
-BLOG_DIR = "/root/.openclaw/workspace/yaohehe.github.io"
+BLOG_DIR = os.path.dirname(os.path.abspath(__file__)) or "."
 
 # 统计代码
 GOOGLE_ANALYTICS = '''<!-- Google tag (gtag.js) -->
@@ -297,7 +297,7 @@ def get_popular_articles(limit=8, lang='cn'):
                 # 提取发布日期（从路径或文件名前缀）
                 date_m = re.search(r'(\d{4}-\d{2}-\d{2})', root)
                 date_str = date_m.group(1) if date_m else '2026-01-01'
-                rel_path = os.path.relpath(path, BLOG_DIR)
+                rel_path = os.path.basename(path)  # 文章在根目录，href 必须是 basename
                 # 提取 slug 用于去重（去掉日期前缀和语言后缀）
                 slug = re.sub(r'^\d{4}-\d{2}-\d{2}[-_]', '', f)
                 slug = re.sub(r'-en\.html$', '', slug)
@@ -422,17 +422,18 @@ def generate_index(articles, header, footer, lang='cn'):
     # 生成文章列表
     items = []
     for date, filename, title in articles:
+        href = os.path.basename(filename)  # 物理文件在根目录，href 必须是 basename
         if lang == 'cn':
             items.append(
                 f'        <li class="post-item">\n'
-                f'            <h2 class="post-title"><a href="{filename}">{title}</a></h2>\n'
+                f'            <h2 class="post-title"><a href="{href}">{title}</a></h2>\n'
                 f'            <p class="post-meta">发布于 {date}</p>\n'
                 f'        </li>'
             )
         else:
             items.append(
                 f'        <li class="post-item">\n'
-                f'            <h2 class="post-title"><a href="{filename}">{title}</a></h2>\n'
+                f'            <h2 class="post-title"><a href="{href}">{title}</a></h2>\n'
                 f'            <p class="post-meta">Published {date}</p>\n'
                 f'        </li>'
             )
@@ -456,7 +457,7 @@ def generate_sitemap(articles, today):
              '    <priority>1.0</priority>',
              '  </url>']
     for date, filename, title in articles:
-        url = f'https://yaohehe.github.io/{filename}'
+        url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
         lines.append('  <url>')
         lines.append(f'    <loc>{url}</loc>')
         lines.append(f'    <lastmod>{date}</lastmod>')
