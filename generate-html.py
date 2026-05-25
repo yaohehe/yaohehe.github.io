@@ -606,6 +606,13 @@ def generate_html(content, template, css):
         print(f"⚠️ h1 与正文第一个 h2 相同 ('{h1_to_use[:50]}...')，用 title 替代")
         h1_to_use = meta['title']
 
+    # 检查 h1 是否为英文而 title 为中文（流水线生成时的常见错误：h1 写英文，title 写中文）
+    def has_cjk(s):
+        return any('\u4e00' <= c <= '\u9fff' for c in s)
+    if not has_cjk(meta['h1']) and has_cjk(meta['title']) and meta['h1'] != meta['title']:
+        print(f"⚠️ h1 是英文而 title 是中文，自动用 title 替代 h1：'{meta['h1'][:60]}' → '{meta['title'][:60]}'")
+        h1_to_use = meta['title']
+
     is_en = 'en' in css.lower() or 'lang="en"' in template
     html_body = insert_affiliate_links(html_body, is_en)
 
