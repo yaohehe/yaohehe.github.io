@@ -135,43 +135,24 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
         outline: none;
       }
-      .pagefind-ui__form {
-        position: relative !important;
-        width: 100% !important;
-      }
       .pagefind-ui__search-clear {
         background-color: #f5f5f5 !important;
         color: #555 !important;
         border-radius: 4px !important;
         padding: 4px 10px !important;
         font-size: 0.85rem !important;
-        position: absolute !important;
-        right: 8px !important;
-        top: 50% !important;
-        transform: translateY(-50%) !important;
-        z-index: 10 !important;
       }
       .pagefind-ui__drawer {
-        display: none !important;
         background: #ffffff !important;
         border: 1px solid #e8e8e8 !important;
         border-radius: 8px !important;
         box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
         padding: 20px !important;
         margin-top: 10px !important;
+        position: absolute !important;
         width: 100% !important;
         box-sizing: border-box;
-      }
-      .pagefind-ui__drawer:not(.pagefind-ui__hidden) {
-        display: flex !important;
-        flex-wrap: wrap;
-        gap: 60px;
-        flex-direction: row;
-      }
-      .pagefind-ui__results-area {
-        min-width: min(400px, 100%) !important;
-        flex: 1000 !important;
-        margin-top: 20px !important;
+        z-index: 9999;
       }
       .pagefind-ui__result-title a {
         color: #1890ff !important;
@@ -306,43 +287,24 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
         outline: none;
       }
-      .pagefind-ui__form {
-        position: relative !important;
-        width: 100% !important;
-      }
       .pagefind-ui__search-clear {
         background-color: #f5f5f5 !important;
         color: #555 !important;
         border-radius: 4px !important;
         padding: 4px 10px !important;
         font-size: 0.85rem !important;
-        position: absolute !important;
-        right: 8px !important;
-        top: 50% !important;
-        transform: translateY(-50%) !important;
-        z-index: 10 !important;
       }
       .pagefind-ui__drawer {
-        display: none !important;
         background: #ffffff !important;
         border: 1px solid #e8e8e8 !important;
         border-radius: 8px !important;
         box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
         padding: 20px !important;
         margin-top: 10px !important;
+        position: absolute !important;
         width: 100% !important;
         box-sizing: border-box;
-      }
-      .pagefind-ui__drawer:not(.pagefind-ui__hidden) {
-        display: flex !important;
-        flex-wrap: wrap;
-        gap: 60px;
-        flex-direction: row;
-      }
-      .pagefind-ui__results-area {
-        min-width: min(400px, 100%) !important;
-        flex: 1000 !important;
-        margin-top: 20px !important;
+        z-index: 9999;
       }
       .pagefind-ui__result-title a {
         color: #1890ff !important;
@@ -383,13 +345,8 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
 
 INDEX_FOOTER = '''    </ul>
     <footer>
-        <p>&copy; 2026 TechPassive. All rights reserved.</p>
+        <p>© 2026 TechPassive. All rights reserved.</p>
         <p style="font-size: 0.8rem; color: #999; margin-top: 8px;">Disclaimer: This site contains affiliate links. Purchases through these links may earn me a small commission at no extra cost to you.</p>
-        <p style="font-size: 0.8rem; color: #888; margin-top: 12px;">
-            <a href="/privacy-policy.html" style="color: #888; text-decoration: none;">Privacy Policy / 隐私政策</a>
-             &middot; 
-            <a href="/about.html" style="color: #888; text-decoration: none;">About / 关于</a>
-        </p>
     </footer>
 </body>
 </html>
@@ -598,28 +555,22 @@ def generate_index(articles, header, footer, lang='cn'):
 
 
 def generate_sitemap(articles, today):
-    """生成 sitemap XML"""
+    """生成 sitemap XML — 极简格式，仅保留 Google 实际读取的 <loc> + <lastmod>"""
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
              '  <url>',
              '    <loc>https://yaohehe.github.io/</loc>',
              f'    <lastmod>{today}</lastmod>',
-             '    <changefreq>daily</changefreq>',
-             '    <priority>1.0</priority>',
              '  </url>',
              '  <url>',
              '    <loc>https://yaohehe.github.io/index-en.html</loc>',
              f'    <lastmod>{today}</lastmod>',
-             '    <changefreq>daily</changefreq>',
-             '    <priority>1.0</priority>',
              '  </url>']
     for date, filename, title in articles:
         url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
         lines.append('  <url>')
         lines.append(f'    <loc>{url}</loc>')
         lines.append(f'    <lastmod>{date}</lastmod>')
-        lines.append('    <changefreq>weekly</changefreq>')
-        lines.append('    <priority>0.8</priority>')
         lines.append('  </url>')
     lines.append('</urlset>')
     return '\n'.join(lines) + '\n'
