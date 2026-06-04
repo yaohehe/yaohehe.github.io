@@ -179,13 +179,15 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   <a href="#main-content" class="skip-link">跳到主要内容</a>
   <a href="/" class="back-btn">← 返回首页</a>
   <main id="main-content">
-  <h1>{h1}</h1>
+  <article itemscope itemtype="https://schema.org/Article">
+  <h1 itemprop="headline">{h1}</h1>
   <div class="post-tags">
     {tags_html}
   </div>
-  <div class="content">
+  <div class="content" itemprop="articleBody">
     {html_body}
   </div>
+  </article>
   <a href="/" class="back-btn">← 返回首页</a>
   </main>
   {BAIDU_STATS}
@@ -213,13 +215,15 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <a href="/" class="back-btn">← Back to Home</a>
   <main id="main-content">
-  <h1>{h1}</h1>
+  <article itemscope itemtype="https://schema.org/Article">
+  <h1 itemprop="headline">{h1}</h1>
   <div class="post-tags">
     {tags_html}
   </div>
-  <div class="content">
+  <div class="content" itemprop="articleBody">
     {html_body}
   </div>
+  </article>
   <a href="/" class="back-btn">← Back to Home</a>
   </main>
   {BAIDU_STATS}
