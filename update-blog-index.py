@@ -573,7 +573,11 @@ def generate_sitemap(articles, today):
              f'    <lastmod>{today}</lastmod>',
              '  </url>']
     for date, filename, title in articles:
-        url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
+        # 根因修复（2026-06-07）：filename 已是相对路径（含 archive/ 前缀），
+        # 原 os.path.basename 会把 archive/2026-05-10/xxx.html 截成 xxx.html（根目录路径），
+        # 导致所有 archive/ 下的文章 URL 错误指向不存在的根目录文件，搜索引擎永远收不到真实路径。
+        # 正确做法：直接用相对路径作为 URL 路径。
+        url = f'https://yaohehe.github.io/{filename}'
         lines.append('  <url>')
         lines.append(f'    <loc>{url}</loc>')
         lines.append(f'    <lastmod>{date}</lastmod>')
