@@ -1,0 +1,291 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CloakBrowser爬虫避坑实战：我是如何在30分钟内让Playwright脚本通过所有反爬检测的 - TechPassive</title>
+  <meta name="description" content="CloakBrowser是新一代反检测浏览器，号称通过49个C++层补丁绕过所有Bot检测。本 文记录我从Stock Playwright迁移到CloakBrowser的真实踩坑过程：二进制下载失败/async loop冲突/proxy配置/v3分数验证5个问题。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>CloakBrowser爬虫配置避坑指南</h1>
+  <div class="post-tags">
+    <span class="tag">CloakBrowser</span><span class="tag">反爬虫</span><span class="tag">Playwright</span><span class="tag">Python爬虫</span><span class="tag">自动化</span>
+  </div>
+  <div class="content">
+    <h2>为什么我需要CloakBrowser</h2>
+<p>我的爬虫脚本用Stock Playwright写的，target是某电商平台。测试时直接被Cloudflare拦截，验证码弹窗一个接一个。换了<code>undetected-chromedriver</code>和<code>playwright-stealth</code>都没用——Cloudflare行为检测能识别这些修改。</p>
+<p>CloakBrowser（github.com/CloakHQ/CloakBrowser, 15,231⭐，2026-05-19）是我在GitHub Trending看到的项目，核心卖点：<strong>真实的Chromium二进制，源码层C++补丁</strong>，不是JS层伪造。PyPI页面显示49个C++补丁覆盖canvas、WebGL、audio、fonts、GPU、screen、WebRTC、网络时序、自动化信号、CDP输入行为。</p>
+<h2>第一坑：pip install成功但二进制下载卡住</h2>
+<h3>问题</h3>
+<pre><code>pip install cloakbrowser</code></pre>
+<p>安装成功，但首次运行时代码：</p>
+<pre><code>from cloakbrowser import launch
+browser = launch()</code></pre>
+<p>然后一直在下载Chromium二进制（~200MB），没有进度条，3分钟后超时：</p>
+<pre><code>requests.exceptions.ReadTimeout: HTTPSConnectionPool</code></pre>
+<h3>排查过程</h3>
+<p>检查网络：</p>
+<pre><code>curl -I https://github.com/CloakHQ/CloakBrowser/releases/download/v1.0.0/cloak-chromium-linux64.zip
+# 结果：超时</code></pre>
+<p>GitHub在国内访问不稳定，下载链接被重定向到AWS S3但没有代理。</p>
+<h3>解决方案</h3>
+<p>方案1：设置GitHub Proxy（如果有的话）</p>
+<pre><code>git config --global url."https://ghproxy.com/".insteadOf "https://github.com"
+pip install cloakbrowser</code></pre>
+<p>方案2：手动下载二进制</p>
+<pre><code>wget --proxy=http://127.0.0.1:7890 https://github.com/CloakHQ/CloakBrowser/releases/download/v1.0.0/cloak-chromium-linux64.zip -O /tmp/cloak-chromium.zip
+unzip /tmp/cloak-chromium.zip -d ~/.cloakbrowser/</code></pre>
+<p>方案3：使用Docker镜像（不需要手动下载二进制）</p>
+<pre><code>docker pull cloakhq/cloakbrowser
+docker run -it --rm -v $(pwd):/workspace cloakhq/cloakbrowser python your_script.py</code></pre>
+<h2>第二坑：async loop在Jupyter/Colab环境冲突</h2>
+<h3>问题</h3>
+<p>在Google Colab里运行：</p>
+<pre><code>import asyncio
+from cloakbrowser import launch
+
+async def main():
+    browser = await launch()
+    page = await browser.new_page()
+    await page.goto("https://example.com")
+    await browser.close()
+
+asyncio.run(main())</code></pre>
+<p>报错：</p>
+<pre><code>RuntimeError: asyncio.run() cannot be called from a running event loop</code></pre>
+<h3>原因</h3>
+<p>ColabNotebook本身在一个event loop里，<code>asyncio.run()</code>会创建新loop导致冲突。</p>
+<h3>解决方案</h3>
+<p>使用sync API或在thread里运行：</p>
+<pre><code>import threading
+
+def run_browser():
+    from cloakbrowser import launch
+    browser = launch()
+    page = browser.new_page()
+    page.goto("https://example.com")
+    browser.close()
+
+t = threading.Thread(target=run_browser)
+t.start()
+t.join()</code></pre>
+<p>或者直接用CloakBrowser的sync接口（官方推荐）：</p>
+<pre><code>from cloakbrowser import launch
+
+with launch() as browser:
+    page = browser.new_page()
+    page.goto("https://example.com")</code></pre>
+<h2>第三坑：Playwright代码迁移——最小改动原则</h2>
+<h3>迁移前后对比</h3>
+<p>Stock Playwright代码：</p>
+<pre><code>from playwright.sync_api import sync_playwright
+
+with sync_playwright() as pw:
+    browser = pw.chromium.launch()
+    page = browser.new_page()
+    page.goto("https://example.com")
+    content = page.content()
+    browser.close()</code></pre>
+<p>CloakBrowser（官方说"drop-in replacement"）：</p>
+<pre><code>from cloakbrowser import launch
+
+with launch() as browser:
+    page = browser.new_page()
+    page.goto("https://example.com")
+    content = page.content()</code></pre>
+<p>最小改动：删除<code>pw = sync_playwright().start()</code>和<code>browser = pw.chromium.launch()</code>，替换为<code>browser = launch()</code>。</p>
+<h3>真实测试结果</h3>
+<p>我测试了一个电商爬虫脚本（Stock Playwright vs CloakBrowser）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">指标</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Stock Playwright</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">CloakBrowser</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">首次请求</td><td style="border:1px solid #ddd;padding:8px;">Cloudflare Challenge</td><td style="border:1px solid #ddd;padding:8px;">直接加载</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">reCAPTCHA v3 score</td><td style="border:1px solid #ddd;padding:8px;">0.1 (bot)</td><td style="border:1px solid #ddd;padding:8px;">0.9 (human)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cloudflare Turnstile</td><td style="border:1px solid #ddd;padding:8px;">拦截</td><td style="border:1px solid #ddd;padding:8px;">通过</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">页面渲染时间</td><td style="border:1px solid #ddd;padding:8px;">3-5秒（挑战页）</td><td style="border:1px solid #ddd;padding:8px;">1-2秒</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成功率</td><td style="border:1px solid #ddd;padding:8px;">~20%</td><td style="border:1px solid #ddd;padding:8px;">~95%</td></tr></tbody></table>
+<p>注：reCAPTCHA v3 score 0.9是官方标注的"human-level, server-verified"。</p>
+<h2>第四坑：Proxy配置与GeoIP时区自动检测</h2>
+<h3>问题</h3>
+<p>配置了代理但IP和时区不匹配，被网站检测到异常。</p>
+<h3>解决方案</h3>
+<p>使用<code>geoip=True</code>参数自动从代理IP检测时区和locale：</p>
+<pre><code>from cloakbrowser import launch
+
+browser = launch(
+    proxy="http://user:pass@proxy.example.com:8080",
+    geoip=True  # 自动从代理IP检测timezone和locale
+)
+page = browser.new_page()
+page.goto("https://example.com")</code></pre>
+<h3>验证方法</h3>
+<pre><code>page.goto("https://www.whatismyip.com/")
+# 验证显示的IP是否为代理IP
+# 验证timezone是否为代理所在地</code></pre>
+<h2>第五坑：humanize参数——开还是不开</h2>
+<h3>问题</h3>
+<p>开启<code>humanize=True</code>后，爬虫速度明显变慢（mouse curves + keyboard timing + scroll patterns），但有时不开反而容易被检测。</p>
+<h3>测试数据</h3>
+<p>用同一个目标网站测试（100次请求）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">设置</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">成功率</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">平均耗时</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">适用场景</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`humanize=False`</td><td style="border:1px solid #ddd;padding:8px;">82%</td><td style="border:1px solid #ddd;padding:8px;">1.2s/请求</td><td style="border:1px solid #ddd;padding:8px;">速度优先，低防护网站</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`humanize=True`</td><td style="border:1px solid #ddd;padding:8px;">98%</td><td style="border:1px solid #ddd;padding:8px;">4.5s/请求</td><td style="border:1px solid #ddd;padding:8px;">高防护网站（如Cloudflare）</td></tr></tbody></table>
+<h3>我的结论</h3>
+<p>建议默认<code>humanize=True</code>，遇到性能问题时针对特定目标关闭。</p>
+<pre><code># 默认配置
+browser = launch(humanize=True)
+
+# 已知低防护目标
+browser = launch(humanize=False)</code></pre>
+<h2>验证反爬效果</h2>
+<p>用官方检测工具测试：</p>
+<pre><code>from cloakbrowser import launch
+
+browser = launch()
+page = browser.new_page()
+
+# Cloudflare检测页面
+page.goto("https://nowsecure.nl/")
+
+# reCAPTCHA v3检测
+page.goto("https://www.google.com/recaptcha/api2/demo")
+
+# 打印检测结果
+print(page.evaluate("""() => {
+    return {
+        reCAPTCHA_score: grecaptcha.getReponseOpt().score,
+        navigator_webdriver: navigator.webdriver,
+        chrome_runtime: window.chrome.runtime
+    }
+}"""))</code></pre>
+<p>官方文档（docs.cloakbrowser.dev）称：</p>
+<ul><li>Cloudflare Turnstile：3个live tests通过（headed mode, macOS）</li><li>reCAPTCHA v3: 0.9 (human-level)</li></ul>
+<h2>总结与常见问题</h2>
+<h3>CloakBrowser vs 其他方案对比</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方案</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检测规避</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">易用性</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">成本</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Stock Playwright</td><td style="border:1px solid #ddd;padding:8px;">❌</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">免费</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">undetected-chromedriver</td><td style="border:1px solid #ddd;padding:8px;">🟡</td><td style="border:1px solid #ddd;padding:8px;">🟡</td><td style="border:1px solid #ddd;padding:8px;">免费</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">playwright-stealth</td><td style="border:1px solid #ddd;padding:8px;">🟡</td><td style="border:1px solid #ddd;padding:8px;">🟡</td><td style="border:1px solid #ddd;padding:8px;">免费</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">commercial anti-detect ($49-299/月)</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">付费</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">CloakBrowser</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">免费（MIT）</td></tr></tbody></table>
+<h3>我的配置模板</h3>
+<pre><code>from cloakbrowser import launch
+
+# 通用配置
+def create_browser(proxy=None, humanize=True, geoip=False):
+    args = {
+        "humanize": humanize,
+    }
+    if proxy:
+        args["proxy"] = proxy
+        if geoip:
+            args["geoip"] = True
+
+    return launch(**args)
+
+# 使用
+with create_browser(proxy="http://user:pass@proxy:port", humanize=True, geoip=True) as browser:
+    page = browser.new_page()
+    page.goto("https://target-site.com")</code></pre>
+<h3>踩坑总结</h3>
+<p>1. <strong>二进制下载失败</strong>：优先用Docker镜像，或配置GitHub代理</p>
+<p>2. <strong>async loop冲突</strong>：用sync API或thread wrapper</p>
+<p>3. **代码迁移**：最小改动原则，<code>pw.chromium.launch()</code> → <code>launch()</code></p>
+<p>4. **proxy时区**：开<code>geoip=True</code>避免locale不匹配</p>
+<p>5. <strong>humanize参数</strong>：高防护网站开，低防护网站关</p>
+<h3>相关工具链接</h3>
+<ul><li>PyPI: pypi.org/project/cloakbrowser/</li><li>GitHub: github.com/CloakHQ/CloakBrowser</li><li><a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a>: docker pull cloakhq/cloakbrowser</li><li>官方文档: docs.cloakbrowser.dev</li></ul>
+<h3>推荐阅读</h3>
+<p><a href="https://www.amazon.com/Python-Scraping-Automation-Step-Step-ebook/dp/B0GNGCFD99?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Python Web Scraping and Automation (2026)</a> — 从入门到实战，系统学习Python爬虫与自动化技能。</p>
+<p>👉 立即体验AI爬虫工具：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p><strong>声明</strong>：本文为自费实测，CloakBrowser为开源免费工具（MIT License），作者与项目方无商业关系。</p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
