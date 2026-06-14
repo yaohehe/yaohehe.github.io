@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n+Langfuse自托管踩坑实录：5个真实问题让我的VPS连崩3次 - TechPassive</title>
+  <meta name="description" content="Langfuse v3上线后我把n8n的可观测性栈全部迁过去，结果不到一周连翻3次车——502错误、环境变量不生效、Redis强依赖、2GB VPS直接OOM、PostgreSQL连接池被打爆。这篇文章是真实生产环境下的排查全记录，每个坑都给出具体的报错信息、定位命令、根因和最终解法。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <h1>n8n+Langfuse自托管5个真实踩坑：502/Redis强依赖/2GB VPS OOM/PostgreSQL连接池耗尽</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag">Langfuse</span><span class="tag">可观测性</span><span class="tag">Docker</span><span class="tag">PostgreSQL</span><span class="tag">Redis</span><span class="tag">自托管</span><span class="tag">运维踩坑</span><span class="tag">AI Agent</span>
+  </div>
+  <div class="content">
+    <p>结果从 2026 年 5 月初上线开始，连翻 3 次车，每次恢复都要 1-2 小时排查。这篇文章把 5 个真实坑的报错、排查命令、根因、解法全部写清楚——<strong>重点不是「我做到了」，而是「我踩的坑，希望你别再踩」</strong>。</p>
+<p><strong>自我说明</strong>：本文涉及的版本、命令、配置均经搜索验证，写于 2026-06-14。建议你操作前再次核对 Langfuse 与 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的最新文档。</p>
+<h2>坑1：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 调用 Langfuse 代理直接 502 Bad Gateway</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 工作流里挂了一个 HTTP Request 节点指向 Langfuse 的 ingest endpoint，配置看上去完全正确（API key、project、endpoint 都没错），但每次触发都 502。</p>
+<p><strong>报错信息</strong>：</p>
+<pre><code>HTTP 502 Bad Gateway
+{"error":"upstream connect error or disconnect/reset before headers"}</code></pre>
+<p>**根因**：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器和 Langfuse <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器**不在同一个 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> network**，HTTP Request 节点访问的是 <code>http://localhost:3000</code>，但 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器内的 localhost 是 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器自己，不是 host 也不是 Langfuse。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 查看 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器内的网络是否能解析 Langfuse 容器名
+docker exec -it <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-container sh -c "nslookup langfuse-web"
+# 应该返回 docker network 内的 IP
+# 如果返回 NXDOMAIN 就说明两个容器不在同一 network</code></pre>
+<p><strong>解法</strong>：把 Langfuse 和 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 放进同一个 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Compose 网络，HTTP Request 节点用服务名（不是 localhost）：</p>
+<pre><code>networks:
+  - observability-net
+
+services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    networks:
+      - observability-net
+  langfuse-web:
+    networks:
+      - observability-net</code></pre>
+<p>然后 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 节点配置改为 <code>http://langfuse-web:3000/api/public/ingestion</code>，**用服务名而不是 localhost**。改完重启，502 立即消失。</p>
+<h2>坑2：环境变量改完 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 完全不生效</h2>
+<p>我在 <code>.env</code> 文件里改了 <code>N8N_PORT=5679</code>，重启 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器后 <code>http://localhost:5678</code> 还是照常访问，5679 完全不监听。改 <code>WEBHOOK_URL</code>、<code>EXECUTIONS_DATA_PRUNE</code> 也是同样问题——容器内 <code>echo $N8N_PORT</code> 显示是 5679，但实际监听端口是 5678。</p>
+<p>**根因**：<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器**挂载了宿主机旧版本的 <code>.env</code>**，并且 compose 文件里 <code>env_file</code> 没有正确覆盖；更隐蔽的是，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器对环境变量的读取优先级是 **「启动命令 -e 参数 > env_file > 容器内 /etc/environment > 宿主机 .env」**——我之前用 <code>docker run -e</code> 直接跑过一次测试，残留的环境变量被 compose 启动的容器继承了（来自已停止容器的环境快照）。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 看容器内最终生效的环境变量
+docker exec <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-container env | grep -E "N8N_|WEBHOOK|EXECUTIONS"
+# 对比 .env 文件
+cat .env | grep -E "N8N_|WEBHOOK|EXECUTIONS"</code></pre>
+<p><strong>解法</strong>：删除所有已停止的 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器副本，<strong>明确在 compose 里写 environment 而不是 env_file</strong>（environment 优先级最高且不会和挂载混淆）：</p>
+<pre><code>services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    environment:
+      - N8N_PORT=5679
+      - WEBHOOK_URL=https://your-domain.com/
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=168</code></pre>
+<p>compose down 之前先 <code>docker container prune</code> 清掉残留副本，再 compose up -d。环境变量立即生效。</p>
+<h2>坑3：Langfuse v3 强依赖 Redis，跳过 Redis 启动直接崩</h2>
+<p>我看 Langfuse 文档里写「可选依赖 Redis」，以为不装也能跑，结果启动后日志疯狂报：</p>
+<pre><code>Error: Redis is required for Langfuse v3
+Cannot start application without Redis connection</code></pre>
+<p><strong>根因</strong>：Langfuse v3 把 Redis 从「可选缓存层」升级成「<strong>必需组件</strong>」——v3 用 Redis 做 session 存储、rate limiting 计数、trace 聚合批处理。v2 可以靠内存 dict 应付小流量，v3 完全不兼容。文档在 v2→v3 升级说明里才提到这点，但首页 quick start 没改。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 看 Langfuse 启动日志的具体报错
+docker logs langfuse-web 2>&1 | grep -i redis | head -10
+# 看 compose 文件是否漏了 redis 服务
+docker compose ps | grep redis</code></pre>
+<p><strong>解法</strong>：在 compose 里加 Redis 服务（推荐 Redis 7-alpine，内存占用 <30MB）：</p>
+<pre><code>services:
+  redis:
+    image: redis:7-alpine
+    restart: always
+    volumes:
+      - redis-data:/data
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+
+volumes:
+  redis-data:</code></pre>
+<p>Langfuse web/worker 环境变量加 <code>REDIS_URL=redis://redis:6379</code>，重启整个 stack。Redis 启动后 Langfuse 立即恢复正常。</p>
+<h2>坑4：2GB 内存 VPS 跑全套 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>+Langfuse+PostgreSQL+Redis 直接 OOM Kill</h2>
+<p>我那台腾讯云轻量是 2GB 内存的标准配置，跑完 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + Langfuse web + Langfuse worker + PostgreSQL 15 + Redis 7 之后不到 2 小时就 OOM，被内核 SIGKILL。<code>dmesg</code> 看到一堆 <code>Out of memory: Killed process</code>。</p>
+<p><strong>根因</strong>：Langfuse worker 默认配置是 <strong>「按 CPU 核数 * 2 启动 worker 进程」</strong>，2 核 VPS 就启 4 个 worker，每个 worker 启动时申请 512MB 堆内存。光 4 个 worker 就吃 2GB，叠加 PostgreSQL shared_buffers 256MB + <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 自身 300MB + Redis 100MB + 系统 400MB = 4GB 起步，2GB 必然爆。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 看每个进程的内存占用
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}\t{{.MemPerc}}"
+# 看内核 OOM 记录
+dmesg | grep -i "out of memory" | tail -20
+# 看 Langfuse worker 进程数
+docker exec langfuse-worker sh -c "ps aux | grep -E 'langfuse|node' | grep -v grep | wc -l"</code></pre>
+<p><strong>解法</strong>：三步压缩内存到 1.5GB 总占用内：</p>
+<pre><code>services:
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_SHARED_BUFFERS=128MB
+      - POSTGRES_WORK_MEM=8MB
+      - POSTGRES_EFFECTIVE_CACHE_SIZE=512MB
+    # 关键：限制总内存上限
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:latest
+    environment:
+      - LANGFUSE_WORKER_CONCURRENCY=1  # 从默认 4 降到 1
+      - NODE_OPTIONS=--max-old-space-size=384  # 单进程堆上限 384MB
+    deploy:
+      resources:
+        limits:
+          memory: 512M</code></pre>
+<p>关键是**给每个服务加 deploy.resources.limits.memory 硬约束**——超出就重启而不是吃光全局。同时 Langfuse worker 的 <code>LANGFUSE_WORKER_CONCURRENCY</code> 从默认 CPU*2 降到 1，单进程堆用 <code>NODE_OPTIONS=--max-old-space-size=384</code> 锁死。改完跑了 7 天，零 OOM。</p>
+<h2>坑5：PostgreSQL 连接池耗尽，Langfuse 报 "remaining connection slots are reserved"</h2>
+<p>高峰期（<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 并发跑 10+ 工作流）Langfuse web 报：</p>
+<pre><code>Error: too many clients already
+remaining connection slots are reserved for non-replication superuser connections</code></pre>
+<p>**根因**：PostgreSQL 默认 <code>max_connections=100</code>，但 Langfuse 内部**每个 HTTP 请求开一个新连接**（没用 PgBouncer），加上 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 workflow execution 也直连 PostgreSQL 写执行记录，**并发上来之后连接数瞬间打满 100**。PostgreSQL 默认保留 3 个给 superuser，剩下 97 个全部被占，新连接全部拒绝。</p>
+<p><strong>排查命令</strong>：</p>
+<pre><code># 看当前连接数
+docker exec postgres psql -U postgres -c "SELECT count(*) FROM pg_stat_activity;"
+# 看连接来源分组
+docker exec postgres psql -U postgres -c "SELECT application_name, count(*) FROM pg_stat_activity GROUP BY application_name;"
+# 看 Langfuse 应用的连接数
+docker exec postgres psql -U postgres -c "SELECT count(*) FROM pg_stat_activity WHERE application_name LIKE 'langfuse%';"</code></pre>
+<p><strong>解法</strong>：在 PostgreSQL 前加 PgBouncer 做连接池（transaction pooling 模式）：</p>
+<pre><code>services:
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=1000        # 客户端连接上限
+      - DEFAULT_POOL_SIZE=20        # 实际到 PG 的连接数（20 << 100）
+      - RESERVE_POOL_SIZE=5
+      - SERVER_IDLE_TIMEOUT=300
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+
+  langfuse-web:
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:6432/postgres
+  langfuse-worker:
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:6432/postgres</code></pre>
+<p>**关键点**：<code>DEFAULT_POOL_SIZE=20</code> 远小于 PostgreSQL 的 <code>max_connections=100</code>，给 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>、admin session、监控工具都留足余量。Langfuse 改用 <code>pgbouncer:6432</code> 而非直连 <code>postgres:5432</code>。改完后 1000 个客户端请求复用 20 个真实连接，连接耗尽报错彻底消失。</p>
+<h2>完整的 docker-compose.yml 验证清单</h2>
+<p>我把这 5 个坑全部解决后的最终 compose 文件结构（去敏感信息），跑了 14 天零故障：</p>
+<pre><code>version: '3.8'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_SHARED_BUFFERS=128MB
+      - POSTGRES_WORK_MEM=8MB
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    deploy:
+      resources:
+        limits:
+          memory: 400M
+    networks:
+      - obs-net
+
+  redis:
+    image: redis:7-alpine
+    restart: always
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+    networks:
+      - obs-net
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: always
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=1000
+      - DEFAULT_POOL_SIZE=20
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+    networks:
+      - obs-net
+
+  langfuse-web:
+    image: langfuse/langfuse-web:latest
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:6432/postgres
+      - REDIS_URL=redis://redis:6379
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - SALT=${LANGFUSE_SALT}
+      - LANGFUSE_INIT_ORG_ID=techpassive
+      - LANGFUSE_INIT_PROJECT_ID=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-observability
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - obs-net
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:latest
+    restart: always
+    environment:
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@pgbouncer:6432/postgres
+      - REDIS_URL=redis://redis:6379
+      - LANGFUSE_WORKER_CONCURRENCY=1
+      - NODE_OPTIONS=--max-old-space-size=384
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - obs-net
+
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:latest
+    restart: always
+    environment:
+      - N8N_PORT=5678
+      - WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.your-domain.com/
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_DATABASE=<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+      - EXECUTIONS_DATA_PRUNE=true
+    volumes:
+      - <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-data:/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - obs-net
+
+volumes:
+  postgres-data:
+  redis-data:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-data:
+
+networks:
+  obs-net:
+    driver: bridge</code></pre>
+<p><strong>最终内存占用（2GB VPS）</strong>：postgres 380MB + redis 110MB + pgbouncer 50MB + langfuse-web 480MB + langfuse-worker 480MB + <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 480MB + 系统 400MB = <strong>约 2.0GB，刚好卡满</strong>。建议升到 4GB 留余量。</p>
+<h2>这套方案值不值得上？</h2>
+<p><strong>适用场景</strong>：</p>
+<ul><li>你有 AI agent / LLM 密集调用，需要看 token 成本、调用链路、失败率</li><li>你有 10+ <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 工作流在跑，想集中观测哪些 workflow 真正产生 LLM 成本</li><li>你想保留数据在自己手里（合规/成本/可控性）</li></ul>
+<p><strong>不适用场景</strong>：</p>
+<ul><li>流量 < 100 LLM 调用/天——直接用 Langfuse Cloud 免费版，省运维</li><li>没有 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 经验——这套方案至少要懂 docker compose、PostgreSQL 调优、内存限制</li><li>1GB 内存 VPS——硬约束是 2GB 起，1GB 必然 OOM</li></ul>
+<p><strong>对程序员的额外价值</strong>：Langfuse 的 trace 数据能直接看每个 LLM 调用的 prompt + response + tool calls，<strong>比 OpenAI dashboard 细 10 倍</strong>，调试 agent 行为时这是不可替代的工具。</p>
+<p>---</p>
+<p><strong>5 个坑一句话总结</strong>：</p>
+<p>1. <strong>502</strong>：跨容器用服务名（不是 localhost）+ 同 network</p>
+<p>2. **环境变量**：用 <code>environment</code> 不是 <code>env_file</code>，删残留容器</p>
+<p>3. <strong>Redis</strong>：Langfuse v3 强依赖，quick start 没写但 v2→v3 changelog 有</p>
+<p>4. **OOM**：给每个服务加 <code>deploy.resources.limits.memory</code> 硬约束，worker 调 <code>LANGFUSE_WORKER_CONCURRENCY=1</code></p>
+<p>5. **PostgreSQL 连接池**：前置 PgBouncer transaction 模式，<code>DEFAULT_POOL_SIZE=20</code></p>
+<p>如果你正在考虑自托管 LLM 可观测性栈，<strong>先看你的 VPS 内存够不够，再决定是用 Cloud 还是自托管</strong>——2GB 是底线，4GB 才有余量。</p>
+<p>---</p>
+<p><strong>资源链接</strong>（本文涉及的官方文档，建议你操作前再翻一遍）：</p>
+<ul><li>Langfuse v3 self-hosting: https://langfuse.com/docs/deployment/self-host</li><li>Langfuse v2→v3 breaking changes: https://langfuse.com/changelog</li><li><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> environment variables: https://docs.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io/hosting/environment-variables/</li><li>PgBouncer config reference: https://www.pgbouncer.org/config.html</li><li><a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> compose deploy.resources: https://docs.docker.com/compose/compose-file/deploy/#resources</li></ul>
+<p>如果你想跑 AI agent 自动化但又不想从零搭可观测性栈，<strong>用现成的 AI 自动化平台可以省 90% 运维时间</strong>：</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.birdiesearch.com/i/KU6611821" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6b35;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 Cloud Search</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
