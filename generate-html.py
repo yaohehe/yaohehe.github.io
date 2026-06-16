@@ -179,15 +179,13 @@ HTML_TEMPLATE_CN = '''<!DOCTYPE html>
   <a href="#main-content" class="skip-link">跳到主要内容</a>
   <a href="/" class="back-btn">← 返回首页</a>
   <main id="main-content">
-  <article itemscope itemtype="https://schema.org/Article">
-  <h1 itemprop="headline">{h1}</h1>
+  <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
   </div>
-  <div class="content" itemprop="articleBody">
+  <div class="content">
     {html_body}
   </div>
-  </article>
   <a href="/" class="back-btn">← 返回首页</a>
   </main>
   {BAIDU_STATS}
@@ -215,15 +213,13 @@ HTML_TEMPLATE_EN = '''<!DOCTYPE html>
   <a href="#main-content" class="skip-link">Skip to main content</a>
   <a href="/" class="back-btn">← Back to Home</a>
   <main id="main-content">
-  <article itemscope itemtype="https://schema.org/Article">
-  <h1 itemprop="headline">{h1}</h1>
+  <h1>{h1}</h1>
   <div class="post-tags">
     {tags_html}
   </div>
-  <div class="content" itemprop="articleBody">
+  <div class="content">
     {html_body}
   </div>
-  </article>
   <a href="/" class="back-btn">← Back to Home</a>
   </main>
   {BAIDU_STATS}
@@ -251,44 +247,6 @@ def _clean_metadata_title(title):
     if title != original:
         print(f"  🧹 清理标题前缀: '{original[:40]}...' → '{title[:40]}...'")
     return title
-
-
-def _limit_title_for_seo(title, suffix=' - TechPassive', max_total=70):
-    """永久标准 #12 SEO 防御：限制 <title> 总长度 ≤ max_total 字符。
-
-    背景：2026-06-12 Search Console 报告 34 篇 title too long。
-    原因：AI 生成的文章 title 偶发过长，插入 HTML 后总长超 70 字符被 Google 截断。
-    策略：
-    1. 先剥 HTML 标签
-    2. 计算 title + suffix 总长
-    3. 超长则在标点/连字符/空格处智能截断
-    4. 中文 title 允许 75 字符（Google 对中文截断阈值与英文不同）
-    """
-    # 1) 剥 HTML（h1 字段可能含 <a> 标签，title 不会但保险起见）
-    clean = re.sub(r'<[^>]+>', '', title).replace('"', '&quot;').strip()
-    if not clean:
-        return clean
-
-    # 2) 计算总长
-    full_len = len(clean) + len(suffix)
-    is_cn = bool(re.search(r'[\u4e00-\u9fff]', clean))
-    effective_max = 75 if is_cn else max_total  # 中文放宽到 75
-
-    if full_len <= effective_max:
-        return clean
-
-    # 3) 智能截断：保留的预算 = effective_max - len(suffix)
-    budget = effective_max - len(suffix)
-    cut = clean[:budget]
-
-    # 4) 找最近的分隔符（避免在词中间切）
-    for sep in [' - ', ' — ', ', ', ': ', '：', '，', '、', ' ']:
-        idx = cut.rfind(sep)
-        if idx >= budget * 0.6:  # 至少保留 60% 内容
-            cut = cut[:idx]
-            break
-    cut = cut.rstrip(' ,:—-—')
-    return cut
 
 
 def parse_metadata(content_lines):
@@ -356,7 +314,7 @@ def parse_metadata(content_lines):
     h1 = re.sub(r'<[^>]+>', '', h1_raw).replace('"', '&quot;')
 
     return {
-        'title': _limit_title_for_seo(title),  # 永久标准 #12：硬限制 title ≤70/75 字符
+        'title': title,
         'description': description,
         'h1': h1,
         'tags': [t.strip() for t in parts[3].split(',') if t.strip()]

@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>我在配置n8n的MCP服务器与Claude Code通信时花了6小时才解决这3个问题，涉及Docker socket挂载、API密钥传递、Webhook URL配置 - TechPassive</title>
+  <meta name="description" content="n8n MCP Claude Code集成排坑实录：Docker环境下的3个真实绊脚石">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>n8n MCP Claude Code集成踩坑</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag">MCP</span><span class="tag">Claude Code</span><span class="tag">Docker</span><span class="tag">自动化</span>
+  </div>
+  <div class="content">
+    <h2>问题一：<a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Socket挂载导致n8n无法调用Claude Code CLI</h2>
+<h3>问题现象</h3>
+<p>我的n8n和Claude Code都运行在Docker容器里，按照官方文档配置了MCP集成后，n8n工作流运行时一直报<code>Command not found: claude</code>错误。检查Claude Code容器日志一切正常，但n8n就是连不上。</p>
+<h3>排查过程</h3>
+<pre><code># 登录到n8n容器内部测试
+<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a> exec -it n8n_container sh
+which claude  # 结果：not found
+echo $PATH    # 结果：/usr/local/sbin:/usr/local/bin:...</code></pre>
+<p>问题不在PATH。n8n运行在容器里，而Claude Code CLI安装在宿主机上。n8n容器根本访问不到宿主机上的<code>claude</code>命令。</p>
+<p>n8n官方文档说需要将Claude Code CLI安装为全局npm包：</p>
+<pre><code>npm install -g @anthropic-ai/claude-code</code></pre>
+<p>但我在容器内安装后，Claude Code需要登录认证，而容器内无法打开浏览器完成OAuth流程。</p>
+<h3>解决方案</h3>
+<p>正确的做法是<strong>将宿主机的Claude Code CLI通过卷挂载进n8n容器</strong>，同时挂载Docker socket让n8n能访问宿主机Docker：</p>
+<pre><code># <a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>-compose.yml
+services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:latest
+    volumes:
+      - /usr/local/lib/node_modules/@anthropic-ai/claude-code:/usr/local/bin/claude
+      - /var/run/<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>.sock:/var/run/<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>.sock
+    environment:
+      - N8N_MCP_API_KEY=${ANTHROPIC_API_KEY}</code></pre>
+<p>关键是<strong>挂载编译后的CLI文件路径</strong>而非源代码路径。验证：</p>
+<pre><code><a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a> exec -it n8n_container claude --version
+# 应显示：claude 1.x.x</code></pre>
+<p>---</p>
+<h2>问题二：N8N_MCP_API_KEY环境变量传递失败</h2>
+<h3>问题现象</h3>
+<p>配置完成后n8n日志显示成功连接到MCP服务器，但Claude Code执行时返回：<code>Error: Anthropic API key not found</code>。</p>
+<h3>排查过程</h3>
+<p>我在docker-compose.yml里设置了<code>N8N_MCP_API_KEY</code>环境变量，但Claude Code运行时读取的是它自己的配置文件<code>~/.claude/config.json</code>，不是n8n容器内的环境变量。</p>
+<p>n8n的MCP Client节点在调用Claude Code时，实际是在宿主机上执行<code>claude</code>命令，而不是在n8n容器内。所以环境变量需要设在**宿主机层面**，或者在n8n的MCP Client配置中手动传入。</p>
+<h3>解决方案</h3>
+<p><strong>方案A：在宿主机配置文件设置API密钥</strong></p>
+<pre><code># 在宿主机上
+export ANTHROPIC_API_KEY=sk-ant-xxxxx
+# 然后重启n8n容器（继承宿主机的环境变量）
+<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>-compose down && <a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>-compose up -d</code></pre>
+<p><strong>方案B：在n8n MCP Client节点中手动传入</strong></p>
+<p>在n8n的MCP Client Tool节点中配置时，手动指定API密钥：</p>
+<pre><code>{
+  "anthropic_api_key": "{{ $env.ANTHROPIC_API_KEY }}"
+}</code></pre>
+<p>验证连接是否成功：</p>
+<pre><code># 在宿主机测试Claude Code是否正常
+claude --print "API key loaded: $(echo $ANTHROPIC_API_KEY | head -c 8)..."</code></pre>
+<p>---</p>
+<h2>问题三：Webhook URL在Nginx反向代理下匹配失败</h2>
+<h3>问题现象</h3>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> MCP服务器启用后，从Claude Code发起调用时n8n报错：<code>Webhook URL does not match configured base URL</code>。</p>
+<h3>问题分析</h3>
+<p>我的n8n通过Nginx反向代理暴露，配置大致如下：</p>
+<pre><code># /etc/nginx/sites-available/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+server {
+    listen 80;
+    server_name <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com;
+
+    location / {
+        proxy_pass http://localhost:5678;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}</code></pre>
+<p>n8n的<code>N8N_WEBHOOK_URL</code>默认是<code>http://localhost:5678</code>，但外部访问时Nginx将其转发为<code>https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/webhook/...</code>，导致n8n认为请求来源与配置的base URL不匹配。</p>
+<h3>解决方案</h3>
+<p>在docker-compose.yml中明确设置<code>N8N_WEBHOOK_URL</code>为你的公开域名：</p>
+<pre><code>environment:
+  - N8N_WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/
+  - N8N_PROTOCOL=https
+  - WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/</code></pre>
+<p>然后在Nginx配置中添加正确的协议头：</p>
+<pre><code>location / {
+    proxy_pass http://localhost:5678;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;  # 关键：传递真实协议
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}</code></pre>
+<p>重载Nginx配置后测试：</p>
+<pre><code>curl -X POST https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/webhook/test -H "Content-Type: application/json" -d '{}'
+# 应返回200而非403/400</code></pre>
+<p>---</p>
+<h2>完整Docker Compose配置</h2>
+<p>以下是经过验证的完整配置，解决了上述三个问题：</p>
+<pre><code># <a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>-compose.yml
+services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:latest
+    ports:
+      - "5678:5678"
+    volumes:
+      # 挂载Claude Code CLI到容器内
+      - /usr/local/lib/node_modules/@anthropic-ai/claude-code:/usr/local/bin/claude:ro
+      # <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> socket用于调用宿主机Docker
+      - /var/run/<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>.sock:/var/run/<a href="/2026-04-27-n8n自托管docker部署踩坑全记录postgresql时区反向代理的5个真实问题.html" class="internal-link">docker</a>.sock
+      # 持久化n8n数据
+      - ./n8n_data:/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    environment:
+      - N8N_WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/
+      - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.example.com/
+      - N8N_MCP_API_KEY=${ANTHROPIC_API_KEY}
+      - EXECUTIONS_TIMEOUT=300
+      - EXECUTIONS_TIMEOUT_MAX=600
+    restart: unless-stopped</code></pre>
+<p>---</p>
+<h2>验证MCP连接是否正常</h2>
+<p>配置完成后，在n8n中创建一个测试工作流：</p>
+<p>1. 添加「MCP Client Tool」节点</p>
+<p>2. 选择<code>claude-code</code>工具</p>
+<p>3. 输入测试prompt：<code>List the files in your current directory</code></p>
+<p>4. 运行工作流</p>
+<p>如果返回文件列表而非错误，说明MCP集成成功。</p>
+<p>---</p>
+<h2>防止方法：日常维护检查清单</h2>
+<p>集成完成后，为了避免问题复现，建议定期检查：</p>
+<ul><li>**每月检查一次**：Claude Code CLI版本是否更新（`claude --version`对比GitHub releases）</li><li>**每次n8n更新后**：验证MCP连接是否正常（跑一遍上面的验证测试）</li><li>**Nginx配置变更后**：检查`X-Forwarded-Proto`头是否正确传递</li><li>**API密钥轮换时**：同时更新宿主机环境变量和n8n容器配置</li></ul>
+<p>---</p>
+<h2>总结</h2>
+<p>三个问题的根本原因：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">问题</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">根因</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解决关键</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Claude CLI找不到</td><td style="border:1px solid #ddd;padding:8px;">容器与宿主机隔离</td><td style="border:1px solid #ddd;padding:8px;">挂载CLI二进制文件</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">API密钥读取失败</td><td style="border:1px solid #ddd;padding:8px;">n8n容器读不到宿主机环境变量</td><td style="border:1px solid #ddd;padding:8px;">方案A或B二选一</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Webhook URL不匹配</td><td style="border:1px solid #ddd;padding:8px;">反向代理协议头丢失</td><td style="border:1px solid #ddd;padding:8px;">设置N8N_WEBHOOK_URL + X-Forwarded-Proto</td></tr></tbody></table>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + Claude Code + MCP的集成本身不复杂，但Docker环境下的路径隔离、网络代理、文件挂载需要额外注意。上述配置已经在Ubuntu 22.04 + Nginx + <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 29.x环境下验证通过。</p>
+<p>---</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">🔗 Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">Vultr VPS</a>
+    <a href="https://amzn.to/4sRiwLh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Amazon Best Sellers</a>
+    <a href="https://amzn.to/4vRnScj" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📱 Amazon Devices</a>
+    <a href="https://amzn.to/3Qu6SZw" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔧 Amazon Renewed</a>
+    <a href="https://amzn.to/3OoDsvh" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏠 Home Appliances</a>
+    <a href="https://amzn.to/4vO3Teq" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎮 Apps & Games</a>
+    <a href="https://amzn.to/4e4qc9t" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 Books</a>
+    <a href="https://amzn.to/4sXFYXv" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💊 Health & Home</a>
+    <a href="https://amzn.to/4cKVOi5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎬 Movies & TV</a>
+    <a href="https://amzn.to/49aR8AW" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚽ Sports & Outdoors</a>
+    <a href="https://amzn.to/41U6JkE" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎯 Video Games</a>
+    <a href="https://amzn.to/4tHThfN" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💻 Computers</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

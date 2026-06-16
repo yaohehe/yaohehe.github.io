@@ -573,35 +573,7 @@ def generate_sitemap(articles, today):
              f'    <lastmod>{today}</lastmod>',
              '  </url>']
     for date, filename, title in articles:
-        # 根因修复（2026-06-07）：filename 已是相对路径（含 archive/ 前缀），
-        # 原 os.path.basename 会把 archive/2026-05-10/xxx.html 截成 xxx.html（根目录路径），
-        # 导致所有 archive/ 下的文章 URL 错误指向不存在的根目录文件，搜索引擎永远收不到真实路径。
-        # 正确做法：直接用相对路径作为 URL 路径。
-        url = f'https://yaohehe.github.io/{filename}'
-        lines.append('  <url>')
-        lines.append(f'    <loc>{url}</loc>')
-        lines.append(f'    <lastmod>{date}</lastmod>')
-        lines.append('  </url>')
-    lines.append('</urlset>')
-    return '\n'.join(lines) + '\n'
-
-def generate_sitemap_en(en_articles, today):
-    """英文专属 sitemap（仅含 -en 文章 + index-en.html）。
-    2026-06-02 计划但未实际生成；2026-06-07 补建。
-    英文文章走 Google 独立抓取通道，避免与中文混淆。
-    """
-    lines = ['<?xml version="1.0" encoding="UTF-8"?>',
-             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
-             '  <url>',
-             '    <loc>https://yaohehe.github.io/</loc>',
-             f'    <lastmod>{today}</lastmod>',
-             '  </url>',
-             '  <url>',
-             '    <loc>https://yaohehe.github.io/index-en.html</loc>',
-             f'    <lastmod>{today}</lastmod>',
-             '  </url>']
-    for date, filename, title in en_articles:
-        url = f'https://yaohehe.github.io/{filename}'
+        url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
         lines.append('  <url>')
         lines.append(f'    <loc>{url}</loc>')
         lines.append(f'    <lastmod>{date}</lastmod>')
@@ -613,10 +585,9 @@ def generate_sitemap_en(en_articles, today):
 def main():
     today = datetime.now().strftime('%Y-%m-%d')
 
-    # 扫描所有 HTML 文件（去重：root 优先于 archive/，archive 兜底）
-    # 根因 1（历史）：6/11 rebase 修复后，414+ 篇文章规范位置在 root，archive/ 是历史镜像（sitemap 写 archive = 4xx 死链）
-    # 根因 2：root 缺失但 archive 存在时（如 n8n-langfuse 4 篇），必须 fallback 到 archive 路径
-    # 解决：同名 basename 文件 root + archive 同时存在时，root 优先；root 缺失时保留 archive 路径
+    # 扫描所有 HTML 文件（去重：同一文件名优先使用 archive/ 版本）
+    # 根因：同时扫描 root 和 archive/ 时，未追踪的根目录文件会生成错误链接
+    # 解决：同一 basename 文件同时存在于 root 和 archive 时，优先使用 archive 版本（规范发布位置）
     # 防护：检测根目录孤立 HTML 文件（不在 git 追踪中）并报警，防止 publish-articles.py 复制残留
     import collections
     root_files = glob.glob(os.path.join(BLOG_DIR, '*.html'))
@@ -634,17 +605,19 @@ def main():
         if len(orphaned_html) > 5:
             print(f"  ... 还有 {len(orphaned_html) - 5} 个")
 
-    # basename -> filepath, root 优先于 archive（永久标准 #X：6/12 414篇修复后升格）
+    # basename -> filepath, archive 版本优先
     file_by_basename = {}
     for f in archive_files:
         bn = os.path.basename(f)
-        file_by_basename[bn] = f  # archive 先占位（兜底）
+        if bn not in file_by_basename:
+            file_by_basename[bn] = f
     for f in root_files:
         bn = os.path.basename(f)
         if bn in orphaned_html:
             continue  # 跳过孤立文件，不加入索引
-        file_by_basename[bn] = f  # root 覆盖 archive（关键：root 是 GitHub Pages 实际服务路径）
-
+        if bn not in file_by_basename:
+            file_by_basename[bn] = f
+    
     html_files = [f for bn, f in file_by_basename.items() if bn not in (
         'index.html', 'index-en.html', 'sitemap.xml'
     )]
@@ -687,12 +660,6 @@ def main():
     with open(os.path.join(BLOG_DIR, 'sitemap.xml'), 'w', encoding='utf-8') as f:
         f.write(sitemap)
     print(f"✅ sitemap.xml 已更新（{len(all_articles)} 篇）")
-
-    # 生成 sitemap-en.xml（仅英文文章，2026-06-07 补建）
-    sitemap_en = generate_sitemap_en(en_articles, today)
-    with open(os.path.join(BLOG_DIR, 'sitemap-en.xml'), 'w', encoding='utf-8') as f:
-        f.write(sitemap_en)
-    print(f"✅ sitemap-en.xml 已更新（{len(en_articles)} 篇）")
 
     print(f"📅 更新日期：{today}")
 

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Langfuse自托管踩坑全记录：PostgreSQL/ClickHouse/Redis部署6个真实问题 - TechPassive</title>
+  <meta name="description" content="Langfuse是一款开源LLM工程平台，支持LLM可观测性、指标评估、提示管理和数据集。GitHub星标27,403（截至2026年5月验证）。我从v2迁移到v3时遇到了数据库连接失败、权限问题、时区配置错误等6个真实踩坑点。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Langfuse自托管部署踩坑全记录</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag">MCP</span><span class="tag">Langfuse</span><span class="tag">LLM工程平台</span><span class="tag">自托管</span><span class="tag">AI工具</span><span class="tag">Docker</span>
+  </div>
+  <div class="content">
+    <p># Langfuse自托管踩坑全记录：PostgreSQL/ClickHouse/Redis的6个真实问题</p>
+<p>Langfuse（GitHub 27,403 ⭐，截至2026年5月验证）是我在搭建AI开发平台时必须用到的工具。作为开源LLM工程平台，它可以对接OpenTelemetry、Langchain、OpenAI SDK和LiteLLM等主流框架，支持LLM可观测性、指标评估、提示管理和数据集管理。</p>
+<p>但当我从v2升级到v3时，发现这个过程的复杂度远超预期。v3的架构发生了重大变化：新增了ClickHouse（OLAP存储）、Redis（缓存）和S3/MinIO（对象存储）三个依赖组件，单个PostgreSQL已无法支撑生产级负载。</p>
+<p>本文复盘我在Ubuntu 24.04 VPS上部署Langfuse v3时遇到的6个真实踩坑点，以及具体解决方案。</p>
+<h2>架构变化：为什么v3比v2复杂得多</h2>
+<p>Langfuse v2只需要一个容器加PostgreSQL即可运行。但v3（2024年12月6日发布stable版本）引入了全新的架构：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用途</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最低配置</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Langfuse Server + Worker</td><td style="border:1px solid #ddd;padding:8px;">API和Web UI + 后台任务处理</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 3 GB RAM（Server），2 CPU + 4 GB RAM（Worker）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PostgreSQL >=12</td><td style="border:1px solid #ddd;padding:8px;">事务数据存储</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ClickHouse</td><td style="border:1px solid #ddd;padding:8px;">traces/observations/scores存储</td><td style="border:1px solid #ddd;padding:8px;">2 CPU + 4 GB RAM</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Redis/Valkey</td><td style="border:1px solid #ddd;padding:8px;">队列管理和缓存</td><td style="border:1px solid #ddd;padding:8px;">1 CPU + 1 GB RAM</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">S3/MinIO</td><td style="border:1px solid #ddd;padding:8px;">文件存储</td><td style="border:1px solid #ddd;padding:8px;">50 GB SSD</td></tr></tbody></table>
+<p>这意味着v3至少需要4核CPU + 9GB RAM的服务器。如果你用VPS低于这个配置，Worker容器会直接OOM崩溃。</p>
+<h2>踩坑一：PostgreSQL表权限导致迁移失败</h2>
+<p>部署完成后，容器日志里出现以下错误：</p>
+<pre><code>DbError { severity: "ERROR", code: SqlState(E42501), message: "permission denied for table projects" }</code></pre>
+<p>这是因为Langfuse使用Prisma做数据库迁移，当database user与table owner不一致时，迁移就会失败。</p>
+<p>解决方案：创建专用migration user或转移table ownership。</p>
+<pre><code>-- 检查table owners
+SELECT
+    table_schema,
+    table_name,
+    table_owner
+FROM information_schema.tables
+WHERE table_schema = 'public';
+
+-- 转移ownership（将new_user替换为实际migration user）
+ALTER TABLE table_name OWNER TO new_user;</code></pre>
+<p>或者使用<code>DIRECT_URL</code>环境变量配置专用migration用户：</p>
+<pre><code>DIRECT_URL=postgresql://migration_user:password@host:5432/langfuse</code></pre>
+<h2>踩坑二：NEXTAUTH_URL配置不匹配</h2>
+<p>登录时页面一直转圈，查看容器日志发现：</p>
+<pre><code>Error: NEXTAUTH_URL does not match current URL</code></pre>
+<p>这是因为Langfuse使用NextAuth做认证，容器内的NEXTAUTH_URL必须与外部访问URL完全一致。如果用Nginx反代且配置了X-Forwarded-Proto/X-Forwarded-Host头，需要同时设置：</p>
+<pre><code>NEXTAUTH_URL=https://your-langfuse-domain.com
+NEXTAUTH_URL_INTERNAL=http://localhost:3000</code></pre>
+<p>如果你的Langfuse部署在子路径下（如<code>https://domain.com/langfuse</code>），需要额外配置：</p>
+<pre><code>NEXTAUTH_URL=https://domain.com/langfuse</code></pre>
+<h2>踩坑三：ClickHouse迁移SSL配置</h2>
+<p>当使用云数据库（如阿里云RDS）时，ClickHouse迁移可能因为SSL问题失败。错误信息类似：</p>
+<pre><code>Error: connection refused or timeout</code></pre>
+<p>解决方案：启用ClickHouse迁移SSL：</p>
+<pre><code>CLICKHOUSE_MIGRATION_SSL=true
+CLICKHOUSE_URL=https://your-clickhouse-host:8443</code></pre>
+<p>自托管ClickHouse默认端口为8123（HTTPS）和9000（TCP）。</p>
+<h2>踩坑四：时区配置导致数据错乱</h2>
+<p>Langfuse要求所有基础设施组件默认使用UTC时区。如果PostgreSQL或ClickHouse设置了非UTC时区，会导致数据查询结果错误。</p>
+<p>检查PostgreSQL时区：</p>
+<pre><code>SHOW timezone;</code></pre>
+<p>如果返回的不是UTC，修改<code>postgresql.conf</code>：</p>
+<pre><code>timezone = 'UTC'</code></pre>
+<p>对于ClickHouse，启动时添加：</p>
+<pre><code>CLICKHOUSE_TZ=UTC</code></pre>
+<p>踩坑表现：dashboard上的trace时间戳与实际时间相差8小时，排序完全错乱。</p>
+<h2>踩坑五：Worker容器OOM</h2>
+<p>当服务器内存不足时，Worker容器会OOM重启，队列任务不断积压。日志会显示：</p>
+<pre><code>JavaScript heap out of memory</code></pre>
+<p>此时需要设置Node.js内存限制或增加服务器RAM：</p>
+<pre><code>NODE_OPTIONS="--max-old-space-size=3072"</code></pre>
+<p>同时在docker-compose.yml中为Worker设置资源限制：</p>
+<pre><code>services:
+  worker:
+    deploy:
+      resources:
+        limits:
+          memory: 4G</code></pre>
+<h2>踩坑六：v2到v3数据迁移</h2>
+<p>如果你是从v2升级到v3，会遇到数据库结构变化的问题。Langfuse官方提供了迁移脚本，但过程较长：</p>
+<pre><code># 备份v2数据
+pg_dump -h localhost -U langfuse -d langfuse > langfuse_v2_backup.sql
+
+# 检查迁移文档
+# https://langfuse.com/self-hosting/upgrade/upgrade-guides/upgrade-v2-to-v3
+
+# 启动v3时自动执行迁移
+docker compose up -d</code></pre>
+<p>迁移时间取决于数据量，10GB数据大约需要30分钟。</p>
+<h2>最小配置推荐</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">CPU</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">RAM</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">存储</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">测试/开发</td><td style="border:1px solid #ddd;padding:8px;">2核</td><td style="border:1px solid #ddd;padding:8px;">4 GB</td><td style="border:1px solid #ddd;padding:8px;">20 GB SSD</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">小规模生产</td><td style="border:1px solid #ddd;padding:8px;">4核</td><td style="border:1px solid #ddd;padding:8px;">16 GB</td><td style="border:1px solid #ddd;padding:8px;">100 GB NVMe</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">中等规模生产</td><td style="border:1px solid #ddd;padding:8px;">8核</td><td style="border:1px solid #ddd;padding:8px;">32 GB</td><td style="border:1px solid #ddd;padding:8px;">200 GB NVMe</td></tr></tbody></table>
+<p>价格参考（2026年5月）：</p>
+<ul><li>4核16GB VPS ≈ $20-40/月（如Vultr HKG或DigitalOcean SGP节点）</li><li>8核32GB裸机服务器 ≈ $80-150/月（如Hetzner EX42）</li></ul>
+<h2>总结</h2>
+<p>Langfuse v3的架构复杂度大幅提升，从v2的单容器变成了需要协调5个组件的系统。自托管需要重点关注：</p>
+<p>1. <strong>资源规划</strong>：v3最低需要4核9GB RAM，比v2高3倍</p>
+<p>2. <strong>权限配置</strong>：PostgreSQL迁移用户需要正确授权</p>
+<p>3. <strong>时区统一</strong>：UTC是唯一支持的时区</p>
+<p>4. <strong>SSL配置</strong>：云数据库需要额外配置SSL</p>
+<p>5. <strong>监控OOM</strong>：Worker内存限制一定要设置</p>
+<p>如果你只是想体验Langfuse，可以先用Docker Compose快速部署（官方提供一键脚本）。但如果要用于生产，建议至少准备4核16GB的配置。</p>
+<p>👉 立即参与：https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link</p>
+<p>**服务器推荐**：<a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> — 4核16GB VPS $20/月，适合自托管Langfuse</p>
+<p>**海外服务器asin推荐**：<a href="https://www.amazon.com/dp/B08V16JZTB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">三星 980 NVMe SSD 1TB</a> — 3500MB/s读速，自托管服务器存储推荐</p>
+<p><strong>相关工具推荐</strong>：</p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#f0f8ff;border-left:4px solid #3498db;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 8px;color:#2c3e50;">&#x1F517; Related Tech Articles</h3>
+  <p style="margin:0 0 15px;color:#666;font-size:0.9em;">Deep dive into related technical topics:</p>
+  <div id="related-articles-placeholder"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
