@@ -1,0 +1,403 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n + Langfuse自托管踩坑复盘：502错误/环境变量/Redis/内存/连接池5个真实问题 - TechPassive</title>
+  <meta name="description" content="n8n和Langfuse是自托管LLM工作流的经典组合，但我在实际部署中踩了5个真实坑：n8n容器Running但返回502、n8n环境变量不生效、Langfuse v3强制要求Redis、2GB内存VPS上OOM崩溃、PostgreSQL连接池耗尽。本文记录每个问题的根因和具体解决方案">
+  <link rel="canonical" href="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="n8n + Langfuse自托管踩坑复盘：502错误/环境变量/Redis/内存/连接池5个真实问题">
+  <meta property="og:description" content="n8n和Langfuse是自托管LLM工作流的经典组合，但我在实际部署中踩了5个真实坑：n8n容器Running但返回502、n8n环境变量不生效、Langfuse v3强制要求Redis、2GB内存VPS上OOM崩溃、PostgreSQL连接池耗尽。本文记录每个问题的根因和具体解决方案">
+  <meta property="og:url" content="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html">
+  <meta property="og:site_name" content="TechPassive">
+  <meta property="og:locale" content="zh_CN">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="n8n + Langfuse自托管踩坑复盘：502错误/环境变量/Redis/内存/连接池5个真实问题">
+  <meta name="twitter:description" content="n8n和Langfuse是自托管LLM工作流的经典组合，但我在实际部署中踩了5个真实坑：n8n容器Running但返回502、n8n环境变量不生效、Langfuse v3强制要求Redis、2GB内存VPS上OOM崩溃、PostgreSQL连接池耗尽。本文记录每个问题的根因和具体解决方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>n8n自托管踩坑,Langfuse自托管,AI Coding</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag">Langfuse</span><span class="tag">自托管</span><span class="tag">Docker</span><span class="tag">可观测性</span>
+  </div>
+  <article class="content">
+    <h2>为什么要自托管n8n + Langfuse</h2>
+<p>n8n是开源的工作流自动化引擎，Langfuse是LLM可观测性平台（tracing + evaluation + prompt管理）。两者都支持Docker自托管，搭配使用可以实现：n8n驱动LLM工作流 → Langfuse记录每个节点的输入输出 → 发现Token消耗异常或延迟瓶颈。</p>
+<p>我用的是1核2GB的VPS（腾讯云轻量应用服务器，月均约30元），系统Ubuntu 22.04 LTS。这个配置跑单个n8n足够，但加上Langfuse v3（需要PostgreSQL + Redis + Langfuse本身）就开始捉襟见肘。</p>
+<p><strong>本文覆盖的5个踩坑（按发生概率排序）：</strong></p>
+<p>1. n8n容器Running但返回502 — n8n进程崩溃</p>
+<p>2. n8n环境变量在Docker中不生效 — 常见于N8N_TIMEOUT_EXECUTION等</p>
+<p>3. Langfuse v3强制要求Redis/Valkey — 新增依赖</p>
+<p>4. 2GB内存VPS上OOM崩溃 — 交换分区+容器内存限制</p>
+<p>5. PostgreSQL连接池耗尽 — 高并发下max_connections不够</p>
+<h2>n8n容器Running但返回502</h2>
+<p>**现象：** <code>docker ps</code>显示n8n容器状态为Up，但浏览器访问 <code>http://your-vps:5678</code> 返回502 Bad Gateway。</p>
+<p><strong>根因：</strong> 容器进程在运行，但n8n主进程（Node.js）崩溃了。容器本身还活着（PID 1是tini/entrypoint.sh），但5678端口没有监听。</p>
+<p><strong>排查步骤：</strong></p>
+<pre><code># 1. 查看容器实时日志
+docker logs <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> --tail 100 --follow
+
+# 2. 检查容器内是否有n8n进程
+docker exec <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> ps aux | grep <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+
+# 3. 如果没有node进程，说明n8n主进程崩溃了
+# 健康检查
+docker exec <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> curl http://localhost:5678/healthz</code></pre>
+<p>典型崩溃日志：</p>
+<pre><code>Error: ENOENT: no such file or directory, open '/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>/config'
+    at Object.openSync (node:internal/filesystem:983:3)
+    at Object.readFileSync (node:internal/filesystem:1148:3)</code></pre>
+<p><strong>解决方案：</strong> 最常见的原因是数据目录权限问题或挂载失败：</p>
+<pre><code># 修复数据目录权限
+sudo chown -R 1000:1000 ./n8n_data
+
+# 如果用的是Docker Compose，重新创建卷
+docker compose down -v
+docker compose up -d
+
+# 验证健康状态
+sleep 5 && docker exec <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> curl -s http://localhost:5678/healthz</code></pre>
+<p>如果日志显示的是内存相关崩溃（<code>JavaScript heap out of memory</code>），需要增加容器内存限制或添加swap。</p>
+<h2>n8n环境变量在Docker中不生效</h2>
+<p>**现象：** 在docker-compose.yml里设置了<code>N8N_TIMEOUT_EXECUTION</code>或<code>EXECUTIONS_TIMEOUT</code>，但n8n显示"Undefined or empty"。</p>
+<p><strong>根因：</strong> n8n在Docker中读取环境变量的时机和方式有特殊要求，部分变量必须在容器启动前存在于宿主环境，或需要显式传递。</p>
+<p>**正确做法：** 环境变量应该在docker-compose.yml的environment段直接定义，而不是只在宿主机的<code>.env</code>文件里：</p>
+<pre><code>version: '3.8'
+services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: docker.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io/n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    restart: unless-stopped
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=YOUR_STRONG_PASSWORD
+      # 关键：执行超时需要在environment段显式写
+      - N8N_TIMEOUT_EXECUTION=600000   # 10分钟
+      - EXECUTIONS_TIMEOUT=600000
+      - WEBHOOK_URL=https://your-domain.com/
+      - N8N_PROTOCOL=https
+      - N8N_PORT=5678
+    mem_limit: 1g       # 限制容器最大内存1GB
+    mem_reservation: 256m
+
+volumes:
+  n8n_data:</code></pre>
+<p><strong>验证环境变量是否生效：</strong></p>
+<p>在n8n里创建一个Function节点，运行：</p>
+<pre><code>return {
+  timeout: process.env.N8N_TIMEOUT_EXECUTION,
+  execTimeout: process.env.EXECUTIONS_TIMEOUT
+};</code></pre>
+<p>如果显示undefined，说明环境变量没有正确传入。</p>
+<p>**常见错误：** 直接在docker-compose.yml的env_file里写变量名（<code>N8N_TIMEOUT_EXECUTION=600000</code>），但这些变量只在env_file文件存在时生效，不在environment段直接写的情况下不会自动加载。</p>
+<h2>Langfuse v3强制要求Redis/Valkey</h2>
+<p><strong>现象：</strong> 按照Langfuse官方文档部署docker-compose.yml，容器启动后报错：</p>
+<pre><code>Missing Redis/Valkey - Langfuse v3 requires Redis or Valkey for queuing events and caching data</code></pre>
+<p><strong>根因：</strong> Langfuse v3（2024年12月发布stable）架构变化，原来可选的Redis变成了必选依赖，用于队列事件和缓存。</p>
+<p><strong>完整docker-compose.yml（<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + Langfuse + Postgres + Redis）：</strong></p>
+<pre><code>version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse_password
+      - POSTGRES_DB=langfuse
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    mem_limit: 512m
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 消息队列（Langfuse v3 必选）
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    mem_limit: 384m
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Langfuse 主应用
+  langfuse:
+    image: langfuse/langfuse:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse_password@postgres:5432/langfuse
+      - REDIS_URL=redis://redis:6379
+      - NEXTAUTH_SECRET=your_nextauth_secret_here
+      - NEXTAUTH_URL=http://your-domain.com:3000
+      - SALT=your_salt_here
+      - TELEMETRY_ENABLED=false
+    ports:
+      - "3000:3000"
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/public/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 工作流引擎
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    image: docker.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>.io/n8nio/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    restart: unless-stopped
+    depends_on:
+      - postgres  # n8n可选用postgres做workflow数据存储
+    ports:
+      - "5678:5678"
+    volumes:
+      - n8n_data:/home/node/.<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=admin
+      - N8N_BASIC_AUTH_PASSWORD=CHANGE_ME
+      - WEBHOOK_URL=https://your-domain.com/
+      - N8N_PROTOCOL=https
+      - N8N_PERSONAL_EXCLUSIONS=owner,admin,administrator
+    mem_limit: 768m
+
+volumes:
+  postgres_data:
+  redis_data:
+  n8n_data:</code></pre>
+<p><strong>注意Langfuse v3新增的必需环境变量：</strong></p>
+<ul><li>`DATABASE_URL` — PostgreSQL连接字符串（v2就有但现在必选）</li><li>`REDIS_URL` — Redis连接字符串（v3新增，之前可选）</li><li>`SALT` — 密码加盐（v3新增，之前用NEXTAUTH_SECRET）</li></ul>
+<h2>2GB内存VPS上OOM崩溃</h2>
+<p>**现象：** 容器运行几小时或几天后突然无响应，<code>docker ps</code>显示Exited状态，<code>dmesg</code>里有<code>oom-killer</code>记录。</p>
+<p><strong>根因：</strong> 2GB内存的VPS跑PostgreSQL + Redis + Langfuse + <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>，内存总量刚好踩在临界线上。任何突发流量（如workflow高并发执行）都会触发OOM Killer。</p>
+<p><strong>诊断命令：</strong></p>
+<pre><code># 查看内存使用
+free -h
+
+# 查看哪些进程被OOM Killer杀过
+grep -i oom /var/log/syslog
+# 或者
+dmesg | grep -i kill
+
+# 查看容器内存使用
+docker stats --no-stream</code></pre>
+<p><strong>解决方案（三步走）：</strong></p>
+<p><strong>Step 1: 添加swap（最简单）</strong></p>
+<pre><code># 检查是否有swap
+swapon -s
+
+# 创建2GB swap文件（如果还没有）
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# 永久启用：添加到fstab
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab</code></pre>
+<p><strong>Step 2: 为每个容器设置内存硬限制</strong></p>
+<p>在docker-compose.yml里为每个服务加<code>mem_limit</code>（已在上面的完整配置中体现）：</p>
+<ul><li>postgres: 512m</li><li>redis: 384m</li><li>langfuse: 1g</li><li><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>: 768m</li></ul>
+<p><strong>Step 3: 调整PostgreSQL共享缓冲区</strong></p>
+<pre><code># 在postgres容器内执行（或通过POSTGRES环境变量）
+# 建议设为容器内存的25%
+shared_buffers = 128MB
+effective_cache_size = 256MB
+work_mem = 16MB</code></pre>
+<p><strong>内存使用监控脚本（加到crontab）：</strong></p>
+<pre><code># 每5分钟检查一次，内存<20%时发警告
+*/5 * * * * free -m | awk '{if($3/$2 < 0.2) print "Low memory: "$3"M used of "$2"M"}' | logger -t mem-alert</code></pre>
+<h2>PostgreSQL连接池耗尽</h2>
+<p>**现象：** Langfuse或n8n突然报<code>FATAL: remaining connection slots are reserved for non-replication superuser connections</code>，之后所有请求都失败。</p>
+<p>**根因：** PostgreSQL默认<code>max_connections=100</code>，但每个Langfuse和n8n容器内的连接池可能会用掉几十个连接。在资源受限的VPS上，PostgreSQL默认配置会快速耗尽。</p>
+<p><strong>解决方案：</strong></p>
+<p><strong>方案A: 降低每个容器的最大连接数</strong></p>
+<pre><code># Langfuse侧：限制Prisma连接池
+environment:
+  - DATABASE_URL=postgresql://langfuse:langfuse_password@postgres:5432/langfuse?connection_limit=5&pool_timeout=10</code></pre>
+<p><strong>方案B: 修改PostgreSQL最大连接数</strong></p>
+<pre><code>-- 进入postgres容器
+docker exec -it postgres psql -U langfuse
+
+-- 查看当前连接数
+SELECT count(*) FROM pg_stat_activity;
+
+-- 修改最大连接数（临时，重启失效）
+ALTER SYSTEM SET max_connections = 50;
+SELECT pg_reload_conf();
+
+-- 永久生效：重启postgres容器
+docker restart postgres</code></pre>
+<p><strong>方案C: 使用PgBouncer连接池（生产环境推荐）</strong></p>
+<pre><code># 在docker-compose.yml中加一个pgbouncer服务
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    depends_on:
+      - postgres
+    environment:
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=200
+      - DEFAULT_POOL_SIZE=20
+      - MIN_POOL_SIZE=5
+      -Reserve_POOL_SIZE=5
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_NAME=langfuse
+      - DB_USER=langfuse
+      - DB_PASSWORD=langfuse_password
+    ports:
+      - "5433:5432"</code></pre>
+<p>Langfuse的<code>DATABASE_URL</code>改为指向pgbouncer：</p>
+<pre><code>DATABASE_URL=postgresql://langfuse:langfuse_password@pgbouncer:5432/langfuse</code></pre>
+<h2>完整部署验证清单</h2>
+<p>部署完成后，按以下顺序验证每个组件：</p>
+<pre><code># 1. 检查所有容器状态
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+# 2. 验证n8n健康
+curl -s http://localhost:5678/healthz
+# 期望输出：{"status":"ok"}
+
+# 3. 验证Langfuse健康
+curl -s http://localhost:3000/api/public/health
+# 期望输出包含 "status":"ok"
+
+# 4. 验证Redis
+docker exec redis redis-cli ping
+# 期望输出：PONG
+
+# 5. 验证PostgreSQL连接
+docker exec postgres pg_isready -U langfuse
+# 期望输出：accepting connections
+
+# 6. 从外部访问（防火墙检查）
+# 确保以下端口在VPS防火墙开放：
+# 5678 (<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>), 3000 (Langfuse), 5432 (postgres对外暴露危险，限制源IP)
+sudo ufw allow 5678/tcp
+sudo ufw allow 3000/tcp</code></pre>
+<h2>踩坑总结</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">问题</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">根因</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解决方案</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 502但容器Running</td><td style="border:1px solid #ddd;padding:8px;">n8n进程崩溃，容器活着但服务死了</td><td style="border:1px solid #ddd;padding:8px;">检查`docker logs`、修复数据目录权限、加内存限制</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">环境变量不生效</td><td style="border:1px solid #ddd;padding:8px;">没写在environment段，或变量名写错</td><td style="border:1px solid #ddd;padding:8px;">显式在docker-compose.yml environment段定义</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Langfuse v3 Redis必选</td><td style="border:1px solid #ddd;padding:8px;">v3架构变更，Redis从可选变必选</td><td style="border:1px solid #ddd;padding:8px;">添加Redis服务，更新docker-compose.yml</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2GB VPS OOM</td><td style="border:1px solid #ddd;padding:8px;">总内存不足，突发流量触发OOM Killer</td><td style="border:1px solid #ddd;padding:8px;">加swap、为各容器设mem_limit、调PostgreSQL内存</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">PostgreSQL连接池耗尽</td><td style="border:1px solid #ddd;padding:8px;">max_connections默认100不够用</td><td style="border:1px solid #ddd;padding:8px;">限制各容器连接数或加PgBouncer</td></tr></tbody></table>
+<p><strong>硬件建议：</strong> 如果预算允许，将VPS升级到2核4GB（约50元/月），可以避免大部分内存相关问题。2GB适合单跑n8n或Langfuse，但同时跑两者需要swap+内存限制的组合配置。</p>
+<p>👉 体验AI编程工具的实际效果，推荐尝试MiniMax的Token Plan，高性价比适合个人开发者实验各类AI工作流：<a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored">立即参与</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.birdiesearch.com/i/KU6611821" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6b35;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 Cloud Search</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </article>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

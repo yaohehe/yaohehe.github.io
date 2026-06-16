@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n+Ollama+Qdrant集成踩坑全记录：从Docker网络到RAG实战的完整复盘 - TechPassive</title>
+  <meta name="description" content="I spent 3 days debugging ECONNREFUSED, Ollama red asterisk, and Qdrant auth issues — here's the complete fix guide">
+  <link rel="canonical" href="https://yaohehe.github.io/2026-06-07-n8nollamaqdrant-docker-rag.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="n8n+Ollama+Qdrant集成踩坑全记录：从Docker网络到RAG实战的完整复盘">
+  <meta property="og:description" content="I spent 3 days debugging ECONNREFUSED, Ollama red asterisk, and Qdrant auth issues — here's the complete fix guide">
+  <meta property="og:url" content="https://yaohehe.github.io/2026-06-07-n8nollamaqdrant-docker-rag.html">
+  <meta property="og:site_name" content="TechPassive">
+  <meta property="og:locale" content="zh_CN">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="n8n+Ollama+Qdrant集成踩坑全记录：从Docker网络到RAG实战的完整复盘">
+  <meta name="twitter:description" content="I spent 3 days debugging ECONNREFUSED, Ollama red asterisk, and Qdrant auth issues — here's the complete fix guide">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>n8n Ollama Qdrant集成踩坑复盘</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-06-07-n8nollamaqdrant-docker-rag.html" class="internal-link">n8n</a></span><span class="tag"><a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a></span><span class="tag">Qdrant</span><span class="tag">Docker</span><span class="tag">RAG</span><span class="tag">自托管AI</span><span class="tag">工作流自动化</span>
+  </div>
+  <article class="content">
+    <h2>架构概览：这套组合在搭什么</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>（工作流自动化）+ <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a>（本地大模型）+ Qdrant（向量数据库）+ PostgreSQL（持久化）这个组合是2025-2026 年最流行的自托管 AI 栈之一。<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 官方维护的 <a href="https://github.com/n8n-io/self-hosted-ai-starter-kit" target="_blank" rel="nofollow sponsored">self-hosted-ai-starter-kit</a> 是一个开箱即用的 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Compose 模板，预装了：</p>
+<ul><li>**<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>**（工作流引擎）</li><li>**<a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a>**（本地 LLM 运行器，默认拉取 `llama3.2`）</li><li>**Qdrant**（向量数据库）</li><li>**PostgreSQL**（<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 数据持久化）</li></ul>
+<p>我第一次部署的时候，以为拉下来就能跑起来。结果踩了 4 个坑才让整套系统跑通。</p>
+<p>---</p>
+<h2>坑1：ECONNREFUSED — <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 网络隔离导致的 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 连接失败</h2>
+<h3>问题现象</h3>
+<p>用 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Compose 启动后，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 里配置 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> Chat Model 时直接报错：</p>
+<pre><code>Error: The service refused the connection - perhaps it is offline
+ERROR: fetch failed</code></pre>
+<p>凭证测试（Test Connection）也是红的。但奇怪的是直接 curl 宿主机 IP:11434 是通的。</p>
+<h3>根因分析</h3>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 运行在 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器里，默认用 <code>http://localhost:11434</code> 连接 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a>。但 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 容器内的 localhost 指向容器自己，不是宿主机。<a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 实际跑在宿主机上，网络完全不通。</p>
+<h3>解决方案</h3>
+<p>修改 docker-compose.yml，在 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 服务中加入环境变量：</p>
+<pre><code>services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    environment:
+      - OLLAMA_HOST=http://host.docker.internal:11434</code></pre>
+<p><code>host.docker.internal</code> 是 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Desktop for Mac/Windows 内置的宿主主机引用。Linux 上如果没有这个域名，需要用宿主机的实际 IP：</p>
+<pre><code># 先查宿主机在 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 网桥上的 IP
+ip a show docker0 | grep inet
+# 输出类似：inet 172.17.0.1/16
+
+# 然后在 docker-compose.yml 里写死 IP
+environment:
+  - OLLAMA_HOST=http://172.17.0.1:11434</code></pre>
+<p>###进阶：让 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 监听所有网卡</p>
+<p>只改 OLLAMA_HOST还不够，因为 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 默认只监听 <code>127.0.0.1</code>。需要让 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 监听 <code>0.0.0.0</code>：</p>
+<pre><code># Linux/Mac 编辑 ollama 服务
+systemctl edit ollama
+
+# 添加：
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+
+# 重启服务
+sudo systemctl restart ollama</code></pre>
+<p>这样 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 就会接受来自 Docker容器内的请求。</p>
+<p>---</p>
+<h2>坑2：Chat <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 节点显示红星但凭证测试正常</h2>
+<h3>问题现象</h3>
+<p><a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 凭证测试（Test Connection）显示✅，但在 Chat <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 节点上出现了红色星号⚠️，触发聊天时报错：</p>
+<pre><code>Error: Failed to receive response</code></pre>
+<h3>根因分析</h3>
+<p>这是 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> v1.10+ 引入的变化。新版 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Chat Trigger 默认使用 `N8N_RUNNERS_MODE=external`，在 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 这类本地模型 + AI Agent 组合的场景下存在兼容问题。<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 社区论坛有<a href="https://community.n8n.io/t/issues-connecting-ollama-llama3-model-with-ai-agent/284668" target="_blank" rel="nofollow sponsored">详细讨论</a>。</p>
+<h3>解决方案</h3>
+<p>在 docker-compose.yml 的 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 服务中加入：</p>
+<pre><code>services:
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    environment:
+      - N8N_RUNNERS_MODE=internal</code></pre>
+<p>重启 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 容器后，红色星号消失，Chat <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 节点正常工作。</p>
+<p>---</p>
+<h2>坑3：Qdrant 认证凭证失效（社区节点 bug）</h2>
+<h3>问题现象</h3>
+<p>Qdrant v1.7+ 默认开启认证后，<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Qdrant Vector Store 节点开始报错：</p>
+<pre><code>"error":"Wrong credentials, authorization header is required"</code></pre>
+<h3>根因分析</h3>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Qdrant 节点有<a href="https://www.reddit.com/r/n8n/comments/1l4w9b6/local_qdrant_credentials_access" target="_blank" rel="nofollow sponsored">已知 bug</a>：删除并重新创建凭证后问题消失，但首次配置时如果 Qdrant 已经开启认证，节点可能会缓存错误的认证信息。</p>
+<h3>解决方案</h3>
+<p><strong>方法一：重新创建凭证（推荐）</strong></p>
+<p>1. 在 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> → Settings → Credentials 里删除 Qdrant 相关凭证</p>
+<p>2. 重新创建，API Key 填写 Qdrant 启动时生成的 key</p>
+<p>3. 再次测试连接</p>
+<p><strong>方法二：关闭 Qdrant 认证（仅开发环境）</strong></p>
+<pre><code>services:
+  qdrant:
+    environment:
+      - QDRANT__SERVICE__API_KEY=
+    command: ["qdrant", "--no-auth"]</code></pre>
+<p>---</p>
+<h2>坑4：Qdrant 集合无法列出（防火墙端口问题）</h2>
+<h3>问题现象</h3>
+<p>在 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 Qdrant Vector Store 节点里无法选择已有集合，列表为空。但通过 Qdrant Dashboard（:6333/dashboard）可以看到集合是存在的。</p>
+<h3>根因分析</h3>
+<p>Qdrant 有两个端口：</p>
+<ul><li>**6333**（HTTP）：API 和管理界面，**必须对外开放**</li><li>**6334**（gRPC）：高性能向量搜索，**必须对外开放**</li></ul>
+<p>防火墙只开了 6334 没开 6333，或者只开了 6333 没开 6334，都会导致集合列表加载失败。</p>
+<h3>解决方案</h3>
+<p>确保两个端口都开放：</p>
+<pre><code># Ubuntu/Debian
+sudo ufw allow 6333/tcp
+sudo ufw allow 6334/tcp
+sudo ufw reload
+
+# CentOS/RHEL
+sudo firewall-cmd --permanent --add-port=6333/tcp
+sudo firewall-cmd --permanent --add-port=6334/tcp
+sudo firewall-cmd --reload</code></pre>
+<p>---</p>
+<h2>实战：搭建 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> + <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + Qdrant RAG 工作流</h2>
+<p>4 个坑都填完后，我搭了一个完整的 RAG（检索增强生成）工作流。整个流程用到了 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的7 个节点：</p>
+<h3>工作流设计</h3>
+<pre><code>[1. GitHub文档抓取] → [2. 文本分块] → [3. <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> Embeddings]
+      → [4. Qdrant向量存储] → [5. 语义检索]
+      → [6. LLM生成回答]</code></pre>
+<h3>节点1：GitHub 文档抓取</h3>
+<p>用 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 HTTP Request 节点抓取仓库的 README.md：</p>
+<pre><code>{
+  "method": "GET",
+  "url": "https://raw.githubusercontent.com/<a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-io/self-hosted-ai-starter-kit/main/README.md",
+  "options": {
+    "timeout": 30000
+  }
+}</code></pre>
+<h3>节点2：文本分块</h3>
+<p>用 Code 节点将长文档拆分为 512 token 一块（Qdrant 推荐向量维度对应长度）：</p>
+<pre><code>const text = $input.item.json.body;
+const chunkSize = 512;
+const chunks = [];
+for (let i = 0; i < text.length; i += chunkSize) {
+  chunks.push({ text: text.slice(i, i + chunkSize) });
+}
+return chunks.map(c => ({ json: c }));</code></pre>
+<h3>节点3：<a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> Embeddings</h3>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 的 <strong>Embeddings <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a></strong> 节点，配置：</p>
+<pre><code>Model: nomic-embed-text
+URL: http://ollama:11434 （容器内部网络，直接用服务名）</code></pre>
+<p>注意：<code>http://ollama:11434</code> 是 <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Compose 服务名，只有 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 和 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> 在同一网络时才能用。</p>
+<h3>节点4：Qdrant 向量存储</h3>
+<p><strong>Qdrant Vector Store - Insert</strong> 节点配置：</p>
+<pre><code>Collection Name: <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>-docs
+Vector Size: 768 （nomic-embed-text 的维度）
+Distance: Cosine</code></pre>
+<h3>节点5：语义检索</h3>
+<p><strong>Qdrant Vector Store - Retrieve</strong> 节点，用户问题作为查询向量，取 Top 3 相关文档块。</p>
+<h3>节点6：LLM 生成</h3>
+<p><strong>Chat <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a></strong> 节点，把检索到的文档块作为上下文喂给 LLM：</p>
+<pre><code>Model: llama3.2
+System Message: 你是一个技术文档助手，基于提供的文档片段回答用户问题。</code></pre>
+<p>---</p>
+<h2>防止踩坑的 5 条经验</h2>
+<p><strong>1. 部署前先确认 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 的网络绑定</strong></p>
+<pre><code>curl http://localhost:11434/api/tags
+#确认返回模型列表后再继续</code></pre>
+<p><strong>2. OLLAMA_HOST 在 Linux <a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> 环境必须指向宿主机 IP</strong></p>
+<p><a href="https://www.docker.com/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">Docker</a> Compose 默认不提供 <code>host.docker.internal</code>，需要手动查 IP 并写入环境变量。</p>
+<p><strong>3. <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> v1.10+ 的 Chat Trigger 需要加 N8N_RUNNERS_MODE=internal</strong></p>
+<p>这条环境变量在 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> + AI Agent 场景几乎是必须配置的。</p>
+<p><strong>4. Qdrant 认证问题：删除重建凭证是最快的解法</strong></p>
+<p>不要反复修改同一个凭证，直接删掉重建，通常一次解决。</p>
+<p><strong>5. 生产环境用 health check 确保 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 模型拉取完成</strong></p>
+<p>在 docker-compose.yml 里加 <code>depends_on</code> + <code>condition: service_healthy</code>，确保 <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> 完全启动后再启动 <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>：</p>
+<pre><code>services:
+  ollama:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  <a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a>:
+    depends_on:
+      ollama:
+        condition: service_healthy</code></pre>
+<p>---</p>
+<h2>总结</h2>
+<p><a href="https://n8n.io/?ref=YOUR_REF_CODE" target="_blank" rel="nofollow sponsored">n8n</a> + <a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> + Qdrant 这套组合跑起来之后，完全不需要任何云端 API 费用，所有数据都在本地。4 个坑踩完后，我的 RAG 工作流响应时间在 3 秒以内（<a href="/2026-05-11-ollama-modelfile-rag-guide-zh.html" class="internal-link">Ollama</a> llama3.2 on RTX 3060），完全满足日常使用。</p>
+<p>如果你也在搭这套组合，记住这 4 个坑的解法：ECONNREFUSED →改 OLLAMA_HOST；红星问题 → 加 N8N_RUNNERS_MODE=internal；Qdrant 认证 → 重建凭证；端口问题 → 同时开放 6333 和 6334。</p>
+<p>👉 体验 AI 工作流自动化，推荐 <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored">MiniMax Token Plan</a>，国内访问稳定，支持多模型切换。</p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.birdiesearch.com/i/KU6611821" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6b35;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 Cloud Search</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </article>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

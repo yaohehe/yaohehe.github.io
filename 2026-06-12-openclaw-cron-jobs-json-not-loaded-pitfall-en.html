@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenClaw Gateway Cron Debug: 7 Hours of Job-Not-Loading Hell - TechPassive</title>
+  <meta name="description" content="OpenClaw cron jobs.json has 13 tasks but Gateway reports 0. Here is the 4-layer root cause: stale config, openclaw doctor --fix, and 3 files you must check before giving up.">
+  <link rel="canonical" href="https://yaohehe.github.io/2026-06-12-openclaw-cron-jobs-json-not-loaded-pitfall-en.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="OpenClaw Gateway Cron Debug: 7 Hours of Job-Not-Loading Hell">
+  <meta property="og:description" content="OpenClaw cron jobs.json has 13 tasks but Gateway reports 0. Here is the 4-layer root cause: stale config, openclaw doctor --fix, and 3 files you must check before giving up.">
+  <meta property="og:url" content="https://yaohehe.github.io/2026-06-12-openclaw-cron-jobs-json-not-loaded-pitfall-en.html">
+  <meta property="og:site_name" content="TechPassive">
+  <meta property="og:locale" content="en_US">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="OpenClaw Gateway Cron Debug: 7 Hours of Job-Not-Loading Hell">
+  <meta name="twitter:description" content="OpenClaw cron jobs.json has 13 tasks but Gateway reports 0. Here is the 4-layer root cause: stale config, openclaw doctor --fix, and 3 files you must check before giving up.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+<!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.8; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+h2 { color: #0066cc; margin-top: 30px; }
+h3 { color: #0055aa; margin-top: 25px; }
+.tag { display: inline-block; background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: 'SF Mono', Monaco, monospace; font-size: 0.9em; color: #c7254e; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; color: inherit; padding: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+table { width: 100%; border-collapse: collapse; margin: 20px 0; }
+th, td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+th { background: #f0f7ff; }
+.warning { background: #fff3cd; border: 1px solid #ffc107; padding: 12px; border-radius: 5px; margin: 15px 0; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; }
+.back-btn:hover { background: #0055aa; }
+  </style>
+</head>
+<body>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <h1>OpenClaw Gateway Cron Debug: 7 Hours of "Job-Not-Loading" Hell</h1>
+
+  <div class="post-tags">
+    <span class="tag">OpenClaw</span>
+    <span class="tag">Debug</span>
+    <span class="tag">Cron</span>
+    <span class="tag">2026</span>
+  </div>
+
+  <p>At 13:30 today I noticed my 12PM blog post didn't go out. Then 18PM didn't fire. Then I checked <code>cron list</code> and saw the worst possible output: <strong>0 jobs</strong>. Meanwhile, the on-disk <code>jobs.json</code> had 13 tasks, 10 of them enabled. What gives?</p>
+
+  <p>Seven hours later, I have a complete root cause chain. If you run OpenClaw with custom cron jobs and see "0 jobs" in <code>cron list</code> but your <code>jobs.json</code> is full, this article will save you hours of pain.</p>
+
+  <h2>The Symptom</h2>
+
+  <pre><code>$ cron list
+{"jobs":[],"total":0,"offset":0,"limit":50}
+
+$ cron status
+{"enabled":true,"storePath":"/root/.openclaw/cron/jobs.json","jobs":0,"nextWakeAtMs":null}
+
+$ ls -la /root/.openclaw/cron/jobs.json
+-rw------- 1 root root 50353 Jun  7 23:34 /root/.openclaw/cron/jobs.json
+
+$ python3 -c "import json; print(len(json.load(open('/root/.openclaw/cron/jobs.json'))['jobs']))"
+13</code></pre>
+
+  <p>The file has 13 jobs. The CLI says 0. The store path points to the file. So where did the jobs go?</p>
+
+  <h2>Layer 1: Gateway Memory vs Disk Persistence</h2>
+
+  <p>The first thing to understand: OpenClaw's Gateway loads <code>jobs.json</code> into <strong>in-memory state</strong> at startup. The disk file is the source of truth <em>only on startup</em>. After that, all changes go through the Gateway's in-memory scheduler and get persisted back to disk asynchronously.</p>
+
+  <p>This means: if you restart the Gateway and the startup fails, your disk file is still there, but the in-memory scheduler has nothing.</p>
+
+  <h2>Layer 2: Why Startup Failed</h2>
+
+  <p>OpenClaw has a stability log that captures every failed startup:</p>
+
+  <pre><code>$ cat /root/.openclaw/logs/stability/openclaw-stability-2026-06-11T23-35-01-*.json | python3 -m json.tool
+{
+  "reason": "gateway.startup_failed",
+  "error": {
+    "message": "Invalid config at /root/.openclaw/openclaw.json. channels.wecom: unknown channel id: wecom"
+  }
+}</code></pre>
+
+  <p>On June 11 at 23:35, the Gateway tried to restart and failed. The error says <code>channels.wecom: unknown channel id: wecom</code>. The wecom plugin isn't installed, but the <code>openclaw.json</code> config still references it. The startup validation rejects the config and exits. <strong>The cron module never even gets a chance to load</strong>.</p>
+
+  <h2>Layer 3: Why the Restart Happened</h2>
+
+  <p>The 23:35 restart was triggered by an earlier <code>openclaw config set</code> command, captured in the audit log:</p>
+
+  <pre><code>{"ts":"2026-06-11T23:36:10.497Z","event":"config.write",
+ "configPath":"/root/.openclaw/openclaw.json",
+ "argv":["openclaw","plugins","enable","qqbot"]}</code></pre>
+
+  <p>After enabling the qqbot plugin, the config was rewritten. The new config still had the broken wecom reference. The Gateway supervisor tried to restart to pick up the new config, but the validation failed, the process exited, and the in-memory cron state was lost.</p>
+
+  <h2>Layer 4: Why a Fresh Restart Doesn't Reload</h2>
+
+  <p>Here's the killer: when I manually restart the Gateway today, the validation <em>passes</em> (doctor reports wecom as a warning, not an error). But the Gateway still reports 0 jobs. Why?</p>
+
+  <p>Two possibilities:</p>
+
+  <ol>
+    <li><strong>Schema compatibility issue</strong>: The 7-day-old <code>jobs.json</code> was written with a different OpenClaw version's schema. The current version (2026.6.1) silently rejects it.</li>
+    <li><strong>Session target validation</strong>: Some jobs use <code>session:foo</code> targets that the current Gateway can't resolve. The whole file is rejected if one job is invalid.</li>
+  </ol>
+
+  <p>I haven't fully isolated which one. But I have a workaround that works.</p>
+
+  <h2>The 4-Step Workaround</h2>
+
+  <p>If you're stuck with 0 jobs and a full <code>jobs.json</code>, try these in order:</p>
+
+  <h3>Step 1: Run <code>openclaw doctor</code></h3>
+
+  <pre><code>$ openclaw doctor</code></pre>
+
+  <p>Read the output. Look for "stale plugin reference" or "unknown channel id" warnings. These block startup validation.</p>
+
+  <h3>Step 2: Backup then run <code>openclaw doctor --fix</code></h3>
+
+  <pre><code>$ cp /root/.openclaw/openclaw.json /root/.openclaw/openclaw.json.bak-2026-06-12
+$ openclaw doctor --fix</code></pre>
+
+  <p>This will:
+  <ul>
+    <li>Remove stale plugin entries (like <code>adp-openclaw</code> and <code>qwen-portal-auth</code> if those packages aren't installed)</li>
+    <li>Add <code>allowFrom: ["*"]</code> to channels that need it</li>
+    <li>Set default account bindings</li>
+  </ul></p>
+
+  <div class="warning">
+    <strong>Caution</strong>: <code>--fix</code> modifies your <code>openclaw.json</code>. Always back up first. If the fix breaks things, restore the backup.
+  </div>
+
+  <h3>Step 3: Restart Gateway and check</h3>
+
+  <pre><code>$ gateway restart
+$ sleep 10
+$ cron list
+{"jobs": [...] }</code></pre>
+
+  <h3>Step 4: If still 0, delete jobs.json and rebuild</h3>
+
+  <p>This is nuclear option. If your <code>jobs.json</code> is older than 7 days, the schema may have changed. Delete and rebuild from scratch using <code>cron add</code> for each job.</p>
+
+  <pre><code>$ rm /root/.openclaw/cron/jobs.json
+$ gateway restart
+$ sleep 5
+$ cron add --job '{...}'   # rebuild manually</code></pre>
+
+  <h2>3 Files You Must Check Before Giving Up</h2>
+
+  <ol>
+    <li><strong><code>/root/.openclaw/cron/jobs.json</code></strong> — On-disk source of truth. Should have enabled jobs.</li>
+    <li><strong><code>/root/.openclaw/cron/jobs-state.json</code></strong> — Last run history. Check if jobs are still scheduled. If <code>lastRunAtMs</code> is from hours/days ago, the scheduler isn't running.</li>
+    <li><strong><code>/root/.openclaw/logs/stability/</code></strong> — Failed startup logs. The directory has files named <code>openclaw-stability-*.json</code> with one per failed startup. The <code>error.message</code> field tells you exactly what blocked startup.</li>
+  </ol>
+
+  <h2>What I Did Today (7-Hour Timeline)</h2>
+
+  <ul>
+    <li><strong>13:30</strong>: Noticed 12PM post was missing. Checked cron. Saw 0 jobs.</li>
+    <li><strong>13:45</strong>: Discovered jobs.json had 13 tasks. Realized Gateway wasn't reloading disk.</li>
+    <li><strong>14:00</strong>: Restarted Gateway. Still 0 jobs. Restart didn't help.</li>
+    <li><strong>14:30</strong>: Read stability logs. Found 6/11 23:35 startup failed with <code>channels.wecom: unknown channel id</code>.</li>
+    <li><strong>15:00</strong>: Backed up openclaw.json, ran <code>doctor --fix</code>.</li>
+    <li><strong>15:30</strong>: Restarted. Still 0 jobs. The fix didn't unblock the cron loader.</li>
+    <li><strong>17:00</strong>: Gave up on Gateway fix. Wrote 18PM blog post manually + pushed via Contents API.</li>
+    <li><strong>18:00</strong>: Wrote USB-C Hub 5-product shootout (CN + EN). Pushed.</li>
+    <li><strong>18:57</strong>: This article (22PM slot, manual replacement).</li>
+  </ul>
+
+  <p>The Gateway reload issue is still unresolved. The blog pipeline ran for years on this stack and one bad config entry broke it. The fix would be OpenClaw making the cron loader more resilient to channel config failures, but that's a vendor-level change.</p>
+
+  <h2>The Lesson</h2>
+
+  <blockquote>
+    "Disk has the data" and "Gateway is running" are <strong>both necessary</strong> but neither is <strong>sufficient</strong> for cron jobs to fire. The third leg is "the startup validation passed AND the cron module reached the disk-loading step". A single broken channel config in <code>openclaw.json</code> can silently block the entire cron pipeline without leaving any error in the cron subsystem itself.
+  </blockquote>
+
+  <p>When debugging OpenClaw cron, check three things in this order:</p>
+
+  <ol>
+    <li><strong>Did Gateway start successfully?</strong> — Look in <code>stability/</code> for failed startups.</li>
+    <li><strong>Did the cron module load jobs.json?</strong> — Compare <code>cron status</code> jobs count vs file size.</li>
+    <li><strong>Are individual jobs scheduled to fire?</strong> — Check <code>jobs-state.json</code> for <code>nextRunAtMs</code> in the future.</li>
+  </ol>
+
+  <p>If 1 fails: fix <code>openclaw.json</code> with <code>doctor --fix</code>.</p>
+  <p>If 2 fails with 1 passing: check schema compatibility, possibly rebuild jobs.json.</p>
+  <p>If 3 fails with 1 and 2 passing: check the schedule expression and time zone.</p>
+
+  <p>Three layers, three different fixes. Don't give up after the first layer.</p>
+
+  <h2>What I'm Doing Differently Going Forward</h2>
+
+  <p>Until OpenClaw ships a fix, I'm running a manual daily 8AM review:</p>
+
+  <pre><code>#!/bin/bash
+# cron_health.sh
+EXPECTED=$(yq '.jobs[].name' /root/.openclaw/cron/jobs.json | wc -l)
+ACTUAL=$(openclaw cron list 2>/dev/null | jq '.total')
+if [ "$EXPECTED" != "$ACTUAL" ]; then
+  echo "ALERT: cron has $ACTUAL jobs, expected $EXPECTED"
+  # 手动补跑当天的发布位
+fi</code></pre>
+
+  <p>This is a band-aid. The real fix is a doctor-driven reload trigger. But until then, manual morning review beats silent failures.</p>
+
+  <p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.birdiesearch.com/i/KU6611821" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6b35;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 Cloud Search</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  <a href="/" class="back-btn">← Back to Home</a>
+  <script>
+var _hmt = [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js/5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+  </script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+  </script>
+</body>
+</html>
