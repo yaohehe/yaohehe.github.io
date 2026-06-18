@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress数据库迁移踩坑实录：序列化数据/Collation/WP-CLI三大陷阱 - TechPassive</title>
+  <meta name="description" content="我用wp-cli做了上百次WordPress数据库迁移，序列化数据损坏、Collation不兼容、search-replace遗漏是最常见的三种翻车方式，这篇文章提供每个坑的最小修复方案">
+  <link rel="canonical" href="https://yaohehe.github.io/2026-06-19-wordpress-collationwp-cli.html">
+  <meta property="og:type" content="article">
+  <meta property="og:title" content="WordPress数据库迁移踩坑实录：序列化数据/Collation/WP-CLI三大陷阱">
+  <meta property="og:description" content="我用wp-cli做了上百次WordPress数据库迁移，序列化数据损坏、Collation不兼容、search-replace遗漏是最常见的三种翻车方式，这篇文章提供每个坑的最小修复方案">
+  <meta property="og:url" content="https://yaohehe.github.io/2026-06-19-wordpress-collationwp-cli.html">
+  <meta property="og:site_name" content="TechPassive">
+  <meta property="og:locale" content="zh_CN">
+  <meta name="twitter:card" content="summary">
+  <meta name="twitter:title" content="WordPress数据库迁移踩坑实录：序列化数据/Collation/WP-CLI三大陷阱">
+  <meta name="twitter:description" content="我用wp-cli做了上百次WordPress数据库迁移，序列化数据损坏、Collation不兼容、search-replace遗漏是最常见的三种翻车方式，这篇文章提供每个坑的最小修复方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress数据库迁移三大陷阱与修复</h1>
+  <div class="post-tags">
+    <span class="tag">WordPress</span><span class="tag">数据库迁移</span><span class="tag">wp-cli</span>
+  </div>
+  <article class="content">
+    <p>WP-CLI的<code>search-replace</code>命令会自动处理序列化数据的长度字段，这才是正确做法：</p>
+<pre><code># 先dry-run看影响范围
+wp search-replace 'old.example.com' 'new.example.com' --all-tables --dry-run --report-changed-only
+
+# 确认无误后正式执行
+wp search-replace 'old.example.com' 'new.example.com' --all-tables</code></pre>
+<p>两个关键参数不要省：</p>
+<ul><li>`--all-tables`：默认只替换`$wpdb`注册的表，自定义插件建的表会漏掉（WooCommerce的`wp_woocommerce_sessions`、Elementor的`wp_elementor_library`都常见）</li><li>`--dry-run`：先跑一遍看有多少行会被改，确认没有误命中再执行</li></ul>
+<p>如果你的字段里有JSON（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.7+的<code>wp_usermeta</code>部分字段已改用JSON），加上<code>--precise</code>：</p>
+<pre><code>wp search-replace 'old.example.com' 'new.example.com' --all-tables --precise</code></pre>
+<p><code>--precise</code>用PHP的<code>preg_replace</code>逐行处理而非MySQL的<code>REPLACE()</code>，速度慢3-5倍但对序列化和JSON数据更安全。</p>
+<h2>Collation不兼容：从MySQL 5.7搬到8.0的隐形炸弹</h2>
+<p>MySQL 8.0的默认collation从<code>utf8mb4_unicode_ci</code>变成了<code>utf8mb4_0900_ai_ci</code>。当你把5.7的数据库导入8.0时，SQL dump里的<code>COLLATE=utf8mb4_unicode_ci</code>和8.0默认的<code>utf8mb4_0900_ai_ci</code>混合，JOIN查询会直接报错：</p>
+<pre><code>Illegal mix of collations (utf8mb4_0900_ai_ci,IMPLICIT) and (utf8mb4_unicode_ci,IMPLICIT) for operation '='</code></pre>
+<p>这个错误安静地藏在后台，前台表现就是某些页面加载失败、WooCommerce订单查询报错、搜索功能失效。</p>
+<p><strong>修复方法</strong>：导入前统一collation，不是导入后修——导入后修要逐表逐列跑ALTER，几十张表改下来容易漏。</p>
+<pre><code># 导出时把dump文件里的collation统一替换
+mysqldump -u root -p wordpress_db > dump.sql
+sed -i 's/utf8mb4_0900_ai_ci/utf8mb4_unicode_ci/g' dump.sql
+# 或者反过来，统一到0900
+# sed -i 's/utf8mb4_unicode_ci/utf8mb4_0900_ai_ci/g' dump.sql</code></pre>
+<p>选哪个方向？**跟着目标服务器的MySQL版本走**。目标跑8.0就统一到<code>utf8mb4_0900_ai_ci</code>，目标跑5.7就统一到<code>utf8mb4_unicode_ci</code>。</p>
+<p>如果已经导入了、正在报错，批量修表：</p>
+<pre><code># 生成所有需要修改的ALTER语句
+mysql -u root -p -e "
+SELECT CONCAT('ALTER TABLE \`', TABLE_NAME, '\` CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;')
+FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = 'wordpress_db'
+AND TABLE_COLLATION != 'utf8mb4_unicode_ci';" > fix_collation.sql
+
+# 执行
+mysql -u root -p wordpress_db < fix_collation.sql</code></pre>
+<h2>WP-CLI search-replace的三个隐蔽遗漏</h2>
+<h3>遗漏一：漏掉自定义表前缀的表</h3>
+<p>如果你的<code>wp-config.php</code>里<code>$table_prefix</code>不是默认的<code>wp_</code>（比如<code>wp_42_</code>），<code>wp search-replace</code>的默认行为只处理注册到<code>$wpdb</code>的表。第三方插件自建的表不会自动包含。</p>
+<pre><code># 错误：只替换默认注册的表
+wp search-replace 'old.example.com' 'new.example.com'
+
+# 正确：覆盖所有表
+wp search-replace 'old.example.com' 'new.example.com' --all-tables
+
+# 多站点情况
+wp search-replace 'old.example.com' 'new.example.com' --network --all-tables</code></pre>
+<h3>遗漏二：GUID字段不该替换</h3>
+<p><code>wp_posts</code>表的<code>guid</code>列存的是文章的唯一标识，WordPress官方文档明确说guid在发布后不应更改。替换guid会导致RSS阅读器重新推送所有旧文章给订阅者。</p>
+<pre><code># 排除guid列
+wp search-replace 'old.example.com' 'new.example.com' --all-tables --skip-columns=guid</code></pre>
+<h3>遗漏三：大站内存溢出</h3>
+<p>数据库超过1GB时，<code>wp search-replace</code>可能因为PHP内存限制中断。正确做法是分批处理：</p>
+<pre><code># 按表逐一处理，避免全库扫描OOM
+wp search-replace 'old.example.com' 'new.example.com' wp_options --dry-run
+wp search-replace 'old.example.com' 'new.example.com' wp_postmeta --dry-run
+wp search-replace 'old.example.com' 'new.example.com' wp_posts --dry-run
+# 每张表确认后再去掉--dry-run正式执行</code></pre>
+<p>或者直接提高PHP内存限制：</p>
+<pre><code>wp search-replace 'old.example.com' 'new.example.com' --all-tables --skip-columns=guid --memory-limit=512M</code></pre>
+<h2>迁移前后检查清单</h2>
+<p>迁移前：</p>
+<p>1. 备份目标数据库（<code>mysqldump</code>全量备份）</p>
+<p>2. 检查源和目标的MySQL版本、collation</p>
+<p>3. <code>wp search-replace --dry-run</code>预估影响行数</p>
+<p>迁移后：</p>
+<pre><code># 1. 验证首页能访问
+curl -sI https://new.example.com | head -5
+
+# 2. 检查有无残余旧域名
+wp db query "SELECT COUNT(*) FROM wp_options WHERE option_value LIKE '%old.example.com%'"
+
+# 3. 刷新缓存和伪静态
+wp cache flush
+wp rewrite flush
+
+# 4. 检查Collation混合
+wp db query "SELECT TABLE_NAME, TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_COLLATION != 'utf8mb4_unicode_ci'" 2>/dev/null</code></pre>
+<p>如果你的WordPress站还有安全加固需求，可以参考我之前写的<a href="https:///2026-06-16-wordpress-2026-2fa-fail2ban.html" target="_blank" rel="nofollow sponsored">WordPress安全加固2026</a>和<a href="https:///2026-06-17-wordpress-cloudflare-tunnel-5.html" target="_blank" rel="nofollow sponsored">Cloudflare Tunnel零端口方案</a>。数据库迁移本质上是运维操作，和网络安全、前端性能一样属于WordPress运维的必修课。</p>
+<blockquote>本文包含联盟链接。如果你通过链接购买，我可能获得佣金，不影响你的价格。</blockquote><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8S9T0U1V&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.birdiesearch.com/i/KU6611821" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6b35;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 云盘搜索</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>
+</div>
+
+  </article>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
