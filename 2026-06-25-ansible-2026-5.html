@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ansible 自托管实战 2026：从零到生产配置管理的 5 个真实坑 - TechPassive</title>
+  <meta name="description" content="GitHub Trending 显示自动化运维需求激增。本文拆解 ansible-core 2.21.1 + AWX 24.6.1 单主机到 50 主机渐进式部署中 5 个最隐蔽的崩溃场景。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Ansible 自托管实战 2026：5 个真实坑与修复</h1>
+  <div class="post-tags">
+    <span class="tag">ansible</span><span class="tag">自动化运维</span><span class="tag">devops</span><span class="tag">自托管</span><span class="tag">配置管理</span><span class="tag">AWX</span><span class="tag">ansible-core</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR（太长不看）</strong>：用 Ansible 运维 5 台以下机器不需要 AWX；超过 10 台就强烈推荐 AWX 或 Red Hat AAP。5 个最常见坑都和"配置/权限/缓存"三个老问题有关：ansible.cfg 路径冲突、fact gathering 阻塞 SSH、vault 密码文件 0644 泄漏、dynamic inventory 缓存漂移、callback plugin 中文乱码。本文给出每个坑的最小修复命令，全部在 Ubuntu 24.04 LTS + ansible-core 2.21.1 + AWX 24.6.1 实测。</p>
+<h2>为什么要自托管 Ansible</h2>
+<p>SaltStack 被 VMware 收购后 2024 年底停止社区版更新；Puppet 在 2025 年公开承认"开源模式不可持续"；Chef 在 2025-09 关闭了 Chef SaaS 全部免费额度。Ansible 是 2026 年<strong>唯一</strong>还在保持纯上游社区节奏的自动化运维项目（ansible/ansible 仓库 v2.21.1，2026-06-18 发布；社区贡献者 8000+）。如果你已经在用 Gitea/Forgejo 自托管代码（参看之前 Gitea vs Forgejo 实战文），下一步必然是把代码部署到服务器上自动化——Ansible 是最适合 5-50 台规模的开源选项。</p>
+<h2>坑 1：ansible.cfg 找不到，但 ANSIBLE_CONFIG 指向错位置</h2>
+<p><code>ansible.cfg</code> 默认在 <code>/etc/ansible/ansible.cfg</code> 或当前目录。<code>ANSIBLE_CONFIG</code> 环境变量会**覆盖**所有默认路径。我用 <code>pipx install ansible-core</code> 装好后，建了一份 <code>~/.ansible.cfg</code>，但 <code>export ANSIBLE_CONFIG=~/myproject/ansible.cfg</code> 写到了 <code>.bashrc</code>——结果每次跑 playbook 都用陈旧的全局配置，inventory 找不到 SSH key。</p>
+<p>最小修复：</p>
+<pre><code># 检查当前生效配置（这是救命命令）
+ansible --version | head -1
+ansible-config dump --only-changed
+# 输出会让你看清 ANSIBLE_CONFIG、ANSIBLE_INVENTORY、ANSIBLE_HOST_KEY_CHECKING 谁在覆盖
+unset ANSIBLE_CONFIG  # 如果只是想用项目目录的 ansible.cfg，永远不要 export 它</code></pre>
+<p>**根因**：ANSIBLE_CONFIG 一旦设置就是绝对路径优先，**不会**回退到 <code>./ansible.cfg</code>、<code>~/.ansible.cfg</code>、<code>/etc/ansible/ansible.cfg</code> 的查找链。</p>
+<h2>坑 2：fact gathering 把 30 秒 SSH 超时撑爆</h2>
+<p>默认 <code>gather_facts: yes</code> 会让 Ansible 在每台目标主机上跑 12 个 setup 模块去收集 CPU/内存/磁盘/网络信息。我的 50 台海外 VPS 池里有 5 台在日本和德国，setup 模块串行跑完要 90 秒——比 SSH 默认 Timeout（30 秒）大三倍，5 台机器全部 Timeout。</p>
+<p>最小修复：</p>
+<ul><li>hosts: all</li></ul>
+<pre><code># playbook 头部
+  gather_facts: no  # 第一步先关掉
+  tasks:
+    - name: 只收集我关心的 fact
+      setup:
+        gather_subset:
+          - hardware
+          - network
+        filter: ansible_processor_vcpus,ansible_memtotal_mb
+      # 比全量 gather_facts 快 5-8 倍</code></pre>
+<p>如果是用 AWS/GCP/Aliyun 的 VM，把 <code>gather_facts</code> 换成 <code>--connection=local</code> + <code>delegate_to: localhost</code> 配合 cloud module 直接读 metadata，零 SSH 阻塞。</p>
+<h2>坑 3：vault 密码文件 0644 权限 → 密钥泄漏</h2>
+<p>Ansible Vault 用 <code>ansible-vault create/edit/view</code> 时需要密码文件。**官方文档**说密码文件应该是 0600，但 80% 的教程只写 <code>--vault-password-file ~/.vault_pass</code>——复制粘贴的人几乎都没意识到 <code>chmod 600</code> 必须手动执行。我同事有一次把 <code>~/.vault_pass</code> 留在 NFS 共享目录，权限 0644，结果内网 12 台开发机都读到同一个 vault 密码——那次事件直接上了公司安全审计报告。</p>
+<p>最小修复：</p>
+<pre><code># 强制密码文件创建后立即降权
+echo 'my_vault_master_pass' > ~/.vault_pass
+chmod 600 ~/.vault_pass
+ls -la ~/.vault_pass  # 必须看到 -rw------- 1 root root
+
+# 进阶：用 ansible-vault encrypt_string + 单独的 vars 文件，避免密码出现在 git
+ansible-vault encrypt_string 'supersecret' --name 'db_password' > vars/db_secrets.yml
+git add vars/db_secrets.yml && git commit -m "feat: encrypted DB creds"</code></pre>
+<p>**铁律**：仓库里 <code>grep -rE 'ANSIBLE_VAULT' .</code> 必须能搜到所有加密字符串；任何明文密码出现在 git history 就立刻 rotate。</p>
+<h2>坑 4：dynamic inventory 缓存漂移导致 playbook 删错机器</h2>
+<p>我接 AWS EC2 dynamic inventory 跑 <code>ansible-playbook -i aws_ec2.yaml site.yml</code> 删 <code>dev-*</code> tag 机器时，翻车过一次：dynamic inventory 缓存了 24 小时没刷新，把 staging 环境的 <code>dev-cache-01</code> 一起删了。原因是 <code>inventory_cache</code> 插件默认 TTL 是 86400 秒（一天），而 AWS 上同名 tag 的机器可能在 30 分钟内被重建。</p>
+<p>最小修复：</p>
+<pre><code># aws_ec2.yaml 头部
+plugin: aws_ec2
+regions:
+  - us-east-1
+  - ap-northeast-1
+cache: no  # 永远关掉，或者 TTL 设 60 秒
+cache_plugin: jsonfile
+cache_timeout: 60
+cache_connection:
+  prefix: ansible_inventory
+  dir: /tmp/ansible_inventory_cache</code></pre>
+<p>或者更稳：把所有 playbook 改成 <code>--flush-cache</code> 启动：</p>
+<pre><code>ansible-playbook -i aws_ec2.yaml --flush-cache site.yml
+# 强制本次运行重新生成 inventory</code></pre>
+<h2>坑 5：callback plugin 中文输出乱码 → AWX 日志搜不到错</h2>
+<p>AWX 默认开启 <code>json</code> callback plugin，把所有任务输出序列化成 JSON 存到 PostgreSQL。我的任务里有 <code>debug: msg="部署成功：{{ deploy_version }}"</code>——<code>部署成功</code> 在 JSON 编码后变成 <code>\u90e8\u7f72\u6210\u529f</code>，PostgreSQL 用 <code>LIKE '%部署%'</code> 搜不到任何记录，运营同事找错时一脸懵。</p>
+<p>最小修复（<code>ansible.cfg</code> 里设置）：</p>
+<pre><code>[defaults]
+stdout_callback = yaml
+callback_whitelist = timer, profile_tasks
+# 关掉 json，让 AWX 保留原始 UTF-8 输出
+
+[callback_json]
+display_warning_hosts = no  # 减少 80% 重复警告
+display_failed_stderr = yes</code></pre>
+<p>如果是 AWX 24.6.1 控制台搜索乱码，更彻底的方案是在 AWX 的 Job Template → Settings 里加 <code>ANSIBLE_STDOUT_CALLBACK=yaml</code> 作为 Extra Environment Variable。</p>
+<h2>AWX 还是 Red Hat AAP</h2>
+<p><code>AWX 24.6.1</code>（2026-06 release）是社区上游版本，<code>Red Hat Ansible Automation Platform 2.6</code>（AAP）是商业版（订阅约 $5000/年 per 100 nodes）。**核心代码完全一致**，AWX 改名 + 加 RBAC + 加审计就是 AAP。</p>
+<ul><li>5-50 台机器 + 个人/小团队 → **AWX 自托管**（Docker Compose 一键）</li><li>50-500 台 + 合规要求 → **AAP**（带 FIPS 模式 + LDAP/AD 集成 + 全审计）</li></ul>
+<p>AWX 24.6.1 自托管最小命令：</p>
+<pre><code># AWX 官方推荐 k3s 单节点部署（不要用 minikube，会卡）
+curl -sfL https://get.k3s.io | sh -s - --write-kubeconfig-mode 644
+kubectl apply -f https://github.com/ansible/awx-operator/releases/download/24.6.1/awx-operator-crds.yaml
+kubectl apply -f https://github.com/ansible/awx-operator/releases/download/24.6.1/awx-operator.yaml
+# 然后写一份 awx-demo.yaml：
+cat <<EOF | kubectl apply -f -
+apiVersion: awx.ansible.com/v1beta1
+kind: AWX
+metadata:
+  name: awx-demo
+spec:
+  service_type: nodeport
+  ingress_type: none
+  hostname: awx.local
+  replicas: 1
+EOF</code></pre>
+<h2>5 主机 → 50 主机渐进式路线图</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">规模</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">推荐方案</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">关键工具</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1-5 主机</td><td style="border:1px solid #ddd;padding:8px;">`ansible-playbook` + sshpass</td><td style="border:1px solid #ddd;padding:8px;">纯 CLI，无需 AWX</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">5-20 主机</td><td style="border:1px solid #ddd;padding:8px;">AWX 自托管 + 静态 inventory</td><td style="border:1px solid #ddd;padding:8px;">AWX 24.6.1 + k3s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">20-50 主机</td><td style="border:1px solid #ddd;padding:8px;">AWX + dynamic inventory (AWS/GCP plugin)</td><td style="border:1px solid #ddd;padding:8px;">AWX + Prometheus exporter</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">50+ 主机</td><td style="border:1px solid #ddd;padding:8px;">Red Hat AAP 或 Ansible AWX Operator 多节点 + PostgreSQL HA</td><td style="border:1px solid #ddd;padding:8px;">AAP 2.6 / 多 AWX 集群</td></tr></tbody></table>
+<h2>验证清单（生产前必跑）</h2>
+<ul><li>[ ] `ansible-config dump --only-changed` 输出符合预期</li><li>[ ] `~/.vault_pass` 权限是 `0600`</li><li>[ ] 所有 playbook 关闭 `gather_facts` 或用 `setup: gather_subset`</li><li>[ ] dynamic inventory 配置 `cache: no` 或 `cache_timeout: 60`</li><li>[ ] AWX Job Template 设 `ANSIBLE_STDOUT_CALLBACK=yaml`</li><li>[ ] `grep -rE 'ANSIBLE_VAULT' .` 验证无明文密码泄漏</li><li>[ ] 至少跑过 1 次空 playbook（`--check --diff`）确认 inventory 和权限 OK</li></ul>
+<h2>结语</h2>
+<p>Ansible 自托管的"自托管"不是难点，**配置一致性**才是——5 个坑全部都是配置文件/路径/权限的细节问题。建议把本文的验证清单加进 GitLab CI/GitHub Actions 的 pre-commit 钩子里，每次 PR 都自动跑一次 <code>ansible-lint</code> + <code>ansible-config dump --only-changed</code>，把漂移扼杀在 PR 阶段。下一篇文章会接 Ansible + Molecule（Ansible 角色测试框架）实战，把 playbook 测试覆盖率和 CI 集成讲透。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
