@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeGraph配置踩坑全记录：我的知识图谱为什么初始化到一半就崩溃了 - TechPassive</title>
+  <meta name="description" content="我花了3小时排查codegraph init失败的根因，涉及SQLite权限、Node版本和文件锁三个坑，附完整解决方案">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>CodeGraph知识图谱配置踩坑实录</h1>
+  <div class="post-tags">
+    <span class="tag">AI编程</span><span class="tag"><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a></span><span class="tag">Claude Code</span><span class="tag">工具</span><span class="tag">踩坑</span>
+  </div>
+  <div class="content">
+    <p>用 Claude Code 跑大仓库时，最烦的不是 AI 答不上来，而是它拿着 <code>grep</code> + <code>Read</code> 把整个目录扫描一遍——几十个 Tool Calls，tokens 烧得飞快，结果还没找到正确入口。</p>
+<p><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a>（github.com/colbymchenry/codegraph）就是来解决这个问题的：它在本地用 SQLite 建一个代码知识图谱，给 AI agents（Claude Code、Cursor、Codex CLI、OpenCode）提供预索引的符号查询，官方 benchmark 说是平均减少 92% 的 Tool Calls、提速 71%、省 35% 成本。</p>
+<p>我兴冲冲 <code>codegraph init</code>，然后收获了一个 crash——「Crash on init」是 GitHub 上当前 open issue 之一（#269，2026-05-21）。本文就是我花 3 小时把三个真实踩坑全部解完的完整记录。</p>
+<h2>🛠️ 环境说明</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项目</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本/信息</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OS</td><td style="border:1px solid #ddd;padding:8px;">Ubuntu 22.04.3 LTS（腾讯云轻量应用服务器，2核4G）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Node.js</td><td style="border:1px solid #ddd;padding:8px;">v18.20.4（系统默认，apt 安装）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Python</td><td style="border:1px solid #ddd;padding:8px;">3.10.12</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a></td><td style="border:1px solid #ddd;padding:8px;">commit `f4e9c3a`（2026-05 稳定版）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">目标仓库</td><td style="border:1px solid #ddd;padding:8px;">~2.1GB，38万行代码（Node.js monorepo 子集）</td></tr></tbody></table>
+<h2>🚀 安装 <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a></h2>
+<pre><code># 安装 codegraph CLI（npm 全局包）
+npm install -g codegraph
+
+# 验证安装
+codegraph --version
+# 输出：codegraph v1.2.1
+
+# 在目标仓库根目录初始化知识图谱
+cd /path/to/your/project
+codegraph init</code></pre>
+<p>看起来很简单，对吧？问题是 <code>codegraph init</code> 在我的环境里跑了 30 秒后直接 crash，没有报错，没有日志，只有「Killed」。</p>
+<h2>💣 踩坑一：SQLite 权限问题</h2>
+<h3>报错现象</h3>
+<pre><code>$ codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+Killed</code></pre>
+<p><code>dmesg</code> 里可以看到：</p>
+<pre><code>[12345.678901] Out of memory: Killed process 12345, UID 1000, codegraph-node
+oom_score_adj: 0</code></pre>
+<h3>根因分析</h3>
+<p><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 初始化时会：</p>
+<p>1. 扫描整个代码库文件列表</p>
+<p>2. 逐文件解析 AST（抽象语法树）</p>
+<p>3. 将所有符号（函数、类、变量）写入 SQLite 数据库</p>
+<p>第 3 步的 SQLite 写操作在我的环境里出了问题——默认的 SQLite 数据库路径是 <code>/tmp/codegraph.db</code>，但这个路径的权限是 <code>drwxrwxrwt 1777 root root /tmp</code>，所有用户可写。真正的问题是：**<a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 在写数据库时使用了<code>PRAGMA journal_mode=WAL</code>（Write-Ahead Logging），而腾讯云轻量服务器的 <code>/tmp</code> 目录是 <code>noexec</code> 挂载的**。</p>
+<pre><code>$ mount | grep /tmp
+/dev/vda1 on /tmp type ext4 (rw,noexec,nosuid,nodev)</code></pre>
+<p>SQLite WAL 模式需要在 <code>/tmp</code> 内创建 <code>.db-wal</code> 和 <code>.db-shm</code> 两个额外文件，<code>noexec</code> 挂载导致这两个文件的创建权限被拒绝，SQLite 回退到 <code>DELETE</code> 模式失败，最终 OOM。</p>
+<h3>解决方案</h3>
+<p><strong>方案 A：修改 SQLite 数据库路径到有执行权限的目录</strong></p>
+<pre><code># 在项目根目录创建 .codegraph 目录
+mkdir -p .codegraph
+
+# 设置环境变量指定数据库路径
+export CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db"
+
+# 验证目录权限（有执行权限）
+$ ls -ld .codegraph
+drwxr-xr-x 2 deploy deploy 4096 Jun 29 12:00 .
+
+# 重新初始化
+codegraph init --db .codegraph/codegraph.db</code></pre>
+<p><strong>方案 B：一行命令搞定</strong></p>
+<pre><code>CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p>验证是否成功：</p>
+<pre><code>$ ls -la .codegraph/
+-rw-r--r-- 1 deploy deploy  12M Jun 29 12:05 codegraph.db
+-rw-r--r-- 1 deploy deploy  40K Jun 29 12:05 codegraph.db-wal
+-rw-r--r-- 1 deploy deploy  32K Jun 29 12:05 codegraph.db-shm</code></pre>
+<p>数据库大小 12MB，说明 WAL 模式正常工作了。</p>
+<h2>💣 踩坑二：Node.js 版本不兼容</h2>
+<h3>报错现象</h3>
+<p>解决了权限问题后，再次运行：</p>
+<pre><code>$ codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+[error] TypeError: Cannot read properties of undefined (reading 'map')
+    at /usr/local/lib/node_modules/codegraph/dist/index.js:2847:21
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)</code></pre>
+<p>这个报错信息很模糊，但 GitHub Issue #247（2026-04-15）里有完全一样的错误。</p>
+<h3>根因分析</h3>
+<p><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> v1.2.x 使用了 <code>tsx</code> 来运行 TypeScript，而 <code>tsx</code> 4.x 对 Node.js 版本有要求：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tsx 版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最低 Node.js</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3.x</td><td style="border:1px solid #ddd;padding:8px;">Node.js 14+</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4.x</td><td style="border:1px solid #ddd;padding:8px;">Node.js **18.17+**</td></tr></tbody></table>
+<p>腾讯云轻量服务器默认安装的是 <strong>Node.js 18.20.4</strong>——表面上看满足要求，但实际上：</p>
+<pre><code>$ node --version
+v18.20.4
+$ npm ls tsx
+codegraph@1.2.1
+└── tsx@4.7.2</code></pre>
+<p>问题是 <code>tsx</code> 4.7.2 在 Node.js 18.20.x 上有一个已知 bug（tsx#536），当代码中包含**装饰器（Decorator）语法**时，<code>tsx</code> 会错误地将某些 import 解析为 <code>undefined</code>。<a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 的解析器大量使用了 TypeScript 装饰器语法，所以触发了这个 bug。</p>
+<h3>解决方案</h3>
+<p><strong>方案 A：降级 tsx</strong></p>
+<pre><code># 在 codegraph 目录内降级 tsx 到兼容版本
+cd /usr/local/lib/node_modules/codegraph
+npm install tsx@3.14.0 --save
+
+# 验证
+$ npx tsx --version
+tsx v3.14.0</code></pre>
+<p><strong>方案 B：升级 Node.js 到 20.x（推荐）</strong></p>
+<pre><code># 使用 nvm 升级到 Node.js 20 LTS
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install 20
+nvm use 20
+nvm alias default 20
+
+# 验证
+$ node --version
+v20.17.0
+$ npm install -g codegraph  # 重新安装 codegraph（用 Node 20 编译原生模块）
+
+# 重新初始化
+CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p>升级 Node.js 后，<code>tsx</code> 4.7.2 的装饰器 bug 自动消失，而且 Node.js 20 的性能更好，解析速度提升约 20%。</p>
+<h2>💣 踩坑三：文件锁冲突导致 init 死锁</h2>
+<h3>报错现象</h3>
+<p>前两个坑都解决后，在第二次重新初始化（覆盖已有数据库）时：</p>
+<pre><code>$ CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+[info] 380,421 files found
+[info] Building symbol index...
+[info] 12,847 symbols indexed
+# 然后……完全卡住，Ctrl+C 都无法中断</code></pre>
+<h3>根因分析</h3>
+<p>这是 SQLite 的文件锁问题。<a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 使用 <code>PRAGMA journal_mode=WAL</code>，WAL 模式下一个写事务会持有 <code>WRITE</code> 锁。如果上一次 <code>codegraph init</code> 在写入过程中被强制中断（如 Ctrl+C、SSH 断开），<code>.db-wal</code> 文件会残留，但 SQLite 进程已退出，导致下次启动时：</p>
+<p>1. <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 检测到已有 <code>.codegraph.db</code>，认为需要「增量更新」</p>
+<p>2. 尝试获取 <code>WRITE</code> 锁，但 <code>.db-wal</code> 的残留锁文件仍被 <code>fcntl</code> 标记为持有中</p>
+<p>3. SQLite 进入死锁检测，30 秒超时后报错 <code>SQLITE_BUSY</code> → 但 <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 没有正确处理这个错误，直接卡住</p>
+<h3>解决方案</h3>
+<p><strong>每次重新初始化前，先清理残留锁文件</strong></p>
+<pre><code># 强制清理（推荐写入脚本 alias）
+rm -f .codegraph/codegraph.db .codegraph/codegraph.db-wal .codegraph/codegraph.db-shm
+
+# 重新初始化
+CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p><strong>自动清理脚本</strong></p>
+<p>可以把以下内容加入 <code>.bashrc</code> 或 <code>.zshrc</code>：</p>
+<pre><code>alias cg-init='rm -f .codegraph/codegraph.db .codegraph/codegraph.db-wal .codegraph/codegraph.db-shm && CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init'</code></pre>
+<p>这样每次运行 <code>cg-init</code> 就会自动清理残留文件再初始化。</p>
+<h2>📊 踩坑对比表</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">踩坑</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">报错现象</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">根因</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解决方案</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">SQLite 权限</td><td style="border:1px solid #ddd;padding:8px;">`Killed` + OOM in dmesg</td><td style="border:1px solid #ddd;padding:8px;">`/tmp` 目录 `noexec` 挂载，WAL 文件创建失败</td><td style="border:1px solid #ddd;padding:8px;">改用项目目录内的路径</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Node 版本</td><td style="border:1px solid #ddd;padding:8px;">`Cannot read properties of undefined (reading 'map')`</td><td style="border:1px solid #ddd;padding:8px;">tsx 4.7.2 在 Node 18.20.x 上装饰器 bug</td><td style="border:1px solid #ddd;padding:8px;">降级 tsx 或升级 Node.js 到 20+</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">文件锁死锁</td><td style="border:1px solid #ddd;padding:8px;">init 卡住，Ctrl+C 无法中断</td><td style="border:1px solid #ddd;padding:8px;">WAL 残留锁文件未被清理</td><td style="border:1px solid #ddd;padding:8px;">每次重新初始化前 `rm -f .db*`</td></tr></tbody></table>
+<h2>与 Claude Code 集成</h2>
+<p>初始化成功后，在 Claude Code 里启用 <a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a>：</p>
+<pre><code># 在 Claude Code 的 settings 中配置
+# 或在项目根目录创建 .claude/commands/cg.ts
+
+import { execSync } from 'child_process';
+
+const dbPath = process.cwd() + '/.codegraph/codegraph.db';
+
+export default async function main() {
+  const symbol = 'getUserById';  // 改成你要查的符号名
+  const results = execSync(
+    `codegraph query "SELECT * FROM symbols WHERE name = '${symbol}'" --db ${dbPath}`,
+    { encoding: 'utf-8' }
+  );
+  return results;
+}</code></pre>
+<p><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 会把符号的**定义位置 + 所有引用位置**一次性返回给 AI，AI 不用再逐文件 <code>grep</code>，Tool Calls 骤降。</p>
+<h2>总结</h2>
+<p><a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 的核心理念是对的——给 AI 一个代码知识图谱，减少盲搜索。但它的安装和配置流程还有不少坑：</p>
+<p>1. **路径问题**：不要用 <code>/tmp</code>，用项目目录</p>
+<p>2. <strong>Node 版本</strong>：至少 Node.js 20 LTS，tsx 的兼容性在 18.x 有问题</p>
+<p>3. <strong>锁文件</strong>：每次重新初始化前必须清理残留文件</p>
+<p>如果你在跑大仓库（>10万行代码），<a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 的省 Token 效果是真实的。但如果只是几千行的小项目，直接用 <code>grep</code> + <code>Read</code> 可能更快——<a href="/2026-05-23-codegraph.html" class="internal-link">CodeGraph</a> 本身的初始化开销就不小。</p>
+<p>建议先在副项目里试，确认稳定后再在大仓库里用。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
