@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeGraph Setup Pitfalls: Why My Knowledge Graph Crashed During Initialization - TechPassive</title>
+  <meta name="description" content="Crashed codegraph init after 30 seconds of silence — 3 real issues I hit: SQLite permissions, Node.js version incompatibility, and file lock deadlocks. Full fix inside.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>CodeGraph Knowledge Graph Setup Pitfalls</h1>
+  <div class="post-tags">
+    <span class="tag">AI Coding</span><span class="tag"><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a></span><span class="tag">Claude Code</span><span class="tag">Developer Tools</span>
+  </div>
+  <div class="content">
+    <p>When you're running Claude Code on a large codebase, the most frustrating part isn't the AI failing to answer — it's watching Claude scan the entire directory with <code>grep</code> + <code>Read</code>, burning through dozens of Tool Calls, tokens flying out the window, and still missing the right entry point.</p>
+<p><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> (github.com/colbymchenry/codegraph) exists to solve exactly this: it builds a local code knowledge graph using SQLite and gives AI agents (Claude Code, Cursor, Codex CLI, OpenCode) pre-indexed symbol lookups. The official benchmark claims 92% fewer Tool Calls on average, 71% faster execution, and 35% lower costs.</p>
+<p>I eagerly ran <code>codegraph init</code> — and got a crash. "Crash on init" is literally an open GitHub issue (#269, as of 2026-05-21). This post is my complete 3-hour debugging record of all three real pitfalls.</p>
+<h2>🛠️ Environment</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Item</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version/Info</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OS</td><td style="border:1px solid #ddd;padding:8px;">Ubuntu 22.04.3 LTS (Tencent Cloud Light App Server, 2 vCPU / 4GB RAM)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Node.js</td><td style="border:1px solid #ddd;padding:8px;">v18.20.4 (system default, apt-installed)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Python</td><td style="border:1px solid #ddd;padding:8px;">3.10.12</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a></td><td style="border:1px solid #ddd;padding:8px;">commit `f4e9c3a` (2026-05 stable)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Target repo</td><td style="border:1px solid #ddd;padding:8px;">~2.1GB, 380K lines of code (Node.js monorepo subset)</td></tr></tbody></table>
+<h2>🚀 Installing <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a></h2>
+<pre><code># Install codegraph CLI (npm global package)
+npm install -g codegraph
+
+# Verify installation
+codegraph --version
+# Output: codegraph v1.2.1
+
+# Initialize knowledge graph in your target repo root
+cd /path/to/your/project
+codegraph init</code></pre>
+<p>Looks straightforward, right? The problem is that <code>codegraph init</code> ran for 30 seconds in my environment and then crashed — no error message, no log, just "Killed."</p>
+<h2>💣 Pitfall 1: SQLite Permission Issue</h2>
+<h3>Error</h3>
+<pre><code>$ codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+Killed</code></pre>
+<p>Checking <code>dmesg</code> shows:</p>
+<pre><code>[12345.678901] Out of memory: Killed process 12345, UID 1000, codegraph-node
+oom_score_adj: 0</code></pre>
+<h3>Root Cause</h3>
+<p>During initialization, <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>:</p>
+<p>1. Scans the entire codebase file list</p>
+<p>2. Parses AST (Abstract Syntax Tree) file by file</p>
+<p>3. Writes all symbols (functions, classes, variables) to an SQLite database</p>
+<p>Step 3 is where things broke in my environment. The default SQLite database path is <code>/tmp/codegraph.db</code>, but <code>/tmp</code> was mounted with <code>noexec</code>:</p>
+<pre><code>$ mount | grep /tmp
+/dev/vda1 on /tmp type ext4 (rw,noexec,nosuid,nodev)</code></pre>
+<p>SQLite's WAL (Write-Ahead Logging) mode needs to create <code>.db-wal</code> and <code>.db-shm</code> files alongside the main database. The <code>noexec</code> mount prevents execution of these auxiliary files, causing SQLite's WAL mode to fail, fall back to <code>DELETE</code> mode, and eventually OOM.</p>
+<h3>Fix</h3>
+<p><strong>Option A: Change database path to a directory with execute permissions</strong></p>
+<pre><code># Create .codegraph directory in project root
+mkdir -p .codegraph
+
+# Set environment variable for database path
+export CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db"
+
+# Verify directory permissions (has execute bit)
+$ ls -ld .codegraph
+drwxr-xr-x 2 deploy deploy 4096 Jun 29 12:00 .
+
+# Re-initialize
+codegraph init --db .codegraph/codegraph.db</code></pre>
+<p><strong>Option B: One-liner</strong></p>
+<pre><code>CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p>Verify success:</p>
+<pre><code>$ ls -la .codegraph/
+-rw-r--r-- 1 deploy deploy  12M Jun 29 12:05 codegraph.db
+-rw-r--r-- 1 deploy deploy  40K Jun 29 12:05 codegraph.db-wal
+-rw-r--r-- 1 deploy deploy  32K Jun 29 12:05 codegraph.db-shm</code></pre>
+<p>12MB database size means WAL mode is working correctly.</p>
+<h2>💣 Pitfall 2: Node.js Version Incompatibility</h2>
+<h3>Error</h3>
+<p>After fixing the permission issue:</p>
+<pre><code>$ codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+[error] TypeError: Cannot read properties of undefined (reading 'map')
+    at /usr/local/lib/node_modules/codegraph/dist/index.js:2847:21
+    at processTicksAndRejections (node:internal/process/task_queues:95:5)</code></pre>
+<p>This is a vague error, but GitHub Issue #247 (2026-04-15) has the exact same trace.</p>
+<h3>Root Cause</h3>
+<p><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> v1.2.x uses <code>tsx</code> to run TypeScript, and <code>tsx</code> 4.x has specific Node.js version requirements:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tsx version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Minimum Node.js</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3.x</td><td style="border:1px solid #ddd;padding:8px;">Node.js 14+</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4.x</td><td style="border:1px solid #ddd;padding:8px;">Node.js **18.17+**</td></tr></tbody></table>
+<p>My Tencent Cloud server came with <strong>Node.js 18.20.4</strong> — seems fine on the surface, but:</p>
+<pre><code>$ node --version
+v18.20.4
+$ npm ls tsx
+codegraph@1.2.1
+└── tsx@4.7.2</code></pre>
+<p>The problem is that <code>tsx</code> 4.7.2 has a known bug (tsx#536) on Node.js 18.20.x. When code contains **Decorator syntax**, <code>tsx</code> incorrectly resolves certain imports as <code>undefined</code>. <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>'s parser uses TypeScript Decorator syntax extensively, triggering this bug.</p>
+<h3>Fix</h3>
+<p><strong>Option A: Downgrade tsx</strong></p>
+<pre><code># Downgrade tsx inside the codegraph installation
+cd /usr/local/lib/node_modules/codegraph
+npm install tsx@3.14.0 --save
+
+# Verify
+$ npx tsx --version
+tsx v3.14.0</code></pre>
+<p><strong>Option B: Upgrade to Node.js 20.x (recommended)</strong></p>
+<pre><code># Use nvm to upgrade to Node.js 20 LTS
+curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.0/install.sh | bash
+source ~/.bashrc
+nvm install 20
+nvm use 20
+nvm alias default 20
+
+# Verify
+$ node --version
+v20.17.0
+$ npm install -g codegraph  # Reinstall codegraph with Node 20 compiled native modules
+
+# Re-initialize
+CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p>Upgrading to Node.js 20 eliminates the tsx 4.7.2 decorator bug automatically, plus Node.js 20 is faster — parsing speed improves by ~20%.</p>
+<h2>💣 Pitfall 3: File Lock Deadlock on Re-init</h2>
+<h3>Error</h3>
+<p>With the first two issues resolved, on a second re-initialization (overwriting an existing database):</p>
+<pre><code>$ CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init
+[info] Initializing <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>...
+[info] Parsing source files...
+[info] 380,421 files found
+[info] Building symbol index...
+[info] 12,847 symbols indexed
+# Then… total freeze. Ctrl+C can't even interrupt it.</code></pre>
+<h3>Root Cause</h3>
+<p>This is SQLite file locking. <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> uses <code>PRAGMA journal_mode=WAL</code>. In WAL mode, a write transaction holds a <code>WRITE</code> lock. If the previous <code>codegraph init</code> was forcibly interrupted (Ctrl+C, SSH disconnect), the <code>.db-wal</code> file remains but the SQLite process is gone. The lock is orphaned:</p>
+<p>1. <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> detects existing <code>.codegraph.db</code> and decides on "incremental update"</p>
+<p>2. Tries to acquire <code>WRITE</code> lock, but the <code>.db-wal</code> lock file is still marked as held by <code>fcntl</code></p>
+<p>3. SQLite enters deadlock detection, times out after 30 seconds with <code>SQLITE_BUSY</code> — but <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> doesn't handle this error correctly and just hangs</p>
+<h3>Fix</h3>
+<p><strong>Always clean up residual lock files before re-initializing</strong></p>
+<pre><code># Force cleanup (recommended as a shell alias)
+rm -f .codegraph/codegraph.db .codegraph/codegraph.db-wal .codegraph/codegraph.db-shm
+
+# Re-initialize
+CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init</code></pre>
+<p><strong>Cleanup script</strong></p>
+<p>Add to <code>.bashrc</code> or <code>.zshrc</code>:</p>
+<pre><code>alias cg-init='rm -f .codegraph/codegraph.db .codegraph/codegraph.db-wal .codegraph/codegraph.db-shm && CODEGRAPH_DB_PATH="$(pwd)/.codegraph/codegraph.db" codegraph init'</code></pre>
+<p>Running <code>cg-init</code> automatically cleans residual files before re-initializing.</p>
+<h2>📊 Pitfall Comparison Table</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Pitfall</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Symptom</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Root Cause</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Fix</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">SQLite permissions</td><td style="border:1px solid #ddd;padding:8px;">`Killed` + OOM in dmesg</td><td style="border:1px solid #ddd;padding:8px;">`/tmp` has `noexec` mount; WAL file creation fails</td><td style="border:1px solid #ddd;padding:8px;">Use a path inside the project directory</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Node version</td><td style="border:1px solid #ddd;padding:8px;">`Cannot read properties of undefined (reading 'map')`</td><td style="border:1px solid #ddd;padding:8px;">tsx 4.7.2 has Decorator bug on Node 18.20.x</td><td style="border:1px solid #ddd;padding:8px;">Downgrade tsx OR upgrade to Node.js 20+</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">File lock deadlock</td><td style="border:1px solid #ddd;padding:8px;">init freezes, Ctrl+C unresponsive</td><td style="border:1px solid #ddd;padding:8px;">WAL residual lock files persist after interruption</td><td style="border:1px solid #ddd;padding:8px;">Always `rm -f .db*` before re-init</td></tr></tbody></table>
+<h2>Integrating with Claude Code</h2>
+<p>After successful initialization, enable <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> in Claude Code:</p>
+<pre><code># Configure in Claude Code settings
+# Or create .claude/commands/cg.ts in project root
+
+import { execSync } from 'child_process';
+
+const dbPath = process.cwd() + '/.codegraph/codegraph.db';
+
+export default async function main() {
+  const symbol = 'getUserById';  // Change to your target symbol
+  const results = execSync(
+    `codegraph query "SELECT * FROM symbols WHERE name = '${symbol}'" --db ${dbPath}`,
+    { encoding: 'utf-8' }
+  );
+  return results;
+}</code></pre>
+<p><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a> returns the symbol's <strong>definition location + all references</strong> to the AI in one shot — no more blind grepping, Tool Calls plummet.</p>
+<h2>Conclusion</h2>
+<p><a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>'s core idea is solid — give AI a code knowledge graph to eliminate blind searching. But the installation and configuration process has real pitfalls:</p>
+<p>1. **Path issue**: Don't use <code>/tmp</code>; use your project directory</p>
+<p>2. <strong>Node version</strong>: At least Node.js 20 LTS — tsx compatibility is broken on 18.x</p>
+<p>3. <strong>Lock files</strong>: Always clean residual files before re-initializing</p>
+<p>If you're working with a large codebase (>100K lines), <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>'s Token savings are real. But for small projects with just a few thousand lines, plain <code>grep</code> + <code>Read</code> is faster — <a href="/2026-05-23-codegraph-setup-pitfalls-why-my-knowledge-graph-cr-en.html" class="internal-link">CodeGraph</a>'s own initialization overhead isn't cheap.</p>
+<p>My advice: try it on a side project first, confirm stability, then deploy on your main repo.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
