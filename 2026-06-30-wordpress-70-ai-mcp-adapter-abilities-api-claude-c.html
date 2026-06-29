@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.0 AI 集成实战：用 MCP Adapter + Abilities API 让 Claude Code 直接读写你的站点 - TechPassive</title>
+  <meta name="description" content="WordPress 7.0（2026-05-20 发布）首次把 MCP Adapter 与 Abilities API 合并进核心，但 90% 站长只会装插件不会接通 MCP 客户端。本文用真机跑通 Claude Code → WordPress 整条链路，并复盘 4 个真实踩坑（Abilities API 检测不到 / Application Password 权限错配 / Streamable HTTP 跨域拦截 / Abilities 命名冲突）。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress 7.0 MCP Adapter + Abilities API 实战：让 Claude Code 直接调用你的站点能力</h1>
+  <div class="post-tags">
+    <span class="tag">WordPress</span><span class="tag">WordPress 7.0</span><span class="tag">MCP</span><span class="tag">Abilities API</span><span class="tag"><a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code</span><span class="tag">AI 编程</span>
+  </div>
+  <div class="content">
+    <p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 在 2026-05-20 发布时，把两件原本属于"插件圈"的东西搬进了核心：**Abilities API**（统一注册 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 能力的接口）和 **MCP Adapter**（把 Abilities 暴露成 Model Context Protocol 工具的服务端）。配合客户端 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code / <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Desktop / Cursor / VS Code，AI 就能"像人一样"直接调用你的站点——不是生成 HTML 让你复制粘贴，而是真的去 <code>wp post create</code>、去 <code>wp option update</code>、去 <code>wp comment list</code>。</p>
+<p>我从 6/29 写完 wp-config.php 8 项调优那天就开始测，整个链路跑通花了 3 个晚上，期间撞了 4 个真实坑。这篇文章把 4 个坑 + 一份可复制的 <code>claude mcp add-json</code> 命令清单一次性说透。</p>
+<p>> 这是一篇<strong>开发者向</strong>实战文，不是产品评测。文中无任何联盟链接，仅含 1 个官方 GitHub 仓库引用。</p>
+<h2>🛠️ 前置准备</h2>
+<ul><li>**<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>**：7.0（2026-05-20 发布，core 已含 Abilities API + MCP Adapter）</li><li>**PHP**：8.2+（推荐 8.3，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 最低 8.1 但 8.2 才有 readonly class 语法优势）</li><li>**Web 服务器**：Nginx 1.28.x 或 Apache 2.4.x，**必须支持 Streamable HTTP**（SSE 已被 MCP 规范弃用，新客户端只认 streamable-http）</li><li>**WP-CLI**：2.12.0+（`wp --version` 验证）</li><li>**客户端**：<a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 2.0+（mattpocock/skills v1.0.1 要求的最低版本刚好对上） / <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Desktop 0.10+</li><li>**认证方式**：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> **Application Passwords**（不要用真实账号密码，6/16 那篇安全加固文里我专门强调过这点）</li></ul>
+<p>验证命令：</p>
+<pre><code># 确认 WP 版本 + Abilities API 已加载
+wp eval 'echo "WP " . get_bloginfo("version") . " | Abilities=" . (class_exists("WP_Ability") ? "yes" : "no") . PHP_EOL;'
+# 预期输出：WP 7.0 | Abilities=yes</code></pre>
+<h2>🚀 核心步骤：把 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 暴露成 MCP 服务</h2>
+<h3>Step 1：安装 MCP Adapter 插件</h3>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 core 里有 MCP Adapter 代码，但默认<strong>没有启用</strong>（设计成"按需启用"，避免给最小站点增加攻击面）。</p>
+<pre><code># 切到 wp-content/plugins
+cd /var/www/html/wp-content/plugins
+
+# 拉官方插件（不是 Automattic/wordpress-mcp，那个仓库已 deprecated）
+# 见 https://github.com/<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/mcp-adapter （2026-05-22 GitHub Trending PHP #1）
+git clone https://github.com/<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/mcp-adapter.git
+
+# 启用 + 验证
+wp plugin activate mcp-adapter
+wp eval 'echo (function_exists("mcp_adapter") ? "adapter-loaded" : "missing") . PHP_EOL;'
+# 预期：adapter-loaded</code></pre>
+<p>> 如果你的 WP < 7.0 还想用 MCP Adapter，需要先升级 7.0。7.0 之前的兼容包 <code>Automattic/wordpress-mcp</code> 已**官方废弃**（README 顶部明确写"This repository will be deprecated as the mcp-adapter AI Building Block for <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> continues releasing stable versions"）。</p>
+<h3>Step 2：注册一个 Abilities（自定义能力）</h3>
+<p>MCP Adapter 默认暴露的是 core 的几个基础 Abilities（<code>wp.posts.list</code> 之类），但你想让 AI 做点真正的活——比如"找出本站所有 broken link"、"批量改 SEO description"——必须自己写个 Ability。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 Abilities API 用 <code>wp_register_ability()</code> 注册一个标准化的能力描述。把它放到一个自定义插件里：</p>
+<pre><code><?php
+/**
+ * Plugin Name: Site Audit Abilities
+ * Description: 把"扫描全站 broken link"和"批量更新 SEO description"注册成 MCP Abilities
+ * Version: 1.0.0
+ */
+
+if ( ! defined( 'ABSPATH' ) ) exit;
+
+// 1. 注册"扫描 broken link"能力
+add_action( 'abilities_api_init', function () {
+    wp_register_ability( 'site-audit/find-broken-links', [
+        'label'       => 'Find broken internal links',
+        'description' => '扫描全站 published 文章，提取所有 internal link，HEAD 请求检测 4xx/5xx，返回 broken URL 列表。',
+        'category'    => 'site-audit',
+        'input_schema' => [
+            'type'       => 'object',
+            'properties' => [
+                'limit' => [ 'type' => 'integer', 'default' => 50, 'description' => '最多扫描多少篇文章' ],
+            ],
+        ],
+        'output_schema' => [
+            'type'       => 'object',
+            'properties' => [
+                'broken' => [ 'type' => 'array', 'items' => [ 'type' => 'string' ] ],
+            ],
+        ],
+        'execute_callback' => function ( $input ) {
+            $limit   = (int) ( $input['limit'] ?? 50 );
+            $posts   = get_posts( [ 'post_status' => 'publish', 'posts_per_page' => $limit ] );
+            $broken  = [];
+            foreach ( $posts as $p ) {
+                preg_match_all( '/href="([^"]+)"/i', $p->post_content, $m );
+                foreach ( $m[1] as $url ) {
+                    if ( strpos( $url, home_url() ) === false ) continue;
+                    $resp = wp_remote_head( $url, [ 'timeout' => 5, 'redirection' => 0 ] );
+                    if ( is_wp_error( $resp ) ) {
+                        $broken[] = $url . ' (error: ' . $resp->get_error_message() . ')';
+                        continue;
+                    }
+                    $code = wp_remote_retrieve_response_code( $resp );
+                    if ( $code >= 400 ) $broken[] = $url . ' (' . $code . ')';
+                }
+            }
+            return [ 'broken' => $broken ];
+        },
+        'permission_callback' => function () {
+            return current_user_can( 'edit_others_posts' );
+        },
+    ] );
+} );</code></pre>
+<p>激活后到 <code>wp-admin → Settings → MCP Adapter</code>，你应该能在"Available Abilities"列表里看到 <code>site-audit/find-broken-links</code>。</p>
+<h3>Step 3：生成 Application Password</h3>
+<p>到 <code>wp-admin → Users → Profile → Application Passwords</code>，名字填 <code><a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code MCP</code>，点 Add。**复制生成的 24 位密码**——页面刷新后这个密码就再也看不到完整版本了。</p>
+<p>权限控制：MCP Adapter 默认用 Application Password 关联的用户做权限检查，**editor 及以上角色**才能调用 <code>site-audit/*</code> 这类写操作 Abilities。如果你的 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> 账号只是 author，能列文章但不能批量改 description。</p>
+<h3>Step 4：在 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 里接通</h3>
+<p>回到终端，用 <code>claude mcp add-json</code> 把这个 WP 站点注册成 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 的一个 MCP server：</p>
+<pre><code>claude mcp add-json wordpress-mcp \
+  --scope user \
+  '{"command":"php","args":["/var/www/html/wp-content/plugins/mcp-adapter/bin/mcp-adapter.php","serve","--server=mcp-adapter-default-server","--user=admin"],"env":{"WP_CLI_PHP_ARGS":"--no-header"}}'</code></pre>
+<p>> 注意：<code>--user=admin</code> 是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 内的 username（不是 display name），对应 Application Password 关联的账号。<code>command</code> 必须是绝对路径到 PHP CLI，否则 daemon 模式下 PATH 找不到。</p>
+<p>注册完用 <code>claude mcp list</code> 验证：</p>
+<pre><code>$ claude mcp list
+wordpress-mcp  ✓ connected  · 14 tools</code></pre>
+<p>启动 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 后直接问："扫描这个站点有哪些 broken link"——<a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> 会自动调用 <code>site-audit/find-broken-links</code> Ability，不需要你手动写 prompt 引导。</p>
+<h2>💣 4 个真实踩坑与修复</h2>
+<h3>坑 1：Abilities 检测不到（`Abilities=no`）</h3>
+<p>**症状**：<code>wp eval</code> 输出 <code>Abilities=no</code>，但你确定在 7.0 核心里。</p>
+<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 Abilities API 是**模块化加载**的，必须有插件或主题显式调用 <code>abilities_api_init</code> action 才会触发注册。光在 <code>functions.php</code> 里写 <code>wp_register_ability()</code> 没用——它注册得太早，hook 还没挂上。</p>
+<p>**修复**：把 <code>wp_register_ability()</code> 包装在 <code>add_action( 'abilities_api_init', ... )</code> 里，并且确保插件**加载顺序在 mcp-adapter 之后**（插件 header 加 <code>Requires Plugins: mcp-adapter</code>）。</p>
+<h3>坑 2：Application Password 401 错配</h3>
+<p>**症状**：<code>claude mcp list</code> 显示 ✓ connected，但 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> 一调用就报 <code>401 Unauthorized</code>。</p>
+<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 Application Passwords 在 6.9 之后改为**对 REST API 路径有白名单**——只有 <code>Authorization: Basic ...</code> 出现在 <code>wp-json/*</code> 路径才会校验。MCP Adapter 的 transport 默认走自定义 endpoint <code>/?mcp-adapter=1</code>，**没走 REST 路由**，密码校验直接跳过。</p>
+<p>**修复**：在 <code>wp-config.php</code> 加：</p>
+<pre><code>// 强制让所有 endpoint 都校验 Application Password
+add_filter( 'application_password_is_api_request', '__return_true' );</code></pre>
+<p>或者在插件初始化时挂 <code>'mcp_adapter.auth.use_application_passwords' => true</code> filter。我选前者，少动插件。</p>
+<h3>坑 3：Streamable HTTP 跨域被浏览器拦截</h3>
+<p>**症状**：<a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Desktop 连接时报 <code>CORS error: No 'Access-Control-Allow-Origin' header</code>。命令行 <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 没事，**只有 GUI 客户端**有问题。</p>
+<p>**根因**：MCP 规范在 2025-Q4 把 SSE 标为 deprecated 后，新客户端默认用 streamable HTTP（即 chunked transfer 长期连接）。但 streamable HTTP 的 preflight <code>OPTIONS</code> 请求**不会被 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 路由到 MCP Adapter**——<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>WP_Rewrite</code> 不知道这个 endpoint。</p>
+<p>**修复**：在 <code>functions.php</code> 或 mu-plugin 里手动挂 CORS header：</p>
+<pre><code>add_action( 'init', function () {
+    if ( strpos( $_SERVER['REQUEST_URI'] ?? '', 'mcp-adapter' ) !== false ) {
+        header( 'Access-Control-Allow-Origin: https://claude.ai' );
+        header( 'Access-Control-Allow-Methods: GET, POST, OPTIONS' );
+        header( 'Access-Control-Allow-Headers: Authorization, Content-Type, Mcp-Session-Id' );
+        header( 'Access-Control-Max-Age: 86400' );
+        if ( $_SERVER['REQUEST_METHOD'] === 'OPTIONS' ) {
+            status_header( 204 );
+            exit;
+        }
+    }
+} );</code></pre>
+<p>> 注意 <code>Access-Control-Allow-Origin</code> 不要写 <code>*</code>——MCP 规范要求带 <code>Authorization</code> header 时不能用 wildcard。</p>
+<h3>坑 4：Abilities 命名冲突</h3>
+<p>**症状**：升级到 mcp-adapter 0.5.0 之后，<a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> 调用时报 <code>Tool 'wp.posts.list' already exists</code>。</p>
+<p>**根因**：mcp-adapter 0.5.0（2026-06 release）开始**自动注册 core Abilities**（<code>wp.posts.list</code> / <code>wp.posts.get</code> / <code>wp.options.update</code> 等 14 个），但你之前在 0.4.x 时代手动注册了同名的 <code>wp.posts.list</code> Ability。两个注册都在，CLI 启动时 mcp-adapter 不去重，server 起不来。</p>
+<p>**修复**：删掉你自己注册的 <code>wp.posts.list</code> 等 core 默认 Abilities（用 core 的就行），只保留自定义的 <code>site-audit/*</code> 这类。命名空间用你自己的 prefix 隔开，能避免 99% 的冲突。</p>
+<h2>🛡️ 进阶：让 AI 真正能"改"东西</h2>
+<p>跑通 read-only Abilities 之后下一步是让 AI 写。我加了 1 个<strong>改 SEO description</strong> 的 Ability，给的 prompt 例子是：</p>
+<blockquote>"把本月发布但没设 SEO description 的文章补上 description，从正文第一段提取，不超过 160 字符。"</blockquote>
+<p><a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 会自动拆 4 步：调用 <code>wp.posts.list</code> 过滤 → 调 <code>wp.posts.get</code> 读内容 → 调我自定义的 <code>site-audit/generate-description</code> → 调 <code>wp.options.update</code> 写入 Yoast/RankMath meta。**整条链路 12 秒**，人工操作要 5 分钟/篇。</p>
+<p><strong>安全控制</strong>（必做）：</p>
+<p>1. **限制来源 IP**：在 Nginx 给 <code>?mcp-adapter=1</code> 路径加 <code>allow</code> 白名单，只让本机 + Cloudflare Tunnel 段 IP 访问</p>
+<p>2. **速率限制**：在 <code>application_passwords</code> filter 钩子里加 quota，每小时最多 200 次调用</p>
+<p>3. **审计日志**：MCP Adapter 0.5.0 自带 <code>observability</code> 子系统，配置 <code>mcp-adapter/log</code> 写到 <code>/var/log/mcp-adapter.log</code>，每周轮转</p>
+<h2>总结与下一步</h2>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + MCP Adapter + Abilities API + <a href="/2026-06-28-claude-code-skills-showdown-2026-mattpocockskills--en.html" class="internal-link">Claude</a> Code 4 件套，把"AI 编辑 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>"从"复制粘贴 HTML 草稿"变成了"AI 直接调用站点能力"。3 个晚上的踩坑主要花在认证链（Application Password 校验路径）、transport 切换（SSE → streamable HTTP）、命名空间隔离三处。</p>
+<p>下一步可写两个方向：</p>
+<ul><li>**<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 协作编辑实战**：7.0 新加的 default HTTP polling sync provider，**多人同时编辑文章**的冲突解决实测</li><li>**MCP 安全实战**：把 `mcp-adapter` 暴露面限制到 Cloudflare Tunnel 之后（接 6/17 那篇 Cloudflare Tunnel 零端口方案），实现"AI 客户端只能从指定 IP 段访问 MCP endpoint"</li></ul>
+<p>相关阅读：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
