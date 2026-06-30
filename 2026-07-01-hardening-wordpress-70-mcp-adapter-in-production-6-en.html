@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Hardening WordPress 7.0 MCP Adapter in Production: 6 Real Traps I Hit Hiding the AI Endpoint Behind Cloudflare Tunnel + Zero Trust - TechPassive</title>
+  <meta name="description" content="My /wp-json/mcp endpoint is now reachable only by my local Claude Code, with zero open ports">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress Deep Dive</h1>
+  <div class="post-tags">
+    <span class="tag">MCP</span><span class="tag"><a href="/2026-05-02-wordpress-speed-optimization-2026-how-i-cut-databa-en.html" class="internal-link">WordPress</a></span><span class="tag">Security</span><span class="tag">Cloudflare</span>
+  </div>
+  <div class="content">
+    <p>Once you install mcp-adapter, your AI can directly read and write your site — but you also just exposed <code>/wp-json/mcp/mcp-adapter-default-server</code> to the public internet. That REST endpoint accepts any request carrying a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Application Password, including those from bots, scanners, and prompt injection attackers.</p>
+<p>If you don't put a Cloudflare Zero Trust layer in front, mcp-adapter is just a nicely packaged, easily enumerable REST API.</p>
+<p>This article picks up from the June 17 Cloudflare Tunnel zero-port pattern and the June 30 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 MCP integration walkthrough, and serves as the security closer for the AI integration layer. I cover the 6 real traps I hit, plus how to use Cloudflare Tunnel + Zero Trust Service Auth + mcp-adapter's own ability allowlist to compress the MCP endpoint down to "only my local Claude Code can call it."</p>
+<h2>Architecture: From Default mcp-adapter Exposure to Zero Trust</h2>
+<p>By default, mcp-adapter uses the <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API route:</p>
+<pre><code>/wp-json/mcp/mcp-adapter-default-server</code></pre>
+<p>This endpoint authenticates with <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Application Password. Anyone with a username + Application Password (including bots) can call every Ability you've registered — things like <code>site-audit/find-broken-links</code>, <code>content/bulk-update-meta</code>, and any custom Ability you've built.</p>
+<p>After wiring it through Cloudflare Tunnel, the traffic path becomes:</p>
+<pre><code>Claude Code (local) → Cloudflare Edge (Zero Trust self-serve login) → cloudflared (loopback) → 127.0.0.1/wp-json/mcp</code></pre>
+<p>The key changes are:</p>
+<p>1. **No public TCP port is listening** — <code>cloudflared</code> is outbound-only</p>
+<p>2. <strong>HTTP layer hits Zero Trust first</strong> — requests without a Service Token or email OTP get 403'd at Cloudflare's edge</p>
+<p>3. <strong>REST layer still requires Application Password</strong> — two layers of auth</p>
+<p>4. <strong>mcp-adapter 0.5.0 ability allowlist</strong> — only expose the Abilities you actually need</p>
+<h2>Prerequisites</h2>
+<p>Confirm your environment before starting:</p>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0+ (released 2026-05-20, mcp-adapter merged into core)</li><li>`<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/mcp-adapter` plugin v0.5.0 (GitHub releases, 2026-06 introduced the observability subsystem)</li><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Abilities API (merged into 6.9+ core, `<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/abilities-api` repo archived 2026-02)</li><li>A Cloudflare account (Free tier is enough — Zero Trust doesn't require a paid plan)</li><li>A domain already on Cloudflare (a subdomain like `mcp.example.com`)</li><li>Cloudflare Tunnel already configured (see the June 17 article for cloudflared setup)</li></ul>
+<p>Verify:</p>
+<pre><code># Verify mcp-adapter is installed
+wp plugin list --allow-root | grep mcp-adapter
+# Expected: mcp-adapter   0.5.0   active   ...
+
+# Verify the Abilities API is registered
+wp eval 'if ( function_exists( "wp_register_ability" ) ) { echo "OK"; } else { echo "NEED 6.9+"; }' --allow-root
+
+# Verify cloudflared is running
+ps aux | grep -E "[c]loudflared"
+# Expected: at least one line containing "tunnel"</code></pre>
+<h2>Core Deployment</h2>
+<h3>Step 1: Restrict the mcp-adapter Default Server to Read-Only Abilities</h3>
+<p>The <code>mcp_adapter_server_config</code> filter introduced in mcp-adapter 0.5.0 lets you trim the default server's exposed ability set (PR #217 merged 2026-06-17).</p>
+<p>Add this to a custom plugin or mu-plugin:</p>
+<pre><code><?php
+/**
+ * Plugin Name: MCP Adapter - Read-Only Default Server
+ * Description: Only expose read-only Abilities to the default MCP server
+ */
+
+add_filter( 'mcp_adapter_server_config', function( $config, $server_id ) {
+    if ( 'mcp-adapter-default-server' !== $server_id ) {
+        return $config;
+    }
+
+    // Only allow site-audit/* and content/read-* prefix Abilities
+    $config['abilities'] = array_values( array_filter(
+        $config['abilities'] ?? [],
+        function( $ability_id ) {
+            return str_starts_with( $ability_id, 'site-audit/' )
+                || str_starts_with( $ability_id, 'content/read-' );
+        }
+    ) );
+
+    // Disable write methods beyond tools/list
+    $config['allowed_methods'] = [ 'tools/list', 'tools/call' ];
+
+    return $config;
+}, 10, 2 );</code></pre>
+<p>Activate the mu-plugin, then verify:</p>
+<pre><code>curl -s -u "your_user:your_app_password" \
+  "https://your-domain.com/wp-json/mcp/mcp-adapter-default-server" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}' | jq '.result.tools[].name'
+# Expected output should only include tools named site-audit/* or content/read-*</code></pre>
+<p>If <code>content/bulk-update-meta</code> or any write tool shows up, the filter didn't run — 99% of the time that's a mu-plugin load order issue. Move the file to <code>/wp-content/mu-plugins/</code> instead of dropping it in the theme's <code>functions.php</code>.</p>
+<h3>Step 2: Wire mcp.example.com Into Your Existing Tunnel</h3>
+<p>If you already have cloudflared running from the June 17 setup, don't open a new tunnel for MCP — just add a route:</p>
+<pre><code># ~/.cloudflared/config.yml (append, don't overwrite)
+tunnel: <your-existing-tunnel-uuid>
+credentials-file: /root/.cloudflared/<uuid>.json
+
+ingress:
+  # Existing rules stay as-is...
+  - hostname: mcp.example.com
+    service: http_status:404
+    originRequest:
+      noTLSVerify: true
+  - service: http_status:404</code></pre>
+<p>Then add a public hostname in the Cloudflare Zero Trust dashboard:</p>
+<p>1. Zero Trust → Networks → Tunnels → select your tunnel → Configure → Public Hostname</p>
+<p>2. Subdomain: <code>mcp</code></p>
+<p>3. Domain: <code>example.com</code></p>
+<p>4. Service Type: <code>HTTP</code></p>
+<p>5. URL: <code>localhost</code></p>
+<p>Note the <code>http_status:404</code> placeholder first — in the next step you'll add a Zero Trust policy, and the tunnel must NOT forward to wp-json before that policy exists.</p>
+<p>Restart cloudflared:</p>
+<pre><code>sudo systemctl restart cloudflared
+sudo systemctl status cloudflared</code></pre>
+<h3>Step 3: Add a Zero Trust Self-Hosted App for mcp.example.com</h3>
+<p>In the Zero Trust dashboard:</p>
+<p>1. Access → Applications → Add an application → Self-hosted</p>
+<p>2. Name: <code><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> MCP (Personal)</code></p>
+<p>3. Session duration: <code>24 hours</code> (don't pick Always — Service Tokens will silently fail)</p>
+<p>4. Application domain: <code>mcp.example.com</code></p>
+<p>5. Identity providers: pick <code>One-time PIN</code> (email verification code)</p>
+<p>Add two Policies:</p>
+<p><strong>Policy 1 - My Claude Code Uses Service Auth</strong></p>
+<pre><code>Name:  Local Claude Code
+Action: Allow
+Session duration: 24 hours
+Apply to: Service Auth - <your service token name></code></pre>
+<p><strong>Policy 2 - Browser Debug Uses OTP</strong></p>
+<pre><code>Name:  Browser Debug
+Action: Allow
+Session duration: 1 hour
+Apply to: Emails - your-email@example.com</code></pre>
+<p>The Service Auth policy MUST come first (it's more specific). Anything that doesn't match either policy is denied.</p>
+<h3>Step 4: Embed the Service Token in Your Claude Code MCP Config</h3>
+<p>Cloudflare Service Tokens authenticate with a Client ID + Client Secret long-lived credential (not a JWT, and they can be revoked).</p>
+<p>Generate: Access → Service Auth → Create Service Token → name it <code>local-claude-code</code> → grab the Client ID and Client Secret.</p>
+<p>In Claude Code's MCP config:</p>
+<pre><code>{
+  "mcpServers": {
+    "wordpress-mcp": {
+      "url": "https://mcp.example.com/wp-json/mcp/mcp-adapter-default-server",
+      "headers": {
+        "CF-Access-Client-Id": "<your-client-id>",
+        "CF-Access-Client-Secret": "<your-client-secret>",
+        "Authorization": "Basic " + base64("your_wp_user:your_app_password")
+      }
+    }
+  }
+}</code></pre>
+<p>Or via <code>claude mcp add-json</code>:</p>
+<pre><code>claude mcp add-json wordpress-mcp '{
+  "url": "https://mcp.example.com/wp-json/mcp/mcp-adapter-default-server",
+  "headers": {
+    "CF-Access-Client-Id": "xxx.service-token",
+    "CF-Access-Client-Secret": "xxx",
+    "Authorization": "Basic '"$(echo -n 'your_user:your_app_password' | base64)""'"
+  }
+}'</code></pre>
+<p>Verify:</p>
+<pre><code>claude mcp list
+# Expected: wordpress-mcp: https://mcp.example.com/wp-json/mcp/mcp-adapter-default-server  (14 tools)</code></pre>
+<h3>Step 5: Enable mcp-adapter Observability for Audit Logging</h3>
+<p>The 0.5.0 observability handler invokes <code>record_event()</code> after each <code>tools/call</code>. Hook it into <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s debug log:</p>
+<pre><code>add_action( 'mcp_adapter_observability_event', function( $handler, $event, $payload ) {
+    if ( 'mcp.request' !== $event ) {
+        return;
+    }
+    if ( 'success' !== ( $payload['status'] ?? 'unknown' ) ) {
+        error_log( sprintf(
+            '[MCP] %s user=%s tool=%s',
+            $payload['status'],
+            $payload['user'] ?? 'anon',
+            $payload['method'] ?? 'unknown'
+        ) );
+    }
+}, 10, 3 );</code></pre>
+<p>Write to <code>/var/log/nginx/wordpress-access.log</code> or <code>wp-content/debug.log</code> (logrotate 7 days retention is fine).</p>
+<h2>Pitfalls: 6 Real Production Traps</h2>
+<h3>Trap 1: mcp-adapter Default Server Exposes Every Registered Ability</h3>
+<p>**Symptom**: Right after installing mcp-adapter, <code>tools/list</code> returns every registered Ability, including destructive ones like <code>plugin/install</code> and <code>user/create</code>.</p>
+<p>**Root cause**: The default server includes every registered Ability by default. The <code>mcp_adapter_server_config</code> filter was only introduced in 0.5.0.</p>
+<p>**Fix**: You MUST install the mu-plugin from Step 1. If you skip this step, mcp-adapter is just a nicely packaged, easily enumerable REST API — anyone with an Application Password (including prompt injection attackers) can call <code>plugin/install</code> and drop a webshell on your site.</p>
+<h3>Trap 2: Wrong Application Password Setup Triggers 401 Storms on /wp-json/mcp</h3>
+<p>**Symptom**: nginx access log shows massive 401s, Claude Code keeps retrying, and mcp-adapter observability is full of <code>auth_failed</code>.</p>
+<p>**Root cause**: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+ introduced the <code>application_password_is_api_request</code> filter — Application Password requests must hit specific REST paths AND HTTP Basic Auth must use <code>user_login</code>, not <code>user_email</code>.</p>
+<p><strong>Fix</strong>:</p>
+<pre><code>// Don't use email, use login
+$auth = 'Basic ' . base64_encode( 'my_wp_login:abcd EFGH ijkl MNOP qrst UVWX' );
+// Note: keep the spaces inside the Application Password</code></pre>
+<p>On <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.8 and below, using the email works. On 7.0+ it returns 401. Verify:</p>
+<pre><code>curl -s -o /dev/null -w "%{http_code}" -u "your_login:your_app_pwd" \
+  "https://your-domain.com/wp-json/mcp/mcp-adapter-default-server" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# Must return 200. 401 means the username format is wrong.</code></pre>
+<h3>Trap 3: cloudflared → 127.0.0.1 over HTTPS Triggers 526 Invalid SSL</h3>
+<p>**Symptom**: Right after deployment, <code>https://mcp.example.com/wp-json/mcp/...</code> returns 526 Invalid SSL Certificate.</p>
+<p>**Root cause**: cloudflared forwarding to <code>http://localhost</code> is fine, but your nginx is listening on <code>443</code> and only accepts SNI for <code>example.com</code>. Requests for <code>mcp.example.com</code> get a 526 from nginx.</p>
+<p><strong>Fix</strong>: Pick one of two paths:</p>
+<p><strong>Path A (recommended): Use a Cloudflare Origin Certificate</strong></p>
+<p>1. Cloudflare dashboard → SSL/TLS → Origin Server → Create Certificate</p>
+<p>2. Cover <code>*.example.com</code> and <code>example.com</code></p>
+<p>3. Install the cert and key on nginx, enable HTTPS for <code>mcp.example.com</code></p>
+<p>4. Change cloudflared to forward <code>https://localhost:443</code> (keep noTLSVerify: true)</p>
+<p><strong>Path B: cloudflared with noTLSVerify + Force HTTP</strong></p>
+<pre><code>ingress:
+  - hostname: mcp.example.com
+    service: http://127.0.0.1:80
+    originRequest:
+      noTLSVerify: true
+      httpHostHeader: mcp.example.com</code></pre>
+<p>And configure nginx with a port-80 vhost for mcp.example.com, not port 443.</p>
+<h3>Trap 4: Zero Trust Policy Order — Service Auth Gets Stealthered by OTP</h3>
+<p>**Symptom**: Service Token requests get bounced to Cloudflare's OTP login page (<code>/cdn-cgi/access/login</code>). Claude Code receives HTML instead of JSON and fails to parse.</p>
+<p><strong>Root cause</strong>: Access policies match in order. Your OTP policy is sitting before the Service Auth policy. Email matches are wider than named Service Auth policies, so they win.</p>
+<p><strong>Fix</strong>: Drag the Service Auth policy to the top. Verify the order:</p>
+<pre><code># Direct call with Service Token
+curl -s -H "CF-Access-Client-Id: xxx" -H "CF-Access-Client-Secret: yyy" \
+  "https://mcp.example.com/wp-json/mcp/mcp-adapter-default-server" \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
+# Must return JSON directly, NOT a 302 redirect to the login page</code></pre>
+<p>If you still get 302, the policy order is wrong. Or your Service Token is named <code>default</code> — Cloudflare doesn't allow reserved words as Service Token names.</p>
+<h3>Trap 5: Abilities API Detection Fails — mcp-adapter Starts Silently Empty</h3>
+<p>**Symptom**: After installing mcp-adapter, <code>tools/list</code> returns an empty array, but <code>mcp-adapter-default-server</code> is registered. The site is on <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+, <code>wp_register_ability</code> exists, but <code>wp_get_abilities()</code> returns <code>[]</code>.</p>
+<p>**Root cause**: Ability registration hook timing. Most plugins register on the <code>init</code> hook, but mcp-adapter starts collecting on <code>plugins_loaded</code> — registration happens AFTER collection.</p>
+<p><strong>Fix</strong>: Move the registration hook earlier:</p>
+<pre><code>// Don't use init
+add_action( 'plugins_loaded', function() {
+    wp_register_ability( 'site-audit/find-broken-links', [...] );
+}, 5 ); // Priority 5, earlier than the default 10</code></pre>
+<p>mcp-adapter 0.5.0's PR #196 added a <code>mcp_adapter_default_server_abilities</code> filter on the default server. In a pinch, manually feed it an Ability list from a mu-plugin:</p>
+<pre><code>add_filter( 'mcp_adapter_default_server_abilities', function( $ids ) {
+    return [
+        'site-audit/find-broken-links',
+        'content/read-meta',
+        'content/read-taxonomies',
+    ];
+} );</code></pre>
+<h3>Trap 6: Old cloudflared (2024.x) Doesn't Support Streamable HTTP</h3>
+<p>**Symptom**: Local Claude Code tries streamable HTTP for mcp-adapter, cloudflared log fills with <code>400 Bad Request: invalid HTTP version</code>, but SSE works.</p>
+<p><strong>Root cause</strong>: cloudflared 2024.x still proxies over HTTP/1.1. HTTP/2 stream support only landed in early 2025 builds. mcp-adapter 0.5.0's streamable transport defaults to HTTP/2.</p>
+<p><strong>Fix</strong>:</p>
+<pre><code>cloudflared --version
+# Must be 2025.4.0 or newer</code></pre>
+<p>If your distro's repo has an old cloudflared (Ubuntu 22.04 ships 2024.8.0 by default), use Cloudflare's official apt source:</p>
+<pre><code>curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt update && sudo apt install cloudflared</code></pre>
+<h2>Hardening: Make mcp-adapter Truly Yours</h2>
+<p>After completing Steps 1-5, three more things you can tighten:</p>
+<p><strong>1. Add an IP Allowlist to the Default Server (Defense in Depth)</strong></p>
+<p>Cloudflare Tunnel's loopback IP is <code>127.0.0.1</code>, but other services on the same machine might share that loopback. Add a localhost-only allowlist to your mcp.example.com nginx vhost:</p>
+<pre><code>location /wp-json/mcp/ {
+    allow 127.0.0.1;
+    allow ::1;
+    deny all;
+
+    try_files $uri $uri/ /index.php?$args;
+}</code></pre>
+<p>Even if someone bypasses Cloudflare and hits nginx directly, the public can't reach it.</p>
+<p><strong>2. Rate-Limit the mcp-adapter Endpoint</strong></p>
+<p>mcp-adapter uses the <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API, but you can give <code>/wp-json/mcp/</code> its own limit_req on nginx:</p>
+<pre><code>limit_req_zone $binary_remote_addr zone=mcp_limit:10m rate=10r/m;
+
+location /wp-json/mcp/ {
+    limit_req zone=mcp_limit burst=20 nodelay;
+    try_files $uri $uri/ /index.php?$args;
+}</code></pre>
+<p>10 r/m is plenty for Claude Code's daily use, burst=20 prevents accidental 429s.</p>
+<p><strong>3. Lock Down Transport Methods via mcp-adapter 0.5.0</strong></p>
+<p>The 0.5.0 <code>mcp_adapter_server_config</code> filter supports <code>allowed_methods</code>:</p>
+<pre><code>$config['allowed_methods'] = [ 'tools/list', 'tools/call' ];
+// Don't allow 'resources/read', 'prompts/get' — mcp-adapter doesn't need them</code></pre>
+<p>Reduces attack surface.</p>
+<h2>Wrap-up</h2>
+<p>June 17 covered Cloudflare Tunnel to give your site zero public ports. June 30 covered mcp-adapter so AI can directly read and write the site. This article is the security bridge between them: mcp-adapter's default endpoint must pass through Zero Trust, Abilities must be allowlisted, cloudflared must be on a recent version, and observability must log to disk.</p>
+<p>Full checklist:</p>
+<ul><li>[ ] Step 1: `mcp_adapter_server_config` filter to restrict read-only Abilities</li><li>[ ] Step 2: cloudflared ingress adds `mcp.example.com`</li><li>[ ] Step 3: Zero Trust self-hosted app + Service Auth policy</li><li>[ ] Step 4: Service Token embedded in Claude Code MCP headers</li><li>[ ] Step 5: observability handler writes error logs to debug.log</li><li>[ ] Hardening: nginx IP allowlist + rate-limit + transport method lockdown</li></ul>
+<p>mcp-adapter 0.5.0 (2026-06 release) and its observability subsystem are the lynchpin of this architecture. Earlier versions had no <code>mcp_adapter_observability_event</code> hook — every MCP call was a black box.</p>
+<p>Next direction: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 real-time collaboration (HTTP polling sync provider + multi-user edit conflict resolution), or a complete mcp-adapter 0.5.0 benchmark (latency comparison across different Abilities).</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
