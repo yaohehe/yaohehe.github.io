@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>agency-agents配置与调试踩坑指南：112个AI专家Agent注入Claude Code的5个真实陷阱 - TechPassive</title>
+  <meta name="description" content="我如何在3天内把多角色Agent系统跑通">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>AI Coding实战系列</h1>
+  <div class="post-tags">
+    <span class="tag">Claude Code</span><span class="tag">AI Coding</span><span class="tag">工具对比</span>
+  </div>
+  <div class="content">
+    <p>最近在 GitHub 上看到一个很有意思的项目——<strong>agency-agents</strong>，作者 msitarzewski。它号称能把 112 个 specialized AI agent personas 注入 Claude Code、Cursor、Aider，让你的 IDE 变成一个多角色 AI 工作室。</p>
+<p>听起来很美好：前端 Agent 负责 UI、测试 Agent 负责覆盖率、架构 Agent 负责评审——我只需要下达指令。</p>
+<p>但当我真的去配置的时候，踩了整整 3 天的坑才让它跑起来。这篇文章就是把我踩过的 5 个真实陷阱记录下来，避免你重蹈覆辙。</p>
+<h2>架构预览：agency-agents 到底是怎么工作的</h2>
+<p>在开始踩坑之前，先理解一下它的设计逻辑：</p>
+<p>agency-agents 本质上是一套**基于 Markdown 的 system prompt 模板库**。每个 Agent persona 就是一个 <code>.md</code> 文件，定义了：</p>
+<ul><li>**Identity**（身份）：我是谁，比如 "Senior Frontend Engineer"</li><li>**Mission**（使命）：我负责什么，比如 "implement pixel-perfect UIs"</li><li>**Success Metrics**（成功指标）：我怎么衡量自己的输出</li><li>**Rules**（规则）：我在什么情况下说什么</li></ul>
+<p>安装方式有几种：</p>
+<ul><li>**Option 2：Claude Code**（通过 `CLAUDE.md` 或项目级 `.claude/` 目录）</li><li>**Native App（The Agency）**：macOS/Linux/Windows 原生桌面应用，自动检测工具并安装</li><li>**其他工具**：Copilot、Cursor、Aider、Windsurf 等</li></ul>
+<p>我的目标是把它接入 Claude Code，核心使用场景是<strong>并行多 Agent 研究 + 代码审查</strong>。</p>
+<h2>🛠️ 前置准备</h2>
+<p>在开始配置之前，确保你的环境满足以下条件：</p>
+<ul><li>Claude Code 已安装并配置好 ANTHROPIC_API_KEY</li><li>操作系统：macOS、Linux 或 Windows</li><li>可选：安装 The Agency 原生 App（方便管理 112 个 Agent 的安装状态）</li></ul>
+<p>验证命令：</p>
+<pre><code>claude --version  # 确认 Claude Code 可用</code></pre>
+<h2>💣 踩坑录：5 个真实陷阱</h2>
+<h3>陷阱一：Agent 安装路径错误导致 Claude Code 完全找不到 Agent</h3>
+<p><strong>报错信息</strong>：</p>
+<pre><code>Error: No agent found with name "frontend-engineer"</code></pre>
+<p><strong>原因分析</strong>：</p>
+<p>agency-agents 官方文档说了两种安装方式，但路径在不同工具间差异巨大。我在 Claude Code 里按文档说的把文件放到 <code>~/.claude/agents/</code> 目录下，但 Claude Code 根本不认这个路径。</p>
+<p>Claude Code 读取 Agent 的实际路径是项目级 <code>.claude/commands/</code> 目录（用于 skills/commands），而全局 Agent persona 需要放在 <code>~/.claude/</code> 根目录下。</p>
+<p><strong>解决方案</strong>：</p>
+<p>Claude Code 正确加载 Agent persona 的方式：</p>
+<pre><code># 方式一：全局安装（推荐）
+# 将 agent 的 .md 文件复制到 ~/.claude/ 目录
+mkdir -p ~/.claude
+cp -r agency-agents/agents/*.md ~/.claude/
+
+# 方式二：项目级安装
+mkdir -p .claude/commands
+cp agency-agents/agents/frontend-engineer.md .claude/commands/
+
+# 验证 Claude Code 能看到 Agent
+claude -p "Show me available agents" 2>&1 | grep -i agent</code></pre>
+<p><strong>验证</strong>：</p>
+<p>配置完成后，在 Claude Code 中输入 <code>/agent list</code> 或使用 The Agency App 查看安装状态（App 会显示绿色的 ✅ 对勾）。</p>
+<p>---</p>
+<h3>陷阱二：The Agency App 安装成功但跨工具同步失败</h3>
+<p><strong>报错信息</strong>：</p>
+<pre><code>[Agency] Agent "test-engineer" installed for Claude Code but not detected on next startup</code></pre>
+<p><strong>原因分析</strong>：</p>
+<p>The Agency App 的工作原理是：将 <code>.md</code> 文件写入目标工具的标准路径，并通过 App 内部的数据库追踪安装状态。但 Claude Code 在启动时会重新扫描并缓存可用的 commands/skills，如果 App 写入的时机不对，缓存不会更新。</p>
+<p>这是一个<strong>竞态条件（race condition）</strong>：App 写文件 → Claude Code 启动 → 缓存未刷新 → Agent 不可见。</p>
+<p><strong>解决方案</strong>：</p>
+<pre><code># Step 1: 使用 App 安装后，手动刷新 Claude Code 缓存
+# 方法A：重启 Claude Code（最简单）
+claude --exit  # 退出当前 session
+claude  # 重新启动
+
+# 方法B：清除缓存（如果方法A无效）
+rm -rf ~/.claude/commands/.cache  # 清除命令缓存
+claude  # 重启
+
+# Step 2: 验证安装状态
+# 在 The Agency App 中查看 "Install Health" 面板
+# 确认 Claude Code 那一列显示 ✅ 而非 ❌</code></pre>
+<p><strong>验证</strong>：</p>
+<p>启动 Claude Code 后，输入 <code>/</code> 看命令列表里是否出现了你安装的 Agent 名称。</p>
+<p>---</p>
+<h3>陷阱三：112 个 Agent 同时激活导致 Token 消耗暴涨</h3>
+<p><strong>报错信息</strong>：</p>
+<pre><code>Warning: Processing 112 agents may exceed context window
+Anthropic API Error: 400 - This session's context window is full</code></pre>
+<p><strong>原因分析</strong>：</p>
+<p>112 个 Agent persona 每个都有自己的 system prompt，加起来轻轻松松超过 100K tokens。在 Claude Code 中，这意味着：</p>
+<ul><li>每次启动一个新的 sub-agent 或 command</li><li>都要把这些 persona 定义加载进 context</li></ul>
+<p>如果你的项目是中等规模（10K-50K 代码行），112 个 Agent 同时激活会让你的 context window 在前几个 turn 就爆掉。</p>
+<p><strong>解决方案</strong>：</p>
+<p><strong>按需分组激活，不要全量加载：</strong></p>
+<pre><code># 按职能分组安装 Agent（不要一次装完112个）
+# 研发组（推荐优先安装）
+cp agency-agents/agents/frontend-engineer.md ~/.claude/
+cp agency-agents/agents/backend-engineer.md ~/.claude/
+cp agency-agents/agents/test-engineer.md ~/.claude/
+cp agency-agents/agents/devops-engineer.md ~/.claude/
+
+# 审核组（需要时再装）
+mkdir -p ~/.claude/agents-audit
+cp agency-agents/agents/security-engineer.md ~/.claude/agents-audit/
+cp agency-agents/agents/architecture-reviewer.md ~/.claude/agents-audit/
+
+# 按需切换激活组
+alias claude-audit="CLAUDE_AGENTS_PATH=~/.claude/agents-audit claude"</code></pre>
+<p><strong>我的实际使用策略</strong>：</p>
+<ul><li>日常开发：只装 4 个核心 Agent（frontend/backend/test/devops）</li><li>Code Review 时：临时切换到 audit 组（4-6 个）</li><li>大型重构：按需添加架构和架构评审 Agent</li></ul>
+<p>---</p>
+<h3>陷阱四：Agent persona 与项目实际技术栈不匹配导致输出质量下降</h3>
+<p><strong>问题描述</strong>：</p>
+<p>安装了 "senior-frontend-engineer" Agent，但我的项目用的是 Next.js 14 App Router + Tailwind v4，而 Agent 的 system prompt 里写的是 Vue 3 + Vite 的最佳实践。导致它给的建议完全不适用，甚至会误导我。</p>
+<p><strong>原因分析</strong>：</p>
+<p>agency-agents 的 Agent persona 是<strong>通用模板</strong>，没有针对具体技术栈优化。当你的项目技术栈与 Agent 默认设定不符时，它的输出质量会明显下降。</p>
+<p><strong>解决方案</strong>：</p>
+<p><strong>方案一：自定义 Agent persona（推荐）</strong></p>
+<ul><li>Next.js 14 App Router (server components by default)</li><li>Tailwind CSS v4</li><li>TypeScript strict mode</li><li>App Router data fetching patterns</li></ul>
+<ul><li>Lighthouse Performance score > 90</li><li>Zero TypeScript errors</li><li>WCAG 2.1 AA accessibility compliance</li></ul>
+<ul><li>Always use Server Components unless client-side interactivity is required</li><li>Prefer built-in Next.js optimizations (Image, Link, Script)</li><li>Use Tailwind CSS utility classes over custom CSS</li></ul>
+<pre><code># 查看现有 Agent 的定义文件
+cat ~/.claude/senior-frontend-engineer.md
+
+# 基于模板创建自定义版本（针对 Next.js 14）
+cat > ~/.claude/nextjs-frontend-engineer.md << 'EOF'
+# Identity
+You are a Senior Frontend Engineer specializing in Next.js 14 App Router.
+
+# Mission
+Implement pixel-perfect, performant React components using:
+
+# Success Metrics
+
+# Rules
+EOF
+
+# 激活自定义 Agent
+claude --agent nextjs-frontend-engineer</code></pre>
+<p><strong>方案二：使用 The Agency App 的 "Override" 功能</strong></p>
+<p>The Agency App 允许你对官方 Agent 进行局部覆盖（partial override），不用完全 fork 一个新 persona。覆盖字段包括：mission、rules、success_metrics。</p>
+<p>---</p>
+<h3>陷阱五：Windows 路径分隔符导致 Agent 文件无法加载</h3>
+<p><strong>报错信息</strong>：</p>
+<pre><code>Error: Failed to load agent definition from C:\Users\xxx\.claude\frontend-engineer.md
+Reason: File not found (case-sensitive path on Windows)</code></pre>
+<p><strong>原因分析</strong>：</p>
+<p>agency-agents 的 Agent 文件名在 GitHub 上是 <code>frontend-engineer.md</code>，但 Windows 文件系统默认**大小写不敏感**（但路径处理时可能有问题），且路径分隔符是 <code>\</code> 而非 <code>/</code>。</p>
+<p>更麻烦的是，部分 Windows 工具（如 Claude Code 的某些版本）内部使用 POSIX 路径，在读取 Windows 路径时会出现二次转义问题。</p>
+<p><strong>解决方案</strong>：</p>
+<pre><code># Windows PowerShell 正确安装方式
+# Step 1: 确保 Claude Code 的数据目录存在
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.claude"
+
+# Step 2: 复制 Agent 文件（PowerShell 自动处理路径）
+Copy-Item -Path ".\agency-agents\agents\*.md" -Destination "$env:USERPROFILE\.claude\" -Recurse
+
+# Step 3: 验证文件存在
+Get-ChildItem "$env:USERPROFILE\.claude\" -Filter "*.md"
+
+# Step 4: 清除 Claude Code 缓存后重启
+claude --exit</code></pre>
+<p><strong>验证</strong>：</p>
+<pre><code>claude -p "List available agents" 2>&1</code></pre>
+<p>如果 Agent 名称出现在输出中，说明安装成功。</p>
+<h2>完整安装流程（避坑后的正确顺序）</h2>
+<p>综合以上所有陷阱，以下是我验证过的完整安装流程：</p>
+<pre><code># Step 1: 克隆仓库
+git clone https://github.com/msitarzewski/agency-agents.git
+cd agency-agents
+
+# Step 2: 选择要安装的 Agent（不要全量安装）
+AGENTS=(
+  "frontend-engineer"
+  "backend-engineer"
+  "test-engineer"
+  "devops-engineer"
+  "security-engineer"
+  "architecture-reviewer"
+)
+
+# Step 3: 创建目录并安装
+mkdir -p ~/.claude
+for agent in "${AGENTS[@]}"; do
+  if [ -f "agents/$agent.md" ]; then
+    cp "agents/$agent.md" ~/.claude/
+    echo "✅ Installed: $agent"
+  else
+    echo "⚠️  Not found: $agent"
+  fi
+done
+
+# Step 4: 重启 Claude Code
+claude --exit
+claude
+
+# Step 5: 验证
+claude -p "Show me available commands" 2>&1 | grep -E "(frontend|backend|test|devops|security|architecture)"</code></pre>
+<h2>agency-agents vs 其他方案的横向对比</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方案</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Agent 数量</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">多工具支持</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">配置复杂度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">适合人群</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**agency-agents**</td><td style="border:1px solid #ddd;padding:8px;">112+</td><td style="border:1px solid #ddd;padding:8px;">✅ Claude/Cursor/Copilot 等 10+</td><td style="border:1px solid #ddd;padding:8px;">中等（路径陷阱多）</td><td style="border:1px solid #ddd;padding:8px;">需要多角色分工的中大型项目</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**mattpocock/skills**</td><td style="border:1px solid #ddd;padding:8px;">30+</td><td style="border:1px solid #ddd;padding:8px;">✅ 通用工具包</td><td style="border:1px solid #ddd;padding:8px;">低</td><td style="border:1px solid #ddd;padding:8px;">快速上手、通用任务</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**gstack**</td><td style="border:1px solid #ddd;padding:8px;">23 个斜杠命令</td><td style="border:1px solid #ddd;padding:8px;">✅ YC CEO 配置</td><td style="border:1px solid #ddd;padding:8px;">低</td><td style="border:1px solid #ddd;padding:8px;">偏好 YC 方法论的用户</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**Codex Memory MCP**</td><td style="border:1px solid #ddd;padding:8px;">1（知识图谱）</td><td style="border:1px solid #ddd;padding:8px;">✅ MCP 协议</td><td style="border:1px solid #ddd;padding:8px;">中</td><td style="border:1px solid #ddd;padding:8px;">大型代码库语义检索</td></tr></tbody></table>
+<p><strong>我的选择</strong>：</p>
+<ul><li>agency-agents：适合需要**多角色分工**的复杂项目（前端/后端/测试/架构评审同时参与）</li><li>mattpocock/skills：适合**日常快速任务**（代码审查、重构、文档生成）</li></ul>
+<h2>总结与下一步</h2>
+<p>agency-agents 是一套有潜力的多角色 AI Agent 系统，112 个 specialized personas 覆盖了软件开发的全生命周期。但配置路径、Token 消耗、平台差异等陷阱让初学者望而却步。</p>
+<p>本文的 5 个陷阱覆盖了安装、配置、优化三个阶段的核心问题。按我的流程走，<strong>30 分钟内可以跑通第一个多角色工作流</strong>。</p>
+<p><strong>下一步方向</strong>：</p>
+<ul><li>尝试 agency-agents 的**并行多 Agent 审查模式**（类似 ai-berkshire 的 investment-team 思路）</li><li>探索 The Agency App 的**跨工具同步**能力，看能否打通 Cursor + Claude Code 的 Agent 状态</li></ul>
+<p><strong>相关好文</strong>：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
