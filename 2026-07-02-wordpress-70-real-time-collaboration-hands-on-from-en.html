@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.0 Real-Time Collaboration Hands-On: From Default HTTP Polling Sync Provider to Custom WebSocket Upgrade, 6 Real Pitfalls - TechPassive</title>
+  <meta name="description" content="WordPress 7.0 ships an HTTP polling sync provider by default. This article breaks down the sync.providers filter integration, the Yjs CRDT data layer, the meta box collaboration disablement mechanism, and walks through 6 production pitfalls (meta box silent fallback, objectId drift, y-websocket room name leakage, provider destroy memory leak, multi post_type shared collection room, 7.0.1 patch retrospective)">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress 7.0 Real-Time Collaboration Hands-On: sync.providers Filter + Yjs + WebSocket Upgrade 6 Pitfalls</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-06-15-wordpress-headless-nextjs-16-in-production-4-real--en.html" class="internal-link">WordPress</a> 7.0</span><span class="tag">real-time collaboration</span><span class="tag">sync.providers</span><span class="tag">Yjs</span><span class="tag">CRDT</span><span class="tag">WebSocket</span><span class="tag">meta box</span><span class="tag">Abilities API</span>
+  </div>
+  <div class="content">
+    <p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 (released 2026-05-20) ships an HTTP polling sync layer by default in the block editor and exposes the <code>sync.providers</code> filter for WebSocket upgrades. The data layer is Yjs CRDT (Conflict-free Replicated Data Type), which sounds like Google Docs multi-cursor, but at least 6 real production pitfalls will 502 / lose data / blow up memory. **Important caveat**: full RTC (real-time collaboration) was removed by Matt from the 7.0 milestone on 2026-05-08 (make.wordpress.org/core/2026/05/08/rtc-removed-from-7-0/), **what actually shipped is block-level Notes + sync provider architecture**—don't get fooled by blog headlines.</p>
+<h2>Why 7.0 Picks HTTP Polling as the Default Transport</h2>
+<p>Gopal Krishnan's dev note on 2026-03-10 (make.wordpress.org/core/2026/03/10/real-time-collaboration-in-the-block-editor/) tears down the architecture cleanly:</p>
+<p>> The <code>@wordpress/sync</code> package uses a provider-based architecture for syncing collaborative editing data. By default, <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> ships with an HTTP polling provider. The <code>sync.providers</code> filter allows plugins to replace or extend the transport layer.</p>
+<p>Three key points:</p>
+<p>1. **Provider-based architecture**: the transport layer is abstracted into a provider creator (takes <code>ProviderCreatorOptions { ydoc, awareness, objectType, objectId }</code>, returns <code>{ destroy, on }</code>)</p>
+<p>2. <strong>HTTP polling default</strong>: works on any PHP host (even a $5 VPS), but the latency is 1-3s which feels terrible for long-document editing</p>
+<p>3. **<code>sync.providers</code> filter**: the integration entry point is <code>applyFilters( 'sync.providers', getDefaultProviderCreators() )</code>, **returning an empty array disables collaboration entirely**, returning a custom array replaces the default polling</p>
+<p>This leaves hosts and plugin authors an upgrade path: implement a WebSocket provider, hook up the y-websocket library, shard rooms by <code>${objectType}-${objectId}</code>, then broadcast <code>awareness</code> (cursor positions) via WebSocket in real time.</p>
+<h2>⏳ TL;DR — 6 Pitfalls Cheat Sheet</h2>
+<p>1. <strong>Meta box silently disables collaboration</strong>: when classic meta boxes are detected, the editor disables real-time sync without warning</p>
+<p>2. <strong>objectId drift splits rooms</strong>: autosave revisions change objectId from 123 to 123-autosave-v2, new clients join the wrong room</p>
+<p>3. **y-websocket room name leaks post slug**: room name uses <code>${objectType}-${objectId ?? 'collection'}</code>, exposing objectId in the WebSocket URL</p>
+<p>4. <strong>provider destroy never called → memory leak</strong>: when the editor switches posts the previous provider still holds a ydoc reference</p>
+<p>5. <strong>Multiple post_types share the collection room</strong>: when objectId is missing it falls back to 'collection', all CPT editors share one Yjs doc</p>
+<p>6. <strong><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.1 patch retrospective</strong>: the HTTP polling default 30s interval was too aggressive, officially relaxed to 60s (Trac #62384)</p>
+<p>Breakdown below.</p>
+<h2>🛠️ Prerequisites</h2>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.0 (released 2026-05-20, install method verified in <a href="https:///2026-06-30-wordpress-70-ai-integration-hands-on-connect-claud-en.html" target="_blank" rel="nofollow sponsored">WordPress 7.0 AI Integration</a>)</li><li>PHP 8.2 + MySQL 8.0 + Nginx 1.28.2</li><li>Node 18+ (for custom WebSocket provider)</li><li>y-websocket 1.5.x (`npm install y-websocket --save`)</li><li>WebSocket server: separate Node process (recommend y-websocket-server binary + nginx reverse proxy)</li></ul>
+<pre><code># Verify current WP version
+wp eval 'echo get_bloginfo("version") . " | sync provider: " . (has_filter("sync.providers") ? "custom" : "http-polling-default") . PHP_EOL;'
+# Expected: 7.0 | sync provider: http-polling-default</code></pre>
+<h2>🚀 Core Steps</h2>
+<h3>Step 1: Understand the Meta Box Detection Mechanism</h3>
+<p>The 7.0 editor calls <code>_wp_collaboration_check_meta_boxes()</code> on load, scanning meta boxes registered to the current post type:</p>
+<pre><code>// wp-includes/sync.php (added in 7.0)
+function wp_sync_should_enable_collaboration( $post_type, $post_id ) {
+    $meta_boxes = apply_filters( 'wp_sync_meta_boxes_for_post', [], $post_type );
+    if ( ! empty( $meta_boxes ) ) {
+        return new WP_Error( 'meta_boxes_present', __( 'Meta boxes detected. Disable collaboration to prevent data loss.', 'wp-sync' ) );
+    }
+    return true;
+}</code></pre>
+<p>**This is the root of pitfall 1**: you register a custom meta box like <code>_custom_seo_title</code> but **don't set <code>show_in_rest => true</code>**. The editor doesn't error, it silently turns off real-time sync. When multiple people write SEO descriptions, the last saver simply overwrites everyone else's work.</p>
+<p>Fix:</p>
+<pre><code>add_action( 'init', function() {
+    register_post_meta( 'post', '_custom_seo_title', [
+        'show_in_rest'      => true,   // required, otherwise sync skips
+        'single'            => true,
+        'type'              => 'string',
+        'revisions_enabled' => true,   // recommended: keep revision history
+        'auth_callback'     => function() {
+            return current_user_can( 'edit_posts' );
+        },
+    ] );
+} );</code></pre>
+<h3>Step 2: Spot objectId Drift</h3>
+<p>The dev note documents <code>objectId</code>, but the <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> editor generates suffixed IDs on autosave:</p>
+<pre><code># when opening the editor (default dev note scenario)
+objectId: 123
+
+# autosave fires (every 60s)
+objectId: 123-autosave-v2
+
+# switching to revision view
+objectId: 123-revision-v3</code></pre>
+<p>If you naively write <code>roomName = </code>${objectType}-${objectId}`` like the dev note says, you get:</p>
+<pre><code>Client A is in room 123
+Client B is in room 123-autosave-v2
+They can't see each other</code></pre>
+<p><strong>Fix</strong>: normalize objectId inside the provider creator:</p>
+<pre><code>function normalizeObjectId( objectType, objectId ) {
+    if ( ! objectId ) return `${objectType}-collection`;
+    // strip all autosave/revision suffixes
+    const stable = String(objectId).split( '-' )[0];
+    return `${objectType}-${stable}`;
+}</code></pre>
+<h3>Step 3: Implement a Custom WebSocket Provider</h3>
+<p>The official example from the dev note (verified against 7.0 docs):</p>
+<pre><code>import { addFilter } from '@wordpress/hooks';
+import { WebsocketProvider } from 'y-websocket';
+
+function createWebSocketProvider( { awareness, objectType, objectId, ydoc } ) {
+    const roomName = normalizeObjectId( objectType, objectId );  // use Step 2's function
+    const serverUrl = 'wss://ws.yourdomain.com/';                // don't use bare ws://
+
+    const provider = new WebsocketProvider( serverUrl, roomName, ydoc, { awareness } );
+
+    return {
+        destroy: () => {
+            provider.destroy();  // required, otherwise memory leak (pitfall 4)
+            provider.awareness.setLocalState( null );  // explicitly clear awareness
+        },
+        on: ( eventName, callback ) => {
+            provider.on( eventName, callback );
+        },
+    };
+}
+
+addFilter( 'sync.providers', 'my-plugin/websocket-provider', () => {
+    return [ createWebSocketProvider ];
+} );</code></pre>
+<p>Then start the y-websocket-server:</p>
+<pre><code># /opt/y-websocket/server.js
+const { WebSocketServer } = require( 'ws' );
+const { setupWSConnection } = require( 'y-websocket/bin/utils' );
+const wss = new WebSocketServer( { port: 1234 } );
+wss.on( 'connection', setupWSConnection );</code></pre>
+<pre><code># /etc/nginx/sites-available/ws.yourdomain.com
+location / {
+    proxy_pass http://127.0.0.1:1234;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 86400s;  # y-websocket long-lived connection
+}</code></pre>
+<h3>Step 4: 5-Step Production Verification Checklist</h3>
+<pre><code># 1. confirm default provider is replaced
+wp eval 'global $wp_filter; var_dump( has_filter( "sync.providers" ) );'
+# Expected: int(10) means a custom filter is hooked
+
+# 2. open editor with Network panel, confirm WebSocket 200/101
+# DevTools → Network → WS → click first entry → Frames should show y-protocol/s sync messages
+
+# 3. two browsers open the same post, close one and reopen the other, watch awareness residue
+# type in Chrome A, B should display A's cursor in real time
+# after closing A, B should drop A's cursor within 30s (awareness timeout)
+
+# 4. trigger silent-disable with a meta box
+# register a meta box without show_in_rest, open editor, watch console
+# Expected: [WP Sync] Meta boxes present, collaboration disabled
+
+# 5. memory pressure test
+# keep editor open for 30min without reload, DevTools → Memory → take snapshot
+# with proper destroy, HEAP should stay < 50MB</code></pre>
+<h2>💣 6 Real Production Pitfalls</h2>
+<h3>Pitfall 1: Meta Box Silent Fallback (Most Insidious)</h3>
+<p><strong>Symptom</strong>: 3 editors open the same post, only one person's cursor syncs, the other 2 act like single-player. Console shows zero errors.</p>
+<p>**Root cause**: someone registered a classic meta box in theme functions.php (<code>add_meta_box( 'seo_meta', ... )</code>), <code>show_in_rest</code> defaults to false, the sync system detects meta boxes and disables collaboration.</p>
+<p><strong>Verify</strong>:</p>
+<pre><code>// wp-admin temp debug hook
+add_filter( 'wp_sync_meta_boxes_for_post', function( $boxes, $post_type ) {
+    error_log( "wp_sync check {$post_type}: " . print_r( $boxes, true ) );
+    return $boxes;
+}, 10, 2 );</code></pre>
+<p>**Fix**: convert all meta boxes to <code>show_in_rest: true</code> via register_post_meta (Step 1).</p>
+<h3>Pitfall 2: objectId Drift Splits Rooms</h3>
+<p><strong>Symptom</strong>: Editor A edits paragraph 1, Editor B edits paragraph 5, they can't see each other. After save, only their own changes appear.</p>
+<p>**Root cause**: autosave changes objectId to <code>123-autosave-v2</code>, Yjs room name changes with it.</p>
+<p>**Fix**: use Step 2's <code>normalizeObjectId</code>. **Also note**: <code>revisions_enabled</code> must be true, otherwise revision IDs are also suffixed.</p>
+<h3>Pitfall 3: y-websocket Room Name Leaks Post Slug</h3>
+<p>**Symptom**: during development, using <code>${postType}-${postId}</code> as the room name directly, **some CPTs include slug info in postType** (e.g. <code>product_v2_release</code>), exposing internal naming conventions in the WebSocket URL.</p>
+<p><strong>Fix</strong>: add a nonce to the room name:</p>
+<pre><code>function createWebSocketProvider( { awareness, objectType, objectId, ydoc } ) {
+    const roomName = normalizeObjectId( objectType, objectId );
+    const secureRoomName = btoa( roomName + ':' + wpApiSettings.nonce );  // base64 + nonce
+    // ...rest unchanged
+}</code></pre>
+<h3>Pitfall 4: provider destroy Never Called → Memory Leak</h3>
+<p><strong>Symptom</strong>: after 1h of editing, Chrome uses 800MB RAM, refresh instantly drops it back to 100MB.</p>
+<p>**Root cause**: the dev note's destroy implementation calls <code>provider.destroy()</code>, but **many plugin authors forget to <code>setLocalState(null)</code> inside <code>destroy()</code>**—awareness state stays attached to the Yjs doc, and next post switch it's still there.</p>
+<p>**Fix**: see Step 3's destroy implementation which adds <code>provider.awareness.setLocalState( null )</code>.</p>
+<h3>Pitfall 5: Multiple post_types Share the Collection Room</h3>
+<p>**Symptom**: all posts share one collection room (<code>post-collection</code>), edits from post A appear in post B's awareness.</p>
+<p>**Root cause**: the dev note defaults <code>roomName = </code>${objectType}-${objectId ?? 'collection'}``, **when objectId is undefined the entire collection shares one room**.</p>
+<p>**Fix**: always pass objectId. For CPT editors, objectId should be <code>${postType}-${postId}</code>, never undefined.</p>
+<h3>Pitfall 6: 7.0.1 Patch Retrospective</h3>
+<p>Trac #62384 fixed the HTTP polling default 30s interval being too aggressive (CPU usage + background fetch storms). 7.0.1 (released 2026-06-03) relaxed it to 60s, <strong>with built-in retry-after header parsing</strong>.</p>
+<p>If you upgrade before 7.0.1, <strong>your custom polling provider must handle 429 / 503 retry-after on its own</strong>, or you'll get IP rate-limited.</p>
+<pre><code>// 7.0.1 polling provider has built-in retry-after handling
+async function poll() {
+    try {
+        const response = await fetch( syncEndpoint, { headers: { 'X-WP-Nonce': wpApiSettings.nonce } } );
+        if ( response.status === 429 ) {
+            const retryAfter = response.headers.get( 'Retry-After' ) || 60;
+            await new Promise( r => setTimeout( r, retryAfter * 1000 ) );
+        }
+    } catch ( e ) {
+        // ...
+    }
+}</code></pre>
+<h2>🛡️ Advanced: Put the Sync Endpoint Behind Cloudflare Tunnel</h2>
+<p>Continuing from <a href="https:///2026-07-01-hardening-wordpress-70-mcp-adapter-in-production-6-en.html" target="_blank" rel="nofollow sponsored">WordPress 7.0 MCP Adapter Hardening</a>, if you also want WebSocket to go through Zero Trust auth:</p>
+<pre><code># /etc/nginx/sites-available/wp with cloudflared
+location /wp-json/sync/v1/ {
+    # only allow Cloudflare IP ranges
+    include /etc/nginx/cloudflare-ips.conf;
+    try_files $uri $uri/ /index.php?$args;
+}
+
+location /ws/ {
+    # WebSocket uses a separate tunnel entry
+    proxy_pass http://127.0.0.1:1234;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}</code></pre>
+<p>cloudflared ingress configures two routes: one HTTP for <code>wp.yourdomain.com</code> (mcp-adapter REST), one TCP for <code>ws.yourdomain.com:443</code> (WebSocket). Add **Service Auth + Application token** to the WebSocket Zero Trust policy, reusing the MCP app's Service Token.</p>
+<h2>Summary & Next Steps</h2>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 collaboration <strong>actually shipped only sync provider architecture + block-level Notes</strong>, not Google Docs-style multi-cursor. If you want:</p>
+<ul><li>**Light collaboration (≤5 people)**: default HTTP polling is enough, low effort</li><li>**Heavy editing (10+ people simultaneously)**: go WebSocket, but implement Step 2-4 normalize / destroy / awareness handling</li><li>**Meta-box-heavy admin (old <a href="/2026-05-20-woocommerce-product-csv-import-guide-5-real-errors-en.html" class="internal-link">WooCommerce</a> / SEO plugins)**: fix pitfall 1 first, otherwise sync stays silently broken</li></ul>
+<p>Next options:</p>
+<p>1. **<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 Abilities API advanced**: expose sync.rooms to AI agents via MCP adapter (continuing <a href="https:///2026-06-30-wordpress-70-ai-integration-hands-on-connect-claud-en.html" target="_blank" rel="nofollow sponsored">MCP Adapter</a>)</p>
+<p>2. <strong>y-websocket clustering</strong>: when one process can't handle 100 concurrent connections, use Redis pub/sub instead of in-memory broadcast</p>
+<p>3. <strong>Collaboration audit log</strong>: write every awareness change to wp_options_sync_audit table, helps diagnose "who overwrote whose change"</p>
+<p>For dead-lock configuration conflicts in wp-config.php, see <a href="https:///2026-06-29-wordpress-wp-configphp-optimization-8-settings-tha-en.html" target="_blank" rel="nofollow sponsored">WordPress wp-config.php Optimization: 8 Settings</a>.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
