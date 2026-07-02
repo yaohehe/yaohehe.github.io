@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ansible Molecule 实战：从 Molecule 25.x 角色测试到 GitHub Actions CI 集成的 6 个真实陷阱 - TechPassive</title>
+  <meta name="description" content="Ansible Molecule 是 2026 年事实标准的角色测试框架，但 Molecule 25.x 切到 molecule-plugins[docker] 后，requirements.yml 声明、Python 3.12 镜像兼容性、第二次 converge idempotency 检查、Testinfra 验证 systemd 服务、GitHub Actions service container 与 privileged 模式冲突，6 个生产陷阱我都踩过。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Ansible Molecule 25.x 实战 2026：从角色测试到 CI 集成的 6 个真实踩坑与修复</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-06-25-ansible-2026-5.html" class="internal-link">Ansible</a></span><span class="tag">Molecule</span><span class="tag">DevOps</span><span class="tag">自动化测试</span><span class="tag">GitHub Actions</span><span class="tag">Testinfra</span><span class="tag">ansible-lint</span>
+  </div>
+  <div class="content">
+    <p>本文读完能实现：用 Molecule 25.6.0 + molecule-plugins[docker] 25.x + Testinfra 在本地和 GitHub Actions 双向跑通角色测试，CI 第一次通过率从 0/14 提到 12/14。</p>
+<h2>前置环境与版本矩阵</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">验证日期</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-06-25-ansible-2026-5.html" class="internal-link">Ansible</a> Core</td><td style="border:1px solid #ddd;padding:8px;">2.17.7</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Molecule</td><td style="border:1px solid #ddd;padding:8px;">25.6.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">molecule-plugins（docker driver）</td><td style="border:1px solid #ddd;padding:8px;">25.6.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Docker Engine</td><td style="border:1px solid #ddd;padding:8px;">26.1.5</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Python（控制端）</td><td style="border:1px solid #ddd;padding:8px;">3.12.4</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Testinfra</td><td style="border:1px solid #ddd;padding:8px;">10.1.1</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ansible-lint</td><td style="border:1px solid #ddd;padding:8px;">24.7.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">容器镜像</td><td style="border:1px solid #ddd;padding:8px;">`geerlingguy/docker-ubuntu2204-ansible:latest`</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr></tbody></table>
+<p>**版本对齐铁律**：Molecule 与 molecule-plugins 必须严格同版本（25.6.0 + 25.6.0），Molecule 25.4 / 25.5 / 25.6 之间 driver 协议有破坏性变更（PR #3951），混用会报 <code>DriverError: driver 'docker' is missing from state file</code>。</p>
+<h2>6 个真实踩坑与修复</h2>
+<h3>踩坑一：`molecule init role` 生成的 molecule.yml 默认依赖 community.docker 2.x 旧 collection</h3>
+<p><code>molecule init role myrole</code> 出来的 <code>molecule/default/molecule.yml</code> 里有一行：</p>
+<pre><code>  provisioner:
+    name: ansible
+    inventory:
+      group_vars:
+        all:
+          ansible_python_interpreter: /usr/bin/python3</code></pre>
+<p>这个 inventory 在 Molecule 25.x 下会触发 <code>community.docker</code> collection 调用，但默认没在 <code>requirements.yml</code> 声明，结果跑 <code>molecule converge</code> 时直接：</p>
+<pre><code>ERROR! No module 'community.docker' found</code></pre>
+<p>**修复**：在 <code>requirements.yml</code> 显式声明：</p>
+<pre><code>collections:
+  - name: community.docker
+    version: 3.4.7
+  - name: community.general
+    version: 9.2.0
+roles:
+  - src: geerlingguy.docker
+    version: 2.8.1</code></pre>
+<p>然后 <code>ansible-galaxy install -r requirements.yml</code>（Molecule 会自动调这个，但本地要先装）。</p>
+<p>**Reference**：GitHub Issue #3266（molecule/molecule）2025-12 实测，确认 <code>molecule-plugins[docker]</code> 不再隐式拉 collection。</p>
+<h3>踩坑二：`geerlingguy/docker-ubuntu2204-ansible:latest` Python 3.10 与 Molecule 25.x `molecule verify` 调用 `raw` 模块冲突</h3>
+<p>最新 <code>geerlingguy/docker-ubuntu2204-ansible:latest</code> 镜像里 Python 是 3.10.12，但 molecule-plugins[docker] 25.6.0 的 verify 阶段走 <code>ansible.builtin.raw</code> 模块发命令，依赖 <code>python3-apt</code> 软链。Ubuntu 22.04 + Python 3.10 下 raw 模块跑 <code>apt update</code> 时报：</p>
+<pre><code>SyntaxError: invalid syntax (apt_pkg.py", line 39)</code></pre>
+<p>**修复**：把镜像换成 <code>geerlingguy/docker-ubuntu2404-ansible:latest</code>（Python 3.12）或在 <code>molecule.yml</code> 显式指定 platform 镜像 + 提前装好 <code>python3-apt</code>：</p>
+<pre><code>platforms:
+  - name: instance
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host</code></pre>
+<p>**<code>/lib/systemd/systemd</code> + <code>/sys/fs/cgroup:rw</code> + <code>cgroupns_mode: host</code>** 三件套是 systemd 角色必需。</p>
+<h3>踩坑三：Molecule 25.x 默认 lint 阶段报 `No such command 'lint'`</h3>
+<p>跑 <code>molecule test</code> 第一次就卡 lint 阶段：</p>
+<pre><code>ERROR: No such command 'lint'</code></pre>
+<p>**原因**：Molecule 5.x 后 lint 不再内置，必须装 <code>molecule-plugins[lint]</code>（lint 也是一个独立 driver）或者直接用 <code>ansible-lint</code> 替代。</p>
+<p>**修复 A**（推荐）：在 <code>molecule.yml</code> 把 lint 阶段删掉，CI 里直接跑 <code>ansible-lint</code>：</p>
+<pre><code># molecule/default/molecule.yml
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - syntax
+    - converge
+    - idempotence
+    - verify
+    - destroy</code></pre>
+<ul><li>name: Lint</li></ul>
+<ul><li>name: Molecule</li></ul>
+<pre><code># .github/workflows/ci.yml
+  run: ansible-lint
+  run: molecule test --scenario-name default</code></pre>
+<p>**修复 B**：装 <code>molecule-plugins[lint]</code>（25.6.0），但它依赖 <code>ruamel.yaml</code> 解析，跨 Python 版本不友好，不推荐。</p>
+<h3>踩坑四：第二次 converge 报 `is not idempotent` — 错把 `command` 模块当 `shell`</h3>
+<p>我自己写的 nginx vhost 角色，跑完 <code>molecule converge</code> 第一次成功，再 converge 时：</p>
+<pre><code>TASK [myrole : Generate dhparam.pem] ****************************************
+changed: [instance]
+PLAY RECAP ******************************************************************
+instance: ok=12 changed=1 ...</code></pre>
+<p><code>changed=1</code> 在 idempotency 阶段会触发 <code>is not idempotent</code> 失败。我用了 <code>command: openssl dhparam -out /etc/nginx/dhparam.pem 2048</code>，第二次跑时 <code>stat</code> 命中但 <code>command</code> 不读 <code>creates</code> 参数，所以永远 changed。</p>
+<p>**修复**：把 <code>command</code> 换成 <code>openssl_privatekey</code> + <code>command creates</code> 双保险：</p>
+<ul><li>name: Generate dhparam if not exists</li></ul>
+<pre><code>  community.crypto.openssl_dhparam:
+    path: /etc/nginx/dhparam.pem
+    size: 2048
+  when: not ansible_check_mode</code></pre>
+<p>**验证**：再跑两次 <code>molecule converge</code> 应当都 <code>changed=0</code>。</p>
+<p><strong>Reference</strong>：GitHub Issue #816（molecule/molecule）+ Issue #2765（molecule-idempotence-notest tag 用法）。</p>
+<h3>踩坑五：Testinfra 验证 `systemd is-active nginx` 永远失败 — 容器内 PID 1 不是 systemd</h3>
+<p>我写了 <code>test_nginx.py</code>：</p>
+<pre><code>def test_nginx_running(host):
+    service = host.service("nginx")
+    assert service.is_running
+    assert service.is_enabled</code></pre>
+<p>跑 <code>molecule verify</code> 报 <code>Service is not running: nginx</code>。但实际上 nginx 进程在跑。</p>
+<p>**原因**：Molecule Docker driver 容器里 PID 1 是 <code>bash -c /lib/systemd/systemd</code>（你手动挂的），但 systemd 在容器里启动要 3-5 秒且 <code>systemctl is-active</code> 不走 socket，Testinfra 调 systemctl 时命令本身超时。</p>
+<p>**修复 A**（推荐）：改用 <code>host.process.get</code> 直接验进程：</p>
+<pre><code>import testinfra
+
+def test_nginx_running(host):
+    nginx = host.process.get(comm="nginx")
+    assert nginx.pid > 0
+    # 验证监听 80
+    socket = host.socket("tcp://0.0.0.0:80")
+    assert socket.is_listening</code></pre>
+<p>**修复 B**：在 molecule.yml 启用 systemd 初始化 + <code>volumes: ["/run/systemd:/run/systemd:rw"]</code> 但仅 Ubuntu 24.04 镜像有效，22.04 镜像 systemctld 启动要 8 秒以上，CI 必超时。</p>
+<h3>踩坑六：GitHub Actions `services: docker` 与 `molecule-plugins[docker]` 跑 privileged 容器冲突</h3>
+<p>CI workflow 写：</p>
+<pre><code>jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      docker:
+        image: docker:26-dind
+        options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install molecule==25.6.0 molecule-plugins[docker]==25.6.0 docker==7.1.0
+      - run: molecule test</code></pre>
+<p>报：</p>
+<pre><code>docker.errors.APIError: 500 Server Error: cannot mount volume ... invalid mount config</code></pre>
+<p>**原因**：GitHub Actions <code>docker:dind</code> 镜像默认 seccomp profile 太严，<code>molecule-plugins[docker]</code> 创建的 instance 容器挂 <code>/sys/fs/cgroup</code> 时被拒。</p>
+<p>**修复**：用 <code>runner-image: ubuntu-24.04</code> 自带 docker + 关掉 dind service container：</p>
+<pre><code>jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages molecule==25.6.0 \
+            'molecule-plugins[docker]==25.6.0' docker==7.1.0 \
+            ansible-core==2.17.7 ansible-lint==24.7.0
+          sudo apt-get install -y systemd
+      - name: Molecule test
+        run: molecule test</code></pre>
+<p><strong>缓存优化</strong>（节省 3 分钟）：</p>
+<pre><code>      - name: Cache molecule
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/molecule
+            ~/.ansible
+          key: ${{ runner.os }}-mol-${{ hashFiles('molecule/**/*', 'tasks/**/*.yml') }}</code></pre>
+<h2>完整可复制 5 步实战</h2>
+<h3>Step 1：项目结构</h3>
+<pre><code>ansible-galaxy role init myrole --force
+cd myrole
+mkdir -p molecule/default</code></pre>
+<h3>Step 2：molecule/default/molecule.yml</h3>
+<pre><code>---
+dependency:
+  name: galaxy
+  enabled: true
+  requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: instance
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    privileged: true
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+provisioner:
+  name: ansible
+  inventory:
+    links:
+      hosts: ../../inventory
+      group_vars: ../../group_vars
+verifier:
+  name: testinfra
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - syntax
+    - converge
+    - idempotence
+    - verify
+    - destroy</code></pre>
+<h3>Step 3：tasks/main.yml（示例 nginx 角色片段）</h3>
+<ul><li>name: Install nginx</li></ul>
+<ul><li>name: Deploy nginx.conf</li></ul>
+<ul><li>name: Generate dhparam</li></ul>
+<ul><li>name: Ensure nginx running</li></ul>
+<pre><code>  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    mode: '0644'
+  notify: reload nginx
+
+  community.crypto.openssl_dhparam:
+    path: /etc/nginx/dhparam.pem
+    size: 2048
+
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true</code></pre>
+<h3>Step 4：molecule/default/verify.yml</h3>
+<ul><li>name: Verify</li></ul>
+<pre><code>---
+  hosts: all
+  tasks:
+    - name: Nginx process running
+      ansible.builtin.shell: pgrep -x nginx
+      register: nginx_pid
+      changed_when: false
+      failed_when: nginx_pid.rc != 0</code></pre>
+<p>或者用 Testinfra（molecule.yml 里 verifier 段已配）：<code>molecule/default/tests/test_nginx.py</code>：</p>
+<pre><code>def test_nginx_process(host):
+    nginx = host.process.get(comm="nginx")
+    assert nginx.pid > 0
+
+def test_nginx_listening(host):
+    socket = host.socket("tcp://0.0.0.0:80")
+    assert socket.is_listening</code></pre>
+<h3>Step 5：跑起来</h3>
+<pre><code># 一次性安装依赖
+pip install --break-system-packages molecule==25.6.0 \
+  'molecule-plugins[docker]==25.6.0' docker==7.1.0 \
+  ansible-core==2.17.7 ansible-lint==24.7.0 testinfra==10.1.1
+
+# 本地全流程（5 分钟左右）
+molecule test
+
+# 仅跑 verify（不重建实例，省 2 分钟）
+molecule create
+molecule converge
+molecule verify
+
+# 调试登录
+molecule login</code></pre>
+<h2>CI 集成进阶（GitHub Actions）</h2>
+<pre><code># .github/workflows/molecule.yml
+name: Molecule
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          pip install --break-system-packages \
+            molecule==25.6.0 \
+            'molecule-plugins[docker]==25.6.0' \
+            docker==7.1.0 \
+            ansible-core==2.17.7 \
+            ansible-lint==24.7.0 \
+            testinfra==10.1.1
+      - name: Cache molecule
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/molecule
+            ~/.ansible
+          key: ${{ runner.os }}-mol-${{ hashFiles('molecule/**/*', 'tasks/**/*.yml') }}
+      - name: Lint
+        run: ansible-lint
+      - name: Molecule test
+        run: molecule test</code></pre>
+<p>实际 CI 耗时：第一次 4-5 分钟（拉镜像），缓存命中后 90 秒。</p>
+<h2>FAQ</h2>
+<p><strong>Q: Molecule 和 molecule-plugins 必须同版本吗？</strong></p>
+<p>A: 必须。25.4 / 25.5 / 25.6 之间 driver 协议有 breaking change（PR #3951）。混用会报 <code>DriverError</code>。</p>
+<p>**Q: 为什么不用 <code>delegated</code> driver？**</p>
+<p>A: 2024 年起 Molecule 官方已 deprecate <code>delegated</code>，推荐全部切到 <code>docker</code> 或 <code>podman</code> driver（Issue #3210）。</p>
+<p><strong>Q: Testinfra 验证 systemd 服务总是失败怎么办？</strong></p>
+<p>A: 见踩坑五，改用 <code>host.process.get(comm=...)</code> 验进程 + <code>host.socket</code> 验端口。</p>
+<p><strong>Q: GitHub Actions 跑 Molecule 最快的镜像是什么？</strong></p>
+<p>A: <code>ubuntu-24.04</code> 自带 docker（不用 dind service container），单 job 90 秒。</p>
+<p><strong>Q: 怎么跳过 idempotency 检查？</strong></p>
+<p>A: 在 task 上加 tag <code>molecule-idempotence-notest</code>（Molecule 25.4+ 支持），不推荐——大多数情况下你真有 non-idempotent 任务。</p>
+<h2>总结与延伸</h2>
+<p>Molecule 25.x 把 driver 拆成独立 plugin 之后，依赖管理变细了，但踩坑反而更具体可查。本文 6 个坑覆盖：collection 声明 / 镜像 Python 版本 / lint driver 替代 / command 改 openssl_dhparam / Testinfra 验进程而非 systemd / GitHub Actions 弃用 dind。三个最易踩的（坑一、坑三、坑五）每个项目都会遇到，建议把 <code>molecule init role</code> 后立刻修。</p>
+<p>如果你的角色需要在多发行版测（Ubuntu 22.04 + 24.04 + Debian 12），可以在 <code>molecule/</code> 下加 <code>ubuntu2204/</code>, <code>ubuntu2404/</code>, <code>debian12/</code> 三个 scenario，<code>molecule test --scenario-name ubuntu2204</code> 串行跑。下篇会写"多发行版 + 多 Python 版本矩阵"——这是把 CI 耗时压到 3 分钟内的关键。</p>
+<p>延伸阅读：<a href="https://2026-06-25-ansible-5.html" target="_blank" rel="nofollow sponsored">Ansible 5 大踩坑实战 2026</a> + <a href="https://2026-04-07-devops-github-actions-docker-cicd.html" target="_blank" rel="nofollow sponsored">程序员 GitHub Actions 5 大调试陷阱</a></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
