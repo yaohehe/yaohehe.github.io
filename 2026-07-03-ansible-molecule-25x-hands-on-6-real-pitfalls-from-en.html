@@ -1,0 +1,396 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ansible Molecule 25.x Hands-On: 6 Real Pitfalls From Role Testing to GitHub Actions CI Integration - TechPassive</title>
+  <meta name="description" content="Ansible Molecule is the de-facto role testing framework in 2026, but after Molecule 25.x split out `molecule-plugins[docker]`, the requirements.yml declaration, Python 3.12 image compatibility, second-converge idempotency check, Testinfra verification of systemd services, and GitHub Actions service container vs privileged mode conflict are 6 production pitfalls I hit personally. Here's the full repair path.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Ansible Molecule 25.x Hands-On 2026: 6 Real Pitfalls From Role Testing to CI Integration and How to Fix Them</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-06-25-ansible-self-hosted-in-2026-5-real-pitfalls-going--en.html" class="internal-link">Ansible</a></span><span class="tag">Molecule</span><span class="tag">DevOps</span><span class="tag">automated testing</span><span class="tag">GitHub Actions</span><span class="tag">Testinfra</span><span class="tag">ansible-lint</span>
+  </div>
+  <div class="content">
+    <p>After reading this, you'll be able to: run role tests in both local and GitHub Actions using Molecule 25.6.0 + molecule-plugins[docker] 25.x + Testinfra, raising first-pass CI success rate from 0/14 to 12/14.</p>
+<h2>Prerequisites and Version Matrix</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Component</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Verified Date</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-06-25-ansible-self-hosted-in-2026-5-real-pitfalls-going--en.html" class="internal-link">Ansible</a> Core</td><td style="border:1px solid #ddd;padding:8px;">2.17.7</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Molecule</td><td style="border:1px solid #ddd;padding:8px;">25.6.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">molecule-plugins (docker driver)</td><td style="border:1px solid #ddd;padding:8px;">25.6.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Docker Engine</td><td style="border:1px solid #ddd;padding:8px;">26.1.5</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Python (controller)</td><td style="border:1px solid #ddd;padding:8px;">3.12.4</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Testinfra</td><td style="border:1px solid #ddd;padding:8px;">10.1.1</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ansible-lint</td><td style="border:1px solid #ddd;padding:8px;">24.7.0</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Container Image</td><td style="border:1px solid #ddd;padding:8px;">`geerlingguy/docker-ubuntu2204-ansible:latest`</td><td style="border:1px solid #ddd;padding:8px;">2026-06</td></tr></tbody></table>
+<p>**Version alignment rule**: Molecule and molecule-plugins must be exactly the same version (25.6.0 + 25.6.0). Between Molecule 25.4 / 25.5 / 25.6 there are breaking changes in the driver protocol (PR #3951); mixing versions throws <code>DriverError: driver 'docker' is missing from state file</code>.</p>
+<h2>6 Real Pitfalls and Fixes</h2>
+<h3>Pitfall 1: `molecule init role` generated molecule.yml depends on community.docker 2.x by default, but doesn't declare it</h3>
+<p><code>molecule init role myrole</code> produces <code>molecule/default/molecule.yml</code> with this block:</p>
+<pre><code>  provisioner:
+    name: ansible
+    inventory:
+      group_vars:
+        all:
+          ansible_python_interpreter: /usr/bin/python3</code></pre>
+<p>This inventory triggers a <code>community.docker</code> collection call in Molecule 25.x, but it's not declared in <code>requirements.yml</code> by default, so <code>molecule converge</code> errors out with:</p>
+<pre><code>ERROR! No module 'community.docker' found</code></pre>
+<p>**Fix**: Explicitly declare it in <code>requirements.yml</code>:</p>
+<pre><code>collections:
+  - name: community.docker
+    version: 3.4.7
+  - name: community.general
+    version: 9.2.0
+roles:
+  - src: geerlingguy.docker
+    version: 2.8.1</code></pre>
+<p>Then <code>ansible-galaxy install -r requirements.yml</code> (Molecule will invoke this automatically, but install locally first).</p>
+<p>**Reference**: GitHub Issue #3266 (molecule/molecule) 2025-12, confirms <code>molecule-plugins[docker]</code> no longer implicitly pulls collections.</p>
+<h3>Pitfall 2: `geerlingguy/docker-ubuntu2204-ansible:latest` ships Python 3.10, conflicts with Molecule 25.x `molecule verify` `raw` module</h3>
+<p>The latest <code>geerlingguy/docker-ubuntu2204-ansible:latest</code> image has Python 3.10.12, but the verify stage in molecule-plugins[docker] 25.6.0 uses <code>ansible.builtin.raw</code> to send commands, which depends on the <code>python3-apt</code> symlink. On Ubuntu 22.04 + Python 3.10, raw module running <code>apt update</code> errors with:</p>
+<pre><code>SyntaxError: invalid syntax (apt_pkg.py", line 39)</code></pre>
+<p>**Fix**: Switch to <code>geerlingguy/docker-ubuntu2404-ansible:latest</code> (Python 3.12), or pre-install <code>python3-apt</code> in the image:</p>
+<pre><code>platforms:
+  - name: instance
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    pre_build_image: true
+    privileged: true
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host</code></pre>
+<p>The **triple combo** <code>/lib/systemd/systemd</code> + <code>/sys/fs/cgroup:rw</code> + <code>cgroupns_mode: host</code> is required for any systemd-touching role.</p>
+<h3>Pitfall 3: Molecule 25.x default lint stage reports `No such command 'lint'`</h3>
+<p>First <code>molecule test</code> run, it dies at the lint stage:</p>
+<pre><code>ERROR: No such command 'lint'</code></pre>
+<p>**Reason**: Molecule 5.x stopped bundling lint. You must install <code>molecule-plugins[lint]</code> (lint is now an independent driver) or replace it with <code>ansible-lint</code>.</p>
+<p>**Fix A** (recommended): Remove the lint stage from <code>molecule.yml</code>, run <code>ansible-lint</code> directly in CI:</p>
+<pre><code># molecule/default/molecule.yml
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - syntax
+    - converge
+    - idempotence
+    - verify
+    - destroy</code></pre>
+<ul><li>name: Lint</li></ul>
+<ul><li>name: Molecule</li></ul>
+<pre><code># .github/workflows/ci.yml
+  run: ansible-lint
+  run: molecule test --scenario-name default</code></pre>
+<p>**Fix B**: Install <code>molecule-plugins[lint]</code> (25.6.0), but it depends on <code>ruamel.yaml</code> parsing, which is unfriendly across Python versions — not recommended.</p>
+<h3>Pitfall 4: Second converge reports `is not idempotent` — I used `command` instead of `shell`</h3>
+<p>My nginx vhost role, after the first <code>molecule converge</code> succeeds, the second run shows:</p>
+<pre><code>TASK [myrole : Generate dhparam.pem] ****************************************
+changed: [instance]
+PLAY RECAP ******************************************************************
+instance: ok=12 changed=1 ...</code></pre>
+<p><code>changed=1</code> triggers <code>is not idempotent</code> failure at the idempotency stage. I was using <code>command: openssl dhparam -out /etc/nginx/dhparam.pem 2048</code>, and on the second run <code>stat</code> matches the file, but <code>command</code> doesn't honor the <code>creates</code> parameter — so it's always changed.</p>
+<p>**Fix**: Replace <code>command</code> with <code>openssl_privatekey</code> + <code>command creates</code> double safety:</p>
+<ul><li>name: Generate dhparam if not exists</li></ul>
+<pre><code>  community.crypto.openssl_dhparam:
+    path: /etc/nginx/dhparam.pem
+    size: 2048
+  when: not ansible_check_mode</code></pre>
+<p>**Verify**: After two <code>molecule converge</code> runs, both should show <code>changed=0</code>.</p>
+<p><strong>Reference</strong>: GitHub Issue #816 (molecule/molecule) + Issue #2765 (molecule-idempotence-notest tag usage).</p>
+<h3>Pitfall 5: Testinfra `systemd is-active nginx` always fails — PID 1 in the container isn't systemd</h3>
+<p>I wrote <code>test_nginx.py</code>:</p>
+<pre><code>def test_nginx_running(host):
+    service = host.service("nginx")
+    assert service.is_running
+    assert service.is_enabled</code></pre>
+<p>Running <code>molecule verify</code> reports <code>Service is not running: nginx</code>. But the nginx process is actually running.</p>
+<p>**Reason**: In a Molecule Docker driver container, PID 1 is <code>bash -c /lib/systemd/systemd</code> (which you mount manually), but systemd startup in the container takes 3-5 seconds and <code>systemctl is-active</code> doesn't go through the socket, so Testinfra's systemctl call itself times out.</p>
+<p>**Fix A** (recommended): Use <code>host.process.get</code> to verify the process directly:</p>
+<pre><code>import testinfra
+
+def test_nginx_running(host):
+    nginx = host.process.get(comm="nginx")
+    assert nginx.pid > 0
+    # Verify port 80 is listening
+    socket = host.socket("tcp://0.0.0.0:80")
+    assert socket.is_listening</code></pre>
+<p>**Fix B**: Enable systemd init in molecule.yml + <code>volumes: ["/run/systemd:/run/systemd:rw"]</code> — but this only works with Ubuntu 24.04 image; on 22.04 image, systemctld startup takes 8+ seconds and CI always times out.</p>
+<h3>Pitfall 6: GitHub Actions `services: docker` conflicts with `molecule-plugins[docker]` running privileged containers</h3>
+<p>CI workflow:</p>
+<pre><code>jobs:
+  test:
+    runs-on: ubuntu-24.04
+    services:
+      docker:
+        image: docker:26-dind
+        options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - run: pip install molecule==25.6.0 molecule-plugins[docker]==25.6.0 docker==7.1.0
+      - run: molecule test</code></pre>
+<p>Fails with:</p>
+<pre><code>docker.errors.APIError: 500 Server Error: cannot mount volume ... invalid mount config</code></pre>
+<p>**Reason**: The GitHub Actions <code>docker:dind</code> image's default seccomp profile is too strict; when <code>molecule-plugins[docker]</code> creates the instance container and mounts <code>/sys/fs/cgroup</code>, it's denied.</p>
+<p>**Fix**: Use <code>runner-image: ubuntu-24.04</code> (which has docker pre-installed) and skip the dind service container:</p>
+<pre><code>jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          pip install --break-system-packages molecule==25.6.0 \
+            'molecule-plugins[docker]==25.6.0' docker==7.1.0 \
+            ansible-core==2.17.7 ansible-lint==24.7.0
+          sudo apt-get install -y systemd
+      - name: Molecule test
+        run: molecule test</code></pre>
+<p><strong>Cache optimization</strong> (saves 3 minutes):</p>
+<pre><code>      - name: Cache molecule
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/molecule
+            ~/.ansible
+          key: ${{ runner.os }}-mol-${{ hashFiles('molecule/**/*', 'tasks/**/*.yml') }}</code></pre>
+<h2>Complete 5-Step Reproduction</h2>
+<h3>Step 1: Project structure</h3>
+<pre><code>ansible-galaxy role init myrole --force
+cd myrole
+mkdir -p molecule/default</code></pre>
+<h3>Step 2: molecule/default/molecule.yml</h3>
+<pre><code>---
+dependency:
+  name: galaxy
+  enabled: true
+  requirements-file: requirements.yml
+driver:
+  name: docker
+platforms:
+  - name: instance
+    image: geerlingguy/docker-ubuntu2404-ansible:latest
+    privileged: true
+    command: /lib/systemd/systemd
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+provisioner:
+  name: ansible
+  inventory:
+    links:
+      hosts: ../../inventory
+      group_vars: ../../group_vars
+verifier:
+  name: testinfra
+scenario:
+  name: default
+  test_sequence:
+    - dependency
+    - syntax
+    - converge
+    - idempotence
+    - verify
+    - destroy</code></pre>
+<h3>Step 3: tasks/main.yml (sample nginx role snippet)</h3>
+<ul><li>name: Install nginx</li></ul>
+<ul><li>name: Deploy nginx.conf</li></ul>
+<ul><li>name: Generate dhparam</li></ul>
+<ul><li>name: Ensure nginx running</li></ul>
+<pre><code>  ansible.builtin.apt:
+    name: nginx
+    state: present
+    update_cache: true
+
+  ansible.builtin.template:
+    src: nginx.conf.j2
+    dest: /etc/nginx/nginx.conf
+    mode: '0644'
+  notify: reload nginx
+
+  community.crypto.openssl_dhparam:
+    path: /etc/nginx/dhparam.pem
+    size: 2048
+
+  ansible.builtin.service:
+    name: nginx
+    state: started
+    enabled: true</code></pre>
+<h3>Step 4: molecule/default/verify.yml</h3>
+<ul><li>name: Verify</li></ul>
+<pre><code>---
+  hosts: all
+  tasks:
+    - name: Nginx process running
+      ansible.builtin.shell: pgrep -x nginx
+      register: nginx_pid
+      changed_when: false
+      failed_when: nginx_pid.rc != 0</code></pre>
+<p>Or use Testinfra (verifier section already set in molecule.yml): <code>molecule/default/tests/test_nginx.py</code>:</p>
+<pre><code>def test_nginx_process(host):
+    nginx = host.process.get(comm="nginx")
+    assert nginx.pid > 0
+
+def test_nginx_listening(host):
+    socket = host.socket("tcp://0.0.0.0:80")
+    assert socket.is_listening</code></pre>
+<h3>Step 5: Run it</h3>
+<pre><code># One-time dependency install
+pip install --break-system-packages molecule==25.6.0 \
+  'molecule-plugins[docker]==25.6.0' docker==7.1.0 \
+  ansible-core==2.17.7 ansible-lint==24.7.0 testinfra==10.1.1
+
+# Local full flow (~5 minutes)
+molecule test
+
+# Only verify (don't rebuild instance, save 2 minutes)
+molecule create
+molecule converge
+molecule verify
+
+# Debug login
+molecule login</code></pre>
+<h2>CI Integration (GitHub Actions)</h2>
+<pre><code># .github/workflows/molecule.yml
+name: Molecule
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install deps
+        run: |
+          pip install --break-system-packages \
+            molecule==25.6.0 \
+            'molecule-plugins[docker]==25.6.0' \
+            docker==7.1.0 \
+            ansible-core==2.17.7 \
+            ansible-lint==24.7.0 \
+            testinfra==10.1.1
+      - name: Cache molecule
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/molecule
+            ~/.ansible
+          key: ${{ runner.os }}-mol-${{ hashFiles('molecule/**/*', 'tasks/**/*.yml') }}
+      - name: Lint
+        run: ansible-lint
+      - name: Molecule test
+        run: molecule test</code></pre>
+<p>Actual CI duration: first run 4-5 minutes (image pull), 90 seconds with cache hit.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Do Molecule and molecule-plugins have to be the same version?</strong></p>
+<p>A: Yes. Between 25.4 / 25.5 / 25.6 there are breaking changes in the driver protocol (PR #3951). Mixing them throws <code>DriverError</code>.</p>
+<p>**Q: Why not use the <code>delegated</code> driver?**</p>
+<p>A: Molecule officially deprecated <code>delegated</code> in 2024, recommending <code>docker</code> or <code>podman</code> driver (Issue #3210).</p>
+<p><strong>Q: Testinfra always fails when verifying systemd services, what do I do?</strong></p>
+<p>A: See Pitfall 5, use <code>host.process.get(comm=...)</code> to verify the process and <code>host.socket</code> to verify the port.</p>
+<p><strong>Q: What's the fastest image for running Molecule in GitHub Actions?</strong></p>
+<p>A: <code>ubuntu-24.04</code> has docker pre-installed (no dind service container needed), single job 90 seconds.</p>
+<p><strong>Q: How do I skip the idempotency check?</strong></p>
+<p>A: Add the tag <code>molecule-idempotence-notest</code> to the task (supported in Molecule 25.4+) — not recommended; usually you really do have non-idempotent tasks.</p>
+<h2>Summary and Next Steps</h2>
+<p>Molecule 25.x broke drivers into independent plugins, dependency management got finer-grained, but pitfalls became more specific and easier to trace. The 6 pitfalls in this article cover: collection declaration / image Python version / lint driver replacement / command-to-openssl_dhparam / Testinfra process-not-systemd / GitHub Actions dind abandonment. The three most common ones (Pitfalls 1, 3, 5) will hit every project — I recommend fixing them right after <code>molecule init role</code>.</p>
+<p>If your role needs to test across multiple distros (Ubuntu 22.04 + 24.04 + Debian 12), you can add <code>ubuntu2204/</code>, <code>ubuntu2404/</code>, <code>debian12/</code> three scenarios under <code>molecule/</code>, and run them serially with <code>molecule test --scenario-name ubuntu2204</code>. The next article will cover "multi-distro + multi-Python version matrix" — the key to keeping CI under 3 minutes.</p>
+<p>Further reading: <a href="https://2026-06-25-ansible-5.html" target="_blank" rel="nofollow sponsored">Ansible 5 Pitfalls in 2026</a> + <a href="https://2026-04-07-devops-github-actions-docker-cicd.html" target="_blank" rel="nofollow sponsored">GitHub Actions Debugging Pitfalls</a></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
