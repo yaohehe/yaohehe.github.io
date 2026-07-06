@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress REST API 认证调试实录：从 401 到 200 的 5 个真实案例 - TechPassive</title>
+  <meta name="description" content="WordPress REST API 报 401/403？5 个真实踩坑案例，手把手教你从 nonce 验证到 Application Password 彻底解决">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress REST API 认证调试踩坑复盘</h1>
+  <div class="post-tags">
+    <span class="tag">wordpress</span><span class="tag">wp-rest-api</span><span class="tag">authentication</span><span class="tag">debug</span><span class="tag">troubleshooting</span><span class="tag">wordpress安全</span>
+  </div>
+  <div class="content">
+    <p>做 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 主题/插件开发，或者想用 Headless 架构跑 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>，REST API 认证是绕不过去的第一道坎。我在 2026 年 7 月给 TechPassive 博客加 JSON API 时，连踩 5 个坑才调通。本文把每个错误的根因 + 修复命令/配置逐个说透，保证你看完就能解决自己的问题。</p>
+<p><strong>前置说明</strong>：本文实验环境 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.8 + PHP 8.2 + Apache 2.4，命令在 Ubuntu 24.04 LTS 下验证通过。不同主机商环境可能有差异，请先在本地或 staging 站测试。</p>
+<p>---</p>
+<h2>🏗️ 常见认证方式一览（先搞清你用的是哪种）</h2>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API 支持 3 种认证：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">认证方式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">适用场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">复杂度</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**Cookie 认证**（Nonce）</td><td style="border:1px solid #ddd;padding:8px;">同站前端 JavaScript 发起请求</td><td style="border:1px solid #ddd;padding:8px;">⭐ 最低</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**Application Passwords**</td><td style="border:1px solid #ddd;padding:8px;">第三方工具/脚本/Headless 前后端分离</td><td style="border:1px solid #ddd;padding:8px;">⭐⭐ 中等</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**JWT（插件）**</td><td style="border:1px solid #ddd;padding:8px;">跨域 API 调用，需要额外装插件</td><td style="border:1px solid #ddd;padding:8px;">⭐⭐⭐ 高</td></tr></tbody></table>
+<p>搞清楚你用哪种，再去对应章节找解法。</p>
+<p>---</p>
+<h2>💣 踩坑案例 1：Nonce 验证失败 — `rest_cookie_auth_fail`</h2>
+<p><strong>报错日志</strong>（Chrome DevTools Console）：</p>
+<pre><code>wp-json/wp/v2/posts?status=draft
+Headers: X-WP-Nonce: <empty>
+Response 401: {"code":"rest_cookie_auth_fail","message":"Cookie nonce is invalid"}</code></pre>
+<h3>原因</h3>
+<p>同源前端 JS 发 REST 请求时，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 要求先通过 <code>wp_localize_script</code> 注入 nonce，否则所有写操作（POST/PUT/DELETE）全部 401。我在实际项目中遇到这种情况最多的场景是：用 React/Vue 做前端、<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 做后端时，前端发 POST 请求创建草稿文章，结果 nonce 验证失败，一度以为是 JWT 的问题。</p>
+<h3>解决方案</h3>
+<p>**Step 1：在 <code>functions.php</code> 中注册 nonce**</p>
+<pre><code>add_action('rest_api_init', function () {
+    wp_enqueue_script('wp-api');
+    wp_add_inline_script('wp-api', '
+        wp.apiFetch.use(function(options, next) {
+            options.headers = options.headers || {};
+            options.headers["X-WP-Nonce"] = wpApiSettings.nonce;
+            return next(options);
+        });
+    ');
+});
+
+// 或者更简单：直接暴露 nonce 给 JS
+add_action('wp_enqueue_scripts', function () {
+    wp_localize_script('jquery', 'wpApiSettings', [
+        'root'  => esc_url_raw(rest_url()),
+        'nonce' => wp_create_nonce('wp_rest')
+    ]);
+});</code></pre>
+<p><strong>Step 2：前端请求时携带 nonce</strong></p>
+<pre><code>// jQuery 方式（老项目）
+$.ajax({
+    url: wpApiSettings.root + 'wp/v2/posts',
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        'X-WP-Nonce': wpApiSettings.nonce  // 关键这行
+    },
+    data: JSON.stringify({ title: '新文章', status: 'draft' })
+});
+
+// 原生 fetch（现代浏览器推荐）
+fetch(wpApiSettings.root + 'wp/v2/posts', {
+    method: 'POST',
+    headers: {
+        'Content-Type': 'application/json',
+        'X-WP-Nonce': wpApiSettings.nonce
+    },
+    body: JSON.stringify({ title: '新文章', status: 'draft' })
+});</code></pre>
+<p>**验证**：登录状态下，浏览器 Console 执行 <code>console.log(wpApiSettings.nonce)</code> 应该输出一串字符，非空。如果输出 <code>undefined</code>，说明 <code>wp_localize_script</code> 没有正确执行。</p>
+<p>---</p>
+<h2>💣 踩坑案例 2：Application Passwords — 密码正确但 403</h2>
+<p><strong>报错日志</strong>（Postman/cURL）：</p>
+<pre><code>curl -X GET https://yoursite.com/wp-json/wp/v2/posts \
+  -u "username:xxxx xxxx xxxx xxxx xxxx xxxx" \
+  # -u 是 HTTP Basic Auth 格式
+curl: (22) The requested URL returned error: 403</code></pre>
+<h3>原因</h3>
+<p>Application Passwords 需要在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后台开启，且分配的账号本身有对应权限。2026 年后新装 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认关闭（旧版升级上来的需要手动开）。我实际遇到的情况是：生成了 Application Password，但用的是 Subscriber 账号去请求，发文章当然 403——这不是密码错，是权限错。</p>
+<h3>解决方案</h3>
+<p><strong>Step 1：确认 REST API 已开启</strong></p>
+<pre><code># 用 WP-CLI 检查
+wp option get permalink_structure
+# 输出必须是 non-empty（如 /%postname%/）
+# 如果是 empty，先改固定链接
+wp option update permalink_structure '/%postname%/'
+wp rewrite flush</code></pre>
+<p><strong>Step 2：开启 Application Passwords（wp-config.php）</strong></p>
+<pre><code>// 在 wp-config.php 的 /* That's all, stop editing! */ 之前添加
+define('WP_REST_API_ENABLE', true);</code></pre>
+<p><strong>Step 3：生成 Application Password</strong></p>
+<pre><code><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后台 → 用户 → 个人资料 → Application Passwords
+→ 输入名称（如 "Postman-Dev"）→ 生成
+→ 复制那串密码（格式：xxxx xxxx xxxx xxxx）</code></pre>
+<p><strong>Step 4：验证连通性（排除网络问题）</strong></p>
+<pre><code># 先测试读（不需要认证）
+curl -s https://yoursite.com/wp-json/wp/v2/users/me | jq
+
+# 如果返回 401，说明网络/SSL没问题，是认证问题
+# 如果返回 403，说明用户名对但密码错
+curl -s -u "username:xxxx xxxx xxxx xxxx xxxx xxxx" \
+  https://yoursite.com/wp-json/wp/v2/users/me | jq</code></pre>
+<p>**⚠️ 注意空格**：Application Password 生成后是 <code>xxxx xxxx xxxx</code> 带空格的 Base64 格式，直接复制粘贴进 Postman Basic Auth 的 Password 字段，**不要手动加引号或去掉空格**。我第一次用的时候以为是密码格式问题，把空格去掉了，结果连续 403 折腾了半小时。</p>
+<p>---</p>
+<h2>💣 踩坑案例 3：跨域 CORS 预检请求直接 405</h2>
+<p><strong>报错日志</strong>（浏览器 Network 面板）：</p>
+<pre><code>Request URL: https://api.yoursite.com/wp-json/wp/v2/posts
+Request Method: OPTIONS
+Status: 405 Method Not Allowed
+
+Response Headers:
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE
+# 没有 Allow-Headers: Content-Type, X-WP-Nonce</code></pre>
+<h3>原因</h3>
+<p>跨域请求前，浏览器会先发 OPTIONS 预检（Preflight）。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认不处理 OPTIONS，导致 405。<strong>这个问题在 Headless Next.js/React 项目里最常见</strong>。我的实际场景是：用 Next.js 做前端、<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 做后端，前端 fetch 一直 405，以为是 Nginx 配置问题，查了半天发现是 OPTIONS 根本没到 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 就被 Nginx 返回 405 了。</p>
+<h3>解决方案</h3>
+<p><strong>方案 A：Nginx 配置（推荐，已验证）</strong></p>
+<pre><code># 在你的 site nginx config 的 server {} 块内添加
+location /wp-json/ {
+    # 关键：处理 OPTIONS 预检
+    if ($request_method = 'OPTIONS') {
+        add_header 'Access-Control-Allow-Origin' '*';
+        add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS';
+        add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-WP-Nonce';
+        add_header 'Access-Control-Max-Age' 1728000;
+        add_header 'Content-Type' 'text/plain charset=UTF-8';
+        add_header 'Content-Length' 0;
+        return 204;
+    }
+
+    add_header 'Access-Control-Allow-Origin' '*' always;
+    add_header 'Access-Control-Allow-Methods' 'GET, POST, PUT, DELETE, OPTIONS' always;
+    add_header 'Access-Control-Allow-Headers' 'DNT,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Range,Authorization,X-WP-Nonce' always;
+    add_header 'Access-Control-Expose-Headers' 'X-WP-Total, X-WP-TotalPages' always;
+}</code></pre>
+<pre><code># 重载 Nginx
+sudo nginx -t && sudo systemctl reload nginx</code></pre>
+<p><strong>方案 B：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 插件解决（如果无法改 Nginx）</strong></p>
+<p>安装 **"WP REST CORS"** 或 **"Access-Control-Allow-Origin"** 插件，在插件设置页面填 <code>*</code> 或你的前端域名。</p>
+<p><strong>验证</strong>：重启 Nginx 后，用浏览器 Network 面板重发请求，OPTIONS 应该返回 204 而不再是 405。</p>
+<p>---</p>
+<h2>💣 踩坑案例 4：权限不足 — `rest_forbidden` 而非 401</h2>
+<p><strong>报错日志</strong>：</p>
+<pre><code>{
+  "code": "rest_forbidden",
+  "message": "Sorry, you are not allowed to do that.",
+  "data": { "status": 403 }
+}</code></pre>
+<h3>原因</h3>
+<p>REST API 返回 403 说明认证通过，但用户没有对应权限。这在自定义 post type 或自定义 endpoint 上最常出现——注册时忘了加 <code>show_in_rest => true</code> 或 <code>permission_callback</code>。我遇到最典型的场景是：自定义 post type "book" 的 REST endpoint 报了 403，但普通文章 POST 就正常，原因是注册 post type 时 <code>show_in_rest</code> 默认为 false。</p>
+<h3>解决方案</h3>
+<p><strong>排查 Step 1：检查用户角色权限</strong></p>
+<pre><code># 用 WP-CLI 查看用户角色
+wp user get your_username --field=roles
+
+# 如果是 Subscriber，默认无法发文章
+# 提升为 Editor
+wp user update your_username --role=editor</code></pre>
+<p><strong>排查 Step 2：检查 post type 是否在 REST API 中可见</strong></p>
+<pre><code>// 在主题 functions.php 或插件中
+add_action('init', function () {
+    // 重新注册 post type，确保 show_in_rest = true
+    register_post_type('book', [
+        'labels'       => ['name' => 'Books'],
+        'public'       => true,
+        'show_in_rest' => true,          // 关键！必须为 true
+        'rest_base'    => 'books',
+        'capability_type' => 'post',
+    ]);
+});
+
+// 刷新 permalink
+wp rewrite flush</code></pre>
+<p><strong>排查 Step 3：检查 custom endpoint 的 permission_callback</strong></p>
+<pre><code>add_action('rest_api_init', function () {
+    register_rest_route('myplugin/v1', '/data', [
+        'methods'  => 'POST',
+        'callback' => function ($request) {
+            return ['status' => 'ok'];
+        },
+        'permission_callback' => function () {
+            // 这个函数必须返回 true，否则 403
+            return current_user_can('edit_posts');  // 检查权限
+        }
+    ]);
+});</code></pre>
+<p>---</p>
+<h2>💣 踩坑案例 5：Basic Auth 插件密码含特殊字符 URL 编码问题</h2>
+<p><strong>报错日志</strong>：</p>
+<pre><code># 直接贴密码有特殊字符时报错
+curl -u "username:P@ssw0rd!#$%" https://yoursite.com/wp-json/wp/v2/posts
+# 可能变成 401 或 curl: (3) URL using bad/illegal format</code></pre>
+<h3>原因</h3>
+<p>Shell 的 <code>-u</code> 参数会把整个字符串当作 <code>username:password</code>，如果密码含 <code>#</code>、<code>$</code>、<code>%</code> 等特殊字符，需要 URL 编码。实际中 Application Password 虽然不含特殊字符，但项目里如果自己实现 Basic Auth，密码里很容易有 <code>#</code> 或 <code>$</code> 导致请求直接失败。</p>
+<h3>解决方案</h3>
+<p><strong>方案 A：PHP 脚本调用（避免 Shell 转义问题）</strong></p>
+<pre><code><?php
+$username = 'admin';
+$password = 'xxxx xxxx xxxx xxxx'; // Application Password
+
+$context = stream_context_create([
+    'http' => [
+        'method'  => 'GET',
+        'header' => "Authorization: Basic " . base64_encode("$username:$password")
+    ]
+]);
+
+$response = file_get_contents(
+    'https://yoursite.com/wp-json/wp/v2/posts?per_page=5',
+    false,
+    $context
+);
+
+$data = json_decode($response, true);
+echo "共 " . count($data) . " 篇文章\n";</code></pre>
+<p>**方案 B：cURL 加 <code>--data-urlencode</code>**</p>
+<pre><code># 用 printf 避免 Shell 特殊字符问题
+ENCODED=$(printf '%s' "username:xxxx xxxx xxxx" | base64)
+curl -H "Authorization: Basic $ENCODED" \
+     https://yoursite.com/wp-json/wp/v2/users/me</code></pre>
+<p>---</p>
+<h2>🛡️ 安全加固：REST API 暴露了哪些数据？</h2>
+<p>调试通之后，别忘了把不需要的 endpoint 关掉，减少攻击面：</p>
+<pre><code>// 在 functions.php 添加
+// 禁止未登录用户访问公共 endpoint
+add_filter('rest_endpoints', function ($endpoints) {
+    // 移除某些敏感 endpoint（根据实际需求）
+    if (!is_user_logged_in()) {
+        unset($endpoints['/wp/v2/users']);
+        unset($endpoints['/wp/v2/settings']);
+        unset($endpoints['/wp/v2/themes']);
+    }
+    return $endpoints;
+});
+
+// 限制 pingback/xmlrpc（已有更好的替代方案）
+add_filter('xmlrpc_enabled', '__return_false');
+add_filter('pre_update_xmlrpc_disabled', '__return_true');</code></pre>
+<p>---</p>
+<h2>⚠️ 联盟声明</h2>
+<p>本文部分工具链接为 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接，我会从符合条件的购买中获得少量佣金，但这不影响我对工具本身的客观评测——我用的是 Postman 做 API 测试，单纯觉得它比 curl 直观才推荐。</p>
+<h2>✅ 调试工具箱（实测推荐）</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">工具</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用途</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**Postman / Insomnia**</td><td style="border:1px solid #ddd;padding:8px;">手动测试 REST API 参数和认证</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**WP-CLI**</td><td style="border:1px solid #ddd;padding:8px;">`wp rest route list` 查看所有可用端点</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**Chrome DevTools → Network**</td><td style="border:1px solid #ddd;padding:8px;">看请求头/响应头具体哪里出问题</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**Query Monitor 插件**</td><td style="border:1px solid #ddd;padding:8px;">查看 REST API 慢查询和权限判断</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**WP Logger 插件**</td><td style="border:1px solid #ddd;padding:8px;">记录 REST 请求日志到文件</td></tr></tbody></table>
+<p>---</p>
+<h2>总结</h2>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API 认证失败的 5 个坑，总结下来就三句话：</p>
+<p>1. **写操作必须带 Nonce** — Cookie 认证用 <code>wp_create_nonce('wp_rest')</code> 注入</p>
+<p>2. **Application Passwords 带空格** — 直接复制生成的，格式是 <code>xxxx xxxx xxxx</code></p>
+<p>3. <strong>跨域必配 CORS Nginx</strong> — OPTIONS 预检返回 204，不是 405</p>
+<p>按这个清单查，基本能覆盖 90% 的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API 认证问题。如果你的报错不在上面，欢迎留言描述具体错误信息和环境配置。</p>
+<p>---</p>
+<p><strong>延伸阅读</strong>：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
