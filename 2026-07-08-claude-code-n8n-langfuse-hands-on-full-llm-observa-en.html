@@ -71,22 +71,22 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>Claude Code + n8n + Langfuse Hands-On</h1>
   <div class="post-tags">
-    <span class="tag">Langfuse</span><span class="tag"><a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code</span><span class="tag"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a></span><span class="tag">LLM observability</span><span class="tag">Ollama</span><span class="tag">self-hosted</span><span class="tag">AI coding</span>
+    <span class="tag">Langfuse</span><span class="tag">Claude Code</span><span class="tag">n8n</span><span class="tag">LLM observability</span><span class="tag">Ollama</span><span class="tag">self-hosted</span><span class="tag">AI coding</span>
   </div>
   <div class="content">
-    <p>When <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code calls a local Ollama model, Token usage goes dark, latency spikes have no root cause, and error rates can't be attributed — problems that get worse once you leave the cloud and self-host everything. This article builds a <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse stack that uses Langfuse's OTEL traces to cover the full链路 from Prompt input to workflow execution, so every <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code call leaves a trace.</p>
+    <p>When Claude Code calls a local Ollama model, Token usage goes dark, latency spikes have no root cause, and error rates can't be attributed — problems that get worse once you leave the cloud and self-host everything. This article builds a Claude Code + n8n + Langfuse stack that uses Langfuse's OTEL traces to cover the full链路 from Prompt input to workflow execution, so every Claude Code call leaves a trace.</p>
 <h2>Architecture Overview</h2>
 <p>Three-piece data flow:</p>
-<pre><code><a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code (Prompt input)
+<pre><code>Claude Code (Prompt input)
   ↓ HTTP (OpenAI-compatible API)
 Ollama (local LLM)
   ↓ OTEL Trace
 Langfuse (self-hosted, port 3000)
   ↓ Trigger
-<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> (listening to Langfuse Webhook)
+n8n (listening to Langfuse Webhook)
   ↓ Action
 Workflow execution (Slack notification / Notion log / CI trigger)</code></pre>
-<ul><li>**<a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code**: connects to Ollama via `OLLAMA_BASE_URL=http://localhost:11434/v1` + `OPENAI_API_KEY=anything`</li><li>**<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>**: receives Langfuse webhook callbacks and triggers downstream actions</li><li>**Langfuse**: records Token usage, latency, and error rate for every LLM call; supports self-hosting</li></ul>
+<ul><li>**Claude Code**: connects to Ollama via `OLLAMA_BASE_URL=http://localhost:11434/v1` + `OPENAI_API_KEY=anything`</li><li>**n8n**: receives Langfuse webhook callbacks and triggers downstream actions</li><li>**Langfuse**: records Token usage, latency, and error rate for every LLM call; supports self-hosting</li></ul>
 <h2>Prerequisites</h2>
 <ul><li>**OS**: Ubuntu 22.04 LTS, 16GB+ RAM</li><li>**Software**: Docker 26.x, Docker Compose v2, Ollama 0.5.x</li><li>**Model**: Default Ollama model (e.g., llama3.2:3b)</li><li>**Verify**: `docker --version && ollama --version && curl -s http://localhost:3000/api/public/health`</li></ul>
 <h2>Step 1: Deploy Langfuse Self-Hosted</h2>
@@ -105,19 +105,19 @@ curl -s http://localhost:3000/api/public/health | python3 -m json.tool</code></p
 <p><strong>Output example</strong>:</p>
 <pre><code>{"status":"ok","version":"3.14.2"}</code></pre>
 <p>Langfuse dashboard: <code>http://your-server:3000</code>. The first registered user becomes admin.</p>
-<h2>Step 2: Configure <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code to Connect to Ollama</h2>
-<p><a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code talks to Ollama via the OpenAI-compatible API — no plugins needed.</p>
+<h2>Step 2: Configure Claude Code to Connect to Ollama</h2>
+<p>Claude Code talks to Ollama via the OpenAI-compatible API — no plugins needed.</p>
 <pre><code># Set environment variables (add to ~/.bashrc)
 export OLLAMA_BASE_URL=http://localhost:11434/v1
 export OPENAI_API_KEY=local-dev
 export MODEL=llama3.2:3b
 
-# Test in <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code
+# Test in Claude Code
 claude "What is 2+2?" --output-format stream</code></pre>
 <p>If you see <code>Connection refused</code>, verify Ollama is listening:</p>
 <pre><code>curl http://localhost:11434/api/tags</code></pre>
 <h2>Step 3: Inject Langfuse Python SDK Traces</h2>
-<p>Instrument your <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code call scripts with the Langfuse SDK:</p>
+<p>Instrument your Claude Code call scripts with the Langfuse SDK:</p>
 <pre><code># my_script.py
 from langfuse import Langfuse
 import os
@@ -140,15 +140,15 @@ def call_llm(prompt):
         )
         span.output = response["choices"][0]["message"]["content"]
         return response["choices"][0]["message"]["content"]</code></pre>
-<h2>Step 4: <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> Listens to Langfuse Webhooks</h2>
-<p>Langfuse supports webhook callbacks; <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> receives them and triggers downstream actions (Slack alerts, Notion logs, CI pipelines).</p>
-<pre><code># <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> self-hosted (continued from 6/15 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse hands-on)
-mkdir -p ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> && cd ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>
-curl -fsSL https://raw.githubusercontent.com/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>-io/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>/master/docker-compose.yml -o docker-compose.yml
+<h2>Step 4: n8n Listens to Langfuse Webhooks</h2>
+<p>Langfuse supports webhook callbacks; n8n receives them and triggers downstream actions (Slack alerts, Notion logs, CI pipelines).</p>
+<pre><code># n8n self-hosted (continued from 6/15 n8n + Langfuse hands-on)
+mkdir -p ~/n8n && cd ~/n8n
+curl -fsSL https://raw.githubusercontent.com/n8n-io/n8n/master/docker-compose.yml -o docker-compose.yml
 # Add Langfuse Webhook Node
-# <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> dashboard → Workflows → New → Webhook (langfuse-events)
+# n8n dashboard → Workflows → New → Webhook (langfuse-events)
 # Trigger URL: https://your-langfuse.com/api/public/ingestion</code></pre>
-<p><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflow example: when Langfuse records an LLM call with latency > 5000ms, send a Slack alert:</p>
+<p>n8n workflow example: when Langfuse records an LLM call with latency > 5000ms, send a Slack alert:</p>
 <pre><code>[Webhook Trigger] → [IF: trace.latency > 5000] → [Slack Node: @here High Latency Alert]</code></pre>
 <h2>💣 Pitfall Survival Guide</h2>
 <h3>Pitfall 1: Ollama Port 11434 Not Listening on All Interfaces</h3>
@@ -186,14 +186,14 @@ sudo lsof -i :3000</code></pre>
     metadata={"model": os.environ["MODEL"]}
 ) as span:
     ...</code></pre>
-<h3>Pitfall 4: <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> Webhook Timeout (Langfuse Default 30s)</h3>
+<h3>Pitfall 4: n8n Webhook Timeout (Langfuse Default 30s)</h3>
 <p>**Error**: <code>RequestTimeoutError: Webhook request timeout</code></p>
-<p><strong>Cause</strong>: Langfuse webhook default timeout is 30s, but complex <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflows often exceed this.</p>
+<p><strong>Cause</strong>: Langfuse webhook default timeout is 30s, but complex n8n workflows often exceed this.</p>
 <p><strong>Fix</strong>: Either increase timeout in Langfuse dashboard → Settings → Webhooks, or switch to async trigger:</p>
 <pre><code>[Webhook] → [Node: Delay 0] → [Node: HTTP Request (Langfuse ACK)]</code></pre>
 <h3>Pitfall 5: Langfuse PostgreSQL Connection Pool Exhaustion (High-Frequency Calls)</h3>
 <p>**Error**: <code>remaining connection slots are reserved</code></p>
-<p>**Cause**: Langfuse self-hosted defaults to <code>max_connections=20</code>. High-frequency <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code calls (100+/min) burn through this fast.</p>
+<p>**Cause**: Langfuse self-hosted defaults to <code>max_connections=20</code>. High-frequency Claude Code calls (100+/min) burn through this fast.</p>
 <p><strong>Fix</strong>:</p>
 <pre><code># In docker-compose.yml PostgreSQL section, add:
 environment:
@@ -202,10 +202,10 @@ environment:
 ALTER SYSTEM SET max_connections = 100;
 sudo systemctl restart postgresql</code></pre>
 <h2>Before vs After Comparison</h2>
-<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dimension</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Without Langfuse</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">With Langfuse</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Token usage transparency</td><td style="border:1px solid #ddd;padding:8px;">Black box</td><td style="border:1px solid #ddd;padding:8px;">Full trace per call</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Latency analysis</td><td style="border:1px solid #ddd;padding:8px;">Gut feeling</td><td style="border:1px solid #ddd;padding:8px;">P50/P95/P99 auto-calculated</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Error rate tracking</td><td style="border:1px solid #ddd;padding:8px;">Log searching</td><td style="border:1px solid #ddd;padding:8px;">Dashboard real-time alerts</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> automation trigger</td><td style="border:1px solid #ddd;padding:8px;">Custom monitoring</td><td style="border:1px solid #ddd;padding:8px;">Webhook native integration</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cost attribution</td><td style="border:1px solid #ddd;padding:8px;">Rough estimate</td><td style="border:1px solid #ddd;padding:8px;">Trace-level precision</td></tr></tbody></table>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dimension</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Without Langfuse</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">With Langfuse</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Token usage transparency</td><td style="border:1px solid #ddd;padding:8px;">Black box</td><td style="border:1px solid #ddd;padding:8px;">Full trace per call</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Latency analysis</td><td style="border:1px solid #ddd;padding:8px;">Gut feeling</td><td style="border:1px solid #ddd;padding:8px;">P50/P95/P99 auto-calculated</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Error rate tracking</td><td style="border:1px solid #ddd;padding:8px;">Log searching</td><td style="border:1px solid #ddd;padding:8px;">Dashboard real-time alerts</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">n8n automation trigger</td><td style="border:1px solid #ddd;padding:8px;">Custom monitoring</td><td style="border:1px solid #ddd;padding:8px;">Webhook native integration</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cost attribution</td><td style="border:1px solid #ddd;padding:8px;">Rough estimate</td><td style="border:1px solid #ddd;padding:8px;">Trace-level precision</td></tr></tbody></table>
 <h2>Summary</h2>
-<p>The <a href="/2026-07-07-claude-code-n8n-langfuse-hands-on-full-llm-observa-en.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse three-piece stack turns the local LLM call black box transparent: Langfuse records every call, <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> triggers downstream workflows based on trace results, forming a complete closed loop of "LLM call → observability tracing → automated response."</p>
-<p>If you're running models locally, start with Langfuse self-hosted (30 minutes to up and running), then gradually integrate <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> for alerting and workflow automation.</p>
+<p>The Claude Code + n8n + Langfuse three-piece stack turns the local LLM call black box transparent: Langfuse records every call, n8n triggers downstream workflows based on trace results, forming a complete closed loop of "LLM call → observability tracing → automated response."</p>
+<p>If you're running models locally, start with Langfuse self-hosted (30 minutes to up and running), then gradually integrate n8n for alerting and workflow automation.</p>
 <p><strong>Related Reading</strong>:</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
 <div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
   <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
