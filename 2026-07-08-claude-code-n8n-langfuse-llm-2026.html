@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code + n8n + Langfuse 三件套实战：本地 LLM 全链路可观测性 (2026) - TechPassive</title>
+  <meta name="description" content="Claude Code 调用本地 Ollama/n8n 触发工作流/Langfuse 追踪 Token 消耗/延迟/错误率的完整方案，附 5 个真实踩坑与修复">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Claude Code + n8n + Langfuse 三件套实战</h1>
+  <div class="post-tags">
+    <span class="tag">AI编程</span><span class="tag"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a></span><span class="tag"><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code</span><span class="tag">Langfuse</span><span class="tag">LLM</span><span class="tag">可观测性</span><span class="tag">自托管</span>
+  </div>
+  <div class="content">
+    <p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用本地模型时，Token 消耗不透明、延迟波动找不到原因、错误率无法归因——这些问题在切换到本地 Ollama 后尤为突出。本文搭建 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 三件套，用 Langfuse 的 OTEL Trace 打通从 Prompt 输入到工作流执行的完整链路，让每次 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用都有迹可循。</p>
+<h2>架构概览</h2>
+<p>三件套数据流：</p>
+<pre><code><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code (Prompt 输入)
+  ↓ HTTP (OpenAI-compatible API)
+Ollama (本地 LLM)
+  ↓ OTEL Trace
+Langfuse (自托管，5000 端口)
+  ↓ Trigger
+<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> (监听 Langfuse Webhook)
+  ↓ Action
+工作流执行 (Slack 通知 / 记录到 Notion / 触发 CI)</code></pre>
+<ul><li>**<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code**：通过 `OLLAMA_BASE_URL=http://localhost:11434/v1` + `OPENAI_API_KEY=anything` 绑定 Ollama</li><li>**<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>**：接收 Langfuse webhook，触发后续工作流</li><li>**Langfuse**：记录每次 LLM 调用的 Token 消耗、延迟、错误率，支持自托管</li></ul>
+<h2>前置准备</h2>
+<ul><li>**系统**：Ubuntu 22.04 LTS，RAM 16GB+</li><li>**软件**：Docker 26.x, Docker Compose v2, Ollama 0.5.x</li><li>**模型**：Ollama 默认模型 (如 llama3.2:3b)</li><li>**验证命令**：`docker --version && ollama --version && curl -s http://localhost:3000/api/public/health`</li></ul>
+<h2>步骤一：部署 Langfuse 自托管</h2>
+<p>Langfuse 提供官方 Docker Compose 模板，比 Vercel 部署更可控（数据不出境）。</p>
+<pre><code>mkdir -p ~/langfuse && cd ~/langfuse
+# 下载官方模板
+curl -fsSL https://langfuse.com/self-hosting/docker -o docker-compose.yml
+# 修改环境变量
+export SECRET_KEY=local-dev-secret-change-in-prod
+export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/langfuse
+export NEXTAUTH_SECRET=local-auth-secret
+# 启动
+docker compose up -d
+# 验证
+curl -s http://localhost:3000/api/public/health | python3 -m json.tool</code></pre>
+<p><strong>输出示例</strong>：</p>
+<pre><code>{"status":"ok","version":"3.14.2"}</code></pre>
+<p>Langfuse 仪表板：<code>http://your-server:3000</code>，默认注册第一个用户为管理员。</p>
+<h2>步骤二：配置 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 连接 Ollama</h2>
+<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 通过 OpenAI-compatible API 连接 Ollama，无需插件。</p>
+<pre><code># 设置环境变量（建议写入 ~/.bashrc）
+export OLLAMA_BASE_URL=http://localhost:11434/v1
+export OPENAI_API_KEY=local-dev
+export MODEL=llama3.2:3b
+
+# 在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 中验证
+claude "What is 2+2?" --output-format stream</code></pre>
+<p>如果报错 <code>Connection refused</code>，检查 Ollama 服务：</p>
+<pre><code># 确认 Ollama 在监听 11434
+curl http://localhost:11434/api/tags</code></pre>
+<h2>步骤三：Langfuse Python SDK 注入 Trace</h2>
+<p>在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用的脚本中注入 Langfuse SDK：</p>
+<pre><code># my_script.py
+from langfuse import Langfuse
+import os
+
+langfuse = Langfuse(
+    public_key=os.environ["LANGFUSE_PUBLIC_KEY"],
+    secret_key=os.environ["LANGFUSE_SECRET_KEY"],
+    host="http://your-langfuse-server:3000"
+)
+
+def call_llm(prompt):
+    with langfuse.start_span(name="ollama-call") as span:
+        span.input = prompt
+        # 这里实际调用 Ollama（通过 OpenAI SDK）
+        response = openai.ChatCompletion.create(
+            model=os.environ["MODEL"],
+            messages=[{"role":"user","content":prompt}],
+            api_base=os.environ["OLLAMA_BASE_URL"],
+            api_key=os.environ["OPENAI_API_KEY"]
+        )
+        span.output = response["choices"][0]["message"]["content"]
+        return response["choices"][0]["message"]["content"]</code></pre>
+<h2>步骤四：<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 监听 Langfuse Webhook</h2>
+<p>Langfuse 支持 webhook 回调，<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 接收后触发后续动作（Slack 通知、写入 Notion、触发 CI）。</p>
+<pre><code># <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 自托管（接 6/15 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 实战）
+mkdir -p ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> && cd ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>
+curl -fsSL https://raw.githubusercontent.com/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>-io/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>/master/docker-compose.yml -o docker-compose.yml
+# 添加 Langfuse Webhook Node
+# <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 管理面板 → Workflows → New → Webhook (langfuse-events)
+# Trigger URL: https://your-langfuse.com/api/public/ingestion</code></pre>
+<p><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflow 示例：当 Langfuse 记录一次 LLM 调用 latency > 5000ms，自动发 Slack 告警：</p>
+<pre><code>[Webhook Trigger] → [IF: trace.latency > 5000] → [Slack Node: @here 高延迟告警]</code></pre>
+<h2>💣 踩坑录</h2>
+<h3>坑一：Ollama 端口 11434 未监听所有接口</h3>
+<p>**报错**：<code>ECONNREFUSED 127.0.0.1:11434</code></p>
+<p>**原因**：Ollama 默认只监听 <code>127.0.0.1</code>，Docker 容器内无法访问宿主机 Ollama。</p>
+<p>**修复**：设置 <code>OLLAMA_HOST=0.0.0.0</code>：</p>
+<pre><code># 编辑 systemd 服务
+sudo systemctl edit ollama
+# 添加：
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0"
+# 重载
+sudo systemctl daemon-reload && sudo systemctl restart ollama</code></pre>
+<h3>坑二：Langfuse 5000 端口被 Docker 占用的默认冲突</h3>
+<p>**报错**：<code>port is already allocated</code></p>
+<p><strong>原因</strong>：某些 Docker 镜像默认占用 5000 端口（Flask/Remnia 等）。</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 方法 1：修改 Langfuse 端口
+# docker-compose.yml 中添加：
+services:
+  langfuse:
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+# 改 DATABASE_URL 为 5432（PostgreSQL 默认）
+
+# 方法 2：查占端口进程
+sudo lsof -i :5000</code></pre>
+<h3>坑三：Langfuse Python SDK 与 Ollama 的 model name 不匹配</h3>
+<p>**现象**：Langfuse Dashboard 显示 trace，但 model name 显示 <code>unknown</code></p>
+<p>**原因**：Ollama 返回的 model 名称格式是 <code>llama3.2:3b</code>，而 Langfuse SDK 默认用 <code>openai</code> 填充。</p>
+<p><strong>修复</strong>：在 span 设置时显式传递 model：</p>
+<pre><code>with langfuse.start_span(
+    name="ollama-call",
+    metadata={"model": os.environ["MODEL"]}
+) as span:
+    ...</code></pre>
+<h3>坑四：<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> Webhook 超时（Langfuse 默认 30s timeout）</h3>
+<p>**报错**：<code>RequestTimeoutError: Webhook request timeout</code></p>
+<p><strong>原因</strong>：Langfuse webhook 默认 timeout 30s，但复杂 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflow 超过此时间。</p>
+<p><strong>修复</strong>：在 Langfuse dashboard → Settings → Webhooks → increase timeout，或将 webhook 改为异步触发：</p>
+<pre><code>[Webhook] → [Node: Delay 0] → [Node: HTTP Request (Langfuse ACK)]</code></pre>
+<h3>坑五：Langfuse PostgreSQL 连接池耗尽（高频调用）</h3>
+<p>**报错**：<code>remaining connection slots are reserved</code></p>
+<p>**原因**：Langfuse 自托管默认 <code>max_connections=20</code>，高频 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用（每分钟 100+ 次）迅速耗尽。</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 在 docker-compose.yml 的 PostgreSQL 部分添加：
+environment:
+  POSTGRES_MAX_CONNECTIONS: 100
+# 或直接修改：
+ALTER SYSTEM SET max_connections = 100;
+sudo systemctl restart postgresql</code></pre>
+<h2>效果对比</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">维度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">无 Langfuse</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">有 Langfuse</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Token 消耗透明度</td><td style="border:1px solid #ddd;padding:8px;">黑盒</td><td style="border:1px solid #ddd;padding:8px;">每条 trace 完整记录</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">延迟分析</td><td style="border:1px solid #ddd;padding:8px;">凭感觉</td><td style="border:1px solid #ddd;padding:8px;">P50/P95/P99 自动计算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">错误率追踪</td><td style="border:1px solid #ddd;padding:8px;">日志搜索</td><td style="border:1px solid #ddd;padding:8px;">Dashboard 实时告警</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 自动化触发</td><td style="border:1px solid #ddd;padding:8px;">需自建监控</td><td style="border:1px solid #ddd;padding:8px;">Webhook 原生集成</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成本归因</td><td style="border:1px solid #ddd;padding:8px;">粗略估算</td><td style="border:1px solid #ddd;padding:8px;">按 trace 精确分摊</td></tr></tbody></table>
+<h2>总结</h2>
+<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 三件套将本地 LLM 的调用黑盒打开成透明链路：Langfuse 记录每次调用，<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 根据 Trace 结果触发后续工作流，形成「LLM 调用 → 可观测性追踪 → 自动化响应」的完整闭环。</p>
+<p>如果你在本地跑大模型，建议从 Langfuse 自托管开始（30 分钟可完成），再逐步接入 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 做告警和工作流。</p>
+<p><strong>延伸阅读</strong>：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
