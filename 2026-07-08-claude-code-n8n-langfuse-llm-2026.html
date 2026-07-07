@@ -71,22 +71,22 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>Claude Code + n8n + Langfuse 三件套实战</h1>
   <div class="post-tags">
-    <span class="tag">AI编程</span><span class="tag"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a></span><span class="tag"><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code</span><span class="tag">Langfuse</span><span class="tag">LLM</span><span class="tag">可观测性</span><span class="tag">自托管</span>
+    <span class="tag">AI编程</span><span class="tag">n8n</span><span class="tag">Claude Code</span><span class="tag">Langfuse</span><span class="tag">LLM</span><span class="tag">可观测性</span><span class="tag">自托管</span>
   </div>
   <div class="content">
-    <p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用本地模型时，Token 消耗不透明、延迟波动找不到原因、错误率无法归因——这些问题在切换到本地 Ollama 后尤为突出。本文搭建 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 三件套，用 Langfuse 的 OTEL Trace 打通从 Prompt 输入到工作流执行的完整链路，让每次 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用都有迹可循。</p>
+    <p>Claude Code 调用本地模型时，Token 消耗不透明、延迟波动找不到原因、错误率无法归因——这些问题在切换到本地 Ollama 后尤为突出。本文搭建 Claude Code + n8n + Langfuse 三件套，用 Langfuse 的 OTEL Trace 打通从 Prompt 输入到工作流执行的完整链路，让每次 Claude Code 调用都有迹可循。</p>
 <h2>架构概览</h2>
 <p>三件套数据流：</p>
-<pre><code><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code (Prompt 输入)
+<pre><code>Claude Code (Prompt 输入)
   ↓ HTTP (OpenAI-compatible API)
 Ollama (本地 LLM)
   ↓ OTEL Trace
 Langfuse (自托管，5000 端口)
   ↓ Trigger
-<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> (监听 Langfuse Webhook)
+n8n (监听 Langfuse Webhook)
   ↓ Action
 工作流执行 (Slack 通知 / 记录到 Notion / 触发 CI)</code></pre>
-<ul><li>**<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code**：通过 `OLLAMA_BASE_URL=http://localhost:11434/v1` + `OPENAI_API_KEY=anything` 绑定 Ollama</li><li>**<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>**：接收 Langfuse webhook，触发后续工作流</li><li>**Langfuse**：记录每次 LLM 调用的 Token 消耗、延迟、错误率，支持自托管</li></ul>
+<ul><li>**Claude Code**：通过 `OLLAMA_BASE_URL=http://localhost:11434/v1` + `OPENAI_API_KEY=anything` 绑定 Ollama</li><li>**n8n**：接收 Langfuse webhook，触发后续工作流</li><li>**Langfuse**：记录每次 LLM 调用的 Token 消耗、延迟、错误率，支持自托管</li></ul>
 <h2>前置准备</h2>
 <ul><li>**系统**：Ubuntu 22.04 LTS，RAM 16GB+</li><li>**软件**：Docker 26.x, Docker Compose v2, Ollama 0.5.x</li><li>**模型**：Ollama 默认模型 (如 llama3.2:3b)</li><li>**验证命令**：`docker --version && ollama --version && curl -s http://localhost:3000/api/public/health`</li></ul>
 <h2>步骤一：部署 Langfuse 自托管</h2>
@@ -105,20 +105,20 @@ curl -s http://localhost:3000/api/public/health | python3 -m json.tool</code></p
 <p><strong>输出示例</strong>：</p>
 <pre><code>{"status":"ok","version":"3.14.2"}</code></pre>
 <p>Langfuse 仪表板：<code>http://your-server:3000</code>，默认注册第一个用户为管理员。</p>
-<h2>步骤二：配置 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 连接 Ollama</h2>
-<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 通过 OpenAI-compatible API 连接 Ollama，无需插件。</p>
+<h2>步骤二：配置 Claude Code 连接 Ollama</h2>
+<p>Claude Code 通过 OpenAI-compatible API 连接 Ollama，无需插件。</p>
 <pre><code># 设置环境变量（建议写入 ~/.bashrc）
 export OLLAMA_BASE_URL=http://localhost:11434/v1
 export OPENAI_API_KEY=local-dev
 export MODEL=llama3.2:3b
 
-# 在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 中验证
+# 在 Claude Code 中验证
 claude "What is 2+2?" --output-format stream</code></pre>
 <p>如果报错 <code>Connection refused</code>，检查 Ollama 服务：</p>
 <pre><code># 确认 Ollama 在监听 11434
 curl http://localhost:11434/api/tags</code></pre>
 <h2>步骤三：Langfuse Python SDK 注入 Trace</h2>
-<p>在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用的脚本中注入 Langfuse SDK：</p>
+<p>在 Claude Code 调用的脚本中注入 Langfuse SDK：</p>
 <pre><code># my_script.py
 from langfuse import Langfuse
 import os
@@ -141,15 +141,15 @@ def call_llm(prompt):
         )
         span.output = response["choices"][0]["message"]["content"]
         return response["choices"][0]["message"]["content"]</code></pre>
-<h2>步骤四：<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 监听 Langfuse Webhook</h2>
-<p>Langfuse 支持 webhook 回调，<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 接收后触发后续动作（Slack 通知、写入 Notion、触发 CI）。</p>
-<pre><code># <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 自托管（接 6/15 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 实战）
-mkdir -p ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> && cd ~/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>
-curl -fsSL https://raw.githubusercontent.com/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>-io/<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a>/master/docker-compose.yml -o docker-compose.yml
+<h2>步骤四：n8n 监听 Langfuse Webhook</h2>
+<p>Langfuse 支持 webhook 回调，n8n 接收后触发后续动作（Slack 通知、写入 Notion、触发 CI）。</p>
+<pre><code># n8n 自托管（接 6/15 n8n + Langfuse 实战）
+mkdir -p ~/n8n && cd ~/n8n
+curl -fsSL https://raw.githubusercontent.com/n8n-io/n8n/master/docker-compose.yml -o docker-compose.yml
 # 添加 Langfuse Webhook Node
-# <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 管理面板 → Workflows → New → Webhook (langfuse-events)
+# n8n 管理面板 → Workflows → New → Webhook (langfuse-events)
 # Trigger URL: https://your-langfuse.com/api/public/ingestion</code></pre>
-<p><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflow 示例：当 Langfuse 记录一次 LLM 调用 latency > 5000ms，自动发 Slack 告警：</p>
+<p>n8n workflow 示例：当 Langfuse 记录一次 LLM 调用 latency > 5000ms，自动发 Slack 告警：</p>
 <pre><code>[Webhook Trigger] → [IF: trace.latency > 5000] → [Slack Node: @here 高延迟告警]</code></pre>
 <h2>💣 踩坑录</h2>
 <h3>坑一：Ollama 端口 11434 未监听所有接口</h3>
@@ -187,14 +187,14 @@ sudo lsof -i :5000</code></pre>
     metadata={"model": os.environ["MODEL"]}
 ) as span:
     ...</code></pre>
-<h3>坑四：<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> Webhook 超时（Langfuse 默认 30s timeout）</h3>
+<h3>坑四：n8n Webhook 超时（Langfuse 默认 30s timeout）</h3>
 <p>**报错**：<code>RequestTimeoutError: Webhook request timeout</code></p>
-<p><strong>原因</strong>：Langfuse webhook 默认 timeout 30s，但复杂 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> workflow 超过此时间。</p>
+<p><strong>原因</strong>：Langfuse webhook 默认 timeout 30s，但复杂 n8n workflow 超过此时间。</p>
 <p><strong>修复</strong>：在 Langfuse dashboard → Settings → Webhooks → increase timeout，或将 webhook 改为异步触发：</p>
 <pre><code>[Webhook] → [Node: Delay 0] → [Node: HTTP Request (Langfuse ACK)]</code></pre>
 <h3>坑五：Langfuse PostgreSQL 连接池耗尽（高频调用）</h3>
 <p>**报错**：<code>remaining connection slots are reserved</code></p>
-<p>**原因**：Langfuse 自托管默认 <code>max_connections=20</code>，高频 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 调用（每分钟 100+ 次）迅速耗尽。</p>
+<p>**原因**：Langfuse 自托管默认 <code>max_connections=20</code>，高频 Claude Code 调用（每分钟 100+ 次）迅速耗尽。</p>
 <p><strong>修复</strong>：</p>
 <pre><code># 在 docker-compose.yml 的 PostgreSQL 部分添加：
 environment:
@@ -203,10 +203,10 @@ environment:
 ALTER SYSTEM SET max_connections = 100;
 sudo systemctl restart postgresql</code></pre>
 <h2>效果对比</h2>
-<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">维度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">无 Langfuse</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">有 Langfuse</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Token 消耗透明度</td><td style="border:1px solid #ddd;padding:8px;">黑盒</td><td style="border:1px solid #ddd;padding:8px;">每条 trace 完整记录</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">延迟分析</td><td style="border:1px solid #ddd;padding:8px;">凭感觉</td><td style="border:1px solid #ddd;padding:8px;">P50/P95/P99 自动计算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">错误率追踪</td><td style="border:1px solid #ddd;padding:8px;">日志搜索</td><td style="border:1px solid #ddd;padding:8px;">Dashboard 实时告警</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 自动化触发</td><td style="border:1px solid #ddd;padding:8px;">需自建监控</td><td style="border:1px solid #ddd;padding:8px;">Webhook 原生集成</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成本归因</td><td style="border:1px solid #ddd;padding:8px;">粗略估算</td><td style="border:1px solid #ddd;padding:8px;">按 trace 精确分摊</td></tr></tbody></table>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">维度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">无 Langfuse</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">有 Langfuse</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Token 消耗透明度</td><td style="border:1px solid #ddd;padding:8px;">黑盒</td><td style="border:1px solid #ddd;padding:8px;">每条 trace 完整记录</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">延迟分析</td><td style="border:1px solid #ddd;padding:8px;">凭感觉</td><td style="border:1px solid #ddd;padding:8px;">P50/P95/P99 自动计算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">错误率追踪</td><td style="border:1px solid #ddd;padding:8px;">日志搜索</td><td style="border:1px solid #ddd;padding:8px;">Dashboard 实时告警</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">n8n 自动化触发</td><td style="border:1px solid #ddd;padding:8px;">需自建监控</td><td style="border:1px solid #ddd;padding:8px;">Webhook 原生集成</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成本归因</td><td style="border:1px solid #ddd;padding:8px;">粗略估算</td><td style="border:1px solid #ddd;padding:8px;">按 trace 精确分摊</td></tr></tbody></table>
 <h2>总结</h2>
-<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> + Langfuse 三件套将本地 LLM 的调用黑盒打开成透明链路：Langfuse 记录每次调用，<a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 根据 Trace 结果触发后续工作流，形成「LLM 调用 → 可观测性追踪 → 自动化响应」的完整闭环。</p>
-<p>如果你在本地跑大模型，建议从 Langfuse 自托管开始（30 分钟可完成），再逐步接入 <a href="/2026-06-18-claude-code-routines-and-n8n-integration-pitfalls--en.html" class="internal-link">n8n</a> 做告警和工作流。</p>
+<p>Claude Code + n8n + Langfuse 三件套将本地 LLM 的调用黑盒打开成透明链路：Langfuse 记录每次调用，n8n 根据 Trace 结果触发后续工作流，形成「LLM 调用 → 可观测性追踪 → 自动化响应」的完整闭环。</p>
+<p>如果你在本地跑大模型，建议从 Langfuse 自托管开始（30 分钟可完成），再逐步接入 n8n 做告警和工作流。</p>
 <p><strong>延伸阅读</strong>：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
 <div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
   <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
