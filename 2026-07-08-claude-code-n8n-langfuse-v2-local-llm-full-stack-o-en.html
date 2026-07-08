@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Code + n8n + Langfuse v2: Local LLM Full-Stack OTEL Tracing Debugging Field Report - TechPassive</title>
+  <meta name="description" content="From token drift to span breakage: 5 real pitfalls in n8n HTTP Request nodes + Langfuse OTLP tracing">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>n8n Claude Code Langfuse observability</h1>
+  <div class="post-tags">
+    <span class="tag">n8n workflow</span><span class="tag">Langfuse self-hosted</span><span class="tag">LLM observability</span><span class="tag">OTEL tracing</span><span class="tag"><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code debugging</span>
+  </div>
+  <div class="content">
+    <p># <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + n8n + Langfuse v2: Local LLM Full-Stack OTEL Tracing Debugging Field Report</p>
+<p>In the <a href="https:///2026-07-05-n8n-langfuse-otel-tracing.html" target="_blank" rel="nofollow sponsored">first installment</a>, I covered the 5 production pitfalls of getting n8n + Langfuse self-hosted running (502 errors, Redis dependency, 2GB VPS OOM, PosMQ timeout, S3 object naming conflicts). That was about **survival**. This v2 is about **visibility**: once it's running, how do you actually debug token drift, span breakage, and trace loss across multi-step LLM workflows?</p>
+<h2>Background: Why Full-Stack Observability?</h2>
+<p>n8n's built-in execution logs show node-level I/O only. When you have a multi-step LLM chain (classify → extract → generate), the node logs alone won't tell you which step consumed 3200 tokens vs 800. Langfuse's span view reconstructs the token cost and latency per LLM call — but <strong>only if your traces are correctly chained together</strong>.</p>
+<p>This article's stack:</p>
+<ul><li>n8n 1.88.x self-hosted (Docker Compose, SQLite)</li><li>Langfuse v3 self-hosted (PostgreSQL 16, OTLP HTTP port 44381)</li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 3.5 Sonnet via OpenRouter ($0.008/1K input tokens)</li><li>Python 3.12 + Langfuse SDK 2.18.0</li></ul>
+<h2>🛠️ Deployment Architecture</h2>
+<p>n8n and Langfuse communicate over the same Docker Compose network:</p>
+<pre><code># docker-compose.yml (key excerpt)
+services:
+  n8n:
+    image: n8nio/n8n:1.88.2
+    environment:
+      - N8N_METRICS=true
+      - N8N_TRUSTED_PROXIES=*
+    volumes:
+      - ./n8n-data:/home/node/.n8n
+
+  langfuse:
+    image: langfuse/langfuse:v3.9.1
+    ports:
+      - "3000:3000"
+      - "44381:44381"   # OTLP HTTP receiver
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse_secure_pass@postgres:5432/langfuse
+      - NEXTAUTH_SECRET=your-secret-here
+      - SALT=your-salt-here
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:44381
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=langfuse
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse_secure_pass
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:</code></pre>
+<p>Langfuse's OTLP HTTP endpoint defaults to port <code>44381</code> (per OTLP spec). n8n's HTTP Request node posts directly to this port.</p>
+<h2>💣 Pitfall Field Notes</h2>
+<h3>Pitfall 1: n8n HTTP Request Node OTLP Header Format Error → All Traces Lost</h3>
+<p><strong>Symptom</strong>: Langfuse dashboard shows zero traces, but Langfuse logs show requests arriving.</p>
+<p><strong>Diagnosis</strong>:</p>
+<pre><code>docker compose logs langfuse 2>&1 | grep -i "otlp\|ingestion\|422\|400"
+# Output: requests arriving but returning 400</code></pre>
+<p>**Root Cause**: Langfuse v3's OTLP HTTP receiver requires a specific content-type + header combo. n8n's HTTP Request node defaults to <code>Content-Type: application/json</code>, but the OTLP protocol requires either <code>application/x-protobuf</code> (gRPC) or a specific NDJSON format.</p>
+<p>Langfuse's HTTP OTLP receiver (<code>/api/public/ingestion</code>) accepts two JSON formats:</p>
+<p>1. **NDJSON** (one JSON object per line): <code>{"resourceSpans":[...]}</code></p>
+<p>2. **JSON array**: <code>[{"resourceSpans":[...]}]</code></p>
+<p>But n8n treats the body as plain JSON, causing format mismatch.</p>
+<p><strong>Fix</strong>: Manually configure the n8n HTTP Request node:</p>
+<ul><li>**Method**: POST</li><li>**URL**: `http://langfuse:44381/api/public/ingestion`</li><li>**Headers**: `Content-Type: application/x-ndjson`</li><li>**Body Content Type**: Raw → JSON (NDJSON)</li><li>**Body**:</li></ul>
+<pre><code>{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 3.5 Sonnet","attributes":[{"key":"llm.token_usage.prompt","value":{"intValue":"{{ $json.token_usage.prompt_tokens }}}},{"key":"llm.token_usage.completion","value":{"intValue":"{{ $json.token_usage.completion_tokens }}}}]}]}]}]}</code></pre>
+<p>The more reliable approach is to <strong>bypass manual OTLP construction entirely</strong>: use the Python Script node with the Langfuse SDK, which handles all header and serialization automatically.</p>
+<h3>Pitfall 2: Python Script Node Span Breakage — Independent Traces per Node</h3>
+<p><strong>Symptom</strong>: Multiple Python Script nodes in the same workflow show up as separate traces in Langfuse, not chained under one parent trace.</p>
+<p><strong>Root Cause</strong>: Langfuse SDK defaults to an in-memory trace ID. If each Python Script node initializes its own Langfuse client independently, they don't share trace IDs.</p>
+<pre><code># ❌ WRONG: each node initializes independently
+from langfuse import Langfuse
+langfuse = Langfuse(
+    public_key="...",
+    secret_key="...",
+    host="http://langfuse:3000"
+)</code></pre>
+<p><strong>Fix</strong>: Use n8n's execution ID as the parent trace ID across nodes:</p>
+<pre><code># ✅ CORRECT: share trace ID across nodes
+import os
+
+# Get current execution ID from n8n environment
+execution_id = os.environ.get('N8N_EXECUTION_ID', 'default')
+
+langfuse = Langfuse(
+    public_key=os.environ.get('LANGFUSE_PUBLIC_KEY'),
+    secret_key=os.environ.get('LANGFUSE_SECRET_KEY'),
+    host=os.environ.get('LANGFUSE_HOST', 'http://langfuse:3000'),
+    tags=['n8n', f'execution-{execution_id}']
+)
+
+# Get or create current span
+parent_trace = langfuse.trace(
+    name="n8n-workflow",
+    metadata={
+        "execution_id": execution_id,
+        "workflow_name": os.environ.get('N8N_WORKFLOW_NAME', 'unknown')
+    }
+)
+
+# Create a child span within this node
+with parent_trace.span(
+    name="classify-email",
+    input={"email": input_data}
+) as span:
+    result = classify_email(input_data)
+    span.update(
+        output=result,
+        metadata={"model": "claude-3-5-sonnet", "cost_usd": 0.001}
+    )</code></pre>
+<p>Each Python Script node in n8n shares the same <code>N8N_EXECUTION_ID</code> environment variable, allowing them to coordinate via that ID as the trace key.</p>
+<h3>Pitfall 3: Token Drift — <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> API Usage and Langfuse Records Don't Match</h3>
+<p><strong>Symptom</strong>: Langfuse shows a specific LLM call consumed 3200 total_tokens, but OpenRouter billing shows 4800. Where did the extra 1600 go?</p>
+<p>**Diagnosis**: <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> API's raw response <code>usage</code> field includes <code>prompt_tokens</code>, <code>completion_tokens</code>, and <code>system_tokens</code> (<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a>'s system prompt is counted separately):</p>
+<pre><code>{
+  "usage": {
+    "prompt_tokens": 1500,
+    "completion_tokens": 1700,
+    "system_tokens": 800
+  }
+}</code></pre>
+<p>If your parsing only reads <code>completion_tokens</code>, and Langfuse SDK's callback auto-records <code>total_tokens = prompt + completion</code> without capturing <code>system_tokens</code>, you get drift.</p>
+<p><strong>Fix</strong>: Explicitly extract and push the full usage:</p>
+<pre><code># Manually report complete usage to Langfuse
+api_response = call_claude_api(messages)
+
+usage = api_response.get('usage', {})
+prompt_tokens = usage.get('prompt_tokens', 0)
+completion_tokens = usage.get('completion_tokens', 0)
+system_tokens = usage.get('system_tokens', 0)  # <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a>-specific
+total_tokens = prompt_tokens + completion_tokens + system_tokens
+
+# Manual record to Langfuse (bypasses SDK's potentially incomplete auto-capture)
+langfuse.score(
+    name="token_usage",
+    value=total_tokens,
+    trace_id=parent_trace.id,
+    metadata={
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "system_tokens": system_tokens,
+        "model": "claude-3-5-sonnet"
+    }
+)</code></pre>
+<h3>Pitfall 4: Child Workflow Trace Context Not Passed to Parent Workflow</h3>
+<p><strong>Symptom</strong>: Parent workflow calls child workflow via n8n Execute Workflow node. Langfuse shows the parent trace but child workflow's spans are orphaned — not nested under the parent trace.</p>
+<p><strong>Root Cause</strong>: n8n's Execute Workflow node <strong>does not propagate context</strong> by default (environment variables, N8N_EXECUTION_ID, etc.). The child workflow doesn't know it's being called by a parent.</p>
+<p><strong>Fix</strong>: Use the Execute Workflow node's <strong>Pass on</strong> configuration to explicitly transfer metadata:</p>
+<p>1. In parent workflow's Execute Workflow node:</p>
+<p>   - <strong>Mode</strong>: Reactive (recommended)</p>
+<p>   - **Pass on**: <code>={{ JSON.stringify({ "parent_trace_id": $vars.LANGFUSE_TRACE_ID, "parent_execution_id": $execution.id }) }}</code></p>
+<p>2. In child workflow's first node (Set node), receive the data:</p>
+<pre><code>   {{ JSON.parse($json.parent_trace_id) }}</code></pre>
+<p>   Then in the Python Script node, use that <code>parent_trace_id</code> to continue the span:</p>
+<pre><code>   parent_data = $input.first().json
+   trace_id = parent_data.get('parent_trace_id')
+
+   if trace_id:
+       # Continue parent trace, don't create a new one
+       generation = langfuse.generation(
+           name="child-workflow-step",
+           trace_id=trace_id,  # Explicitly link to parent
+           input=input_data,
+           model="claude-3-5-sonnet"
+       )</code></pre>
+<h3>Pitfall 5: Langfuse Ingestion Rate Limit Causes Trace Loss During Nightly Batch Runs</h3>
+<p><strong>Symptom</strong>: Daytime testing works perfectly. But during the 3AM daily batch workflow (100+ LLM calls), Langfuse dashboard only shows the first 20 traces; the rest are gone.</p>
+<p>**Root Cause**: Langfuse v3 self-hosted's ingestion API has a default rate limit (100 req/min, controlled by <code>INGESTION_RATE_LIMIT</code> env var). The nightly batch fires 100+ requests simultaneously, exceeding the limit and getting dropped.</p>
+<p><strong>Diagnosis</strong>:</p>
+<pre><code>docker compose logs langfuse 2>&1 | grep -i "rate\|limit\|throttle"
+# Output: WARN  [ingestion] Rate limit exceeded for key: default, dropping 47 spans</code></pre>
+<p><strong>Fix</strong>:</p>
+<p>1. <strong>Option A</strong>: Increase Langfuse's rate limit (in docker-compose.yml):</p>
+<pre><code>langfuse:
+  environment:
+    - INGESTION_RATE_LIMIT=1000
+    - INGESTION_BURST_LIMIT=2000</code></pre>
+<p>2. <strong>Option B (recommended for production)</strong>: Add rate limiting on the n8n side using <strong>Loop Over Items + Sleep node</strong> to control requests per second:</p>
+<pre><code>HTTP Request (call LLM) → Sleep (500ms) → Loop continue</code></pre>
+<p>3. <strong>Option C</strong>: Use Langfuse Cloud (native unlimited rate limit), or add a Redis queue buffer in front of the self-hosted Langfuse.</p>
+<h2>Hands-On: 5 Steps to a Debuggable n8n + <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + Langfuse Workflow</h2>
+<h3>Step 1: Configure Langfuse Connector in n8n (Python Script Node)</h3>
+<p>n8n's **Python Script node** (Community Node: <code>@n8n/n8n-nodes-python</code>) runs Langfuse SDK directly. Configure once at the workflow start, then subsequent nodes reuse the same client:</p>
+<pre><code>import os
+import json
+
+# Initialize Langfuse once per workflow
+langfuse = Langfuse(
+    public_key=os.environ.get('LANGFUSE_PUBLIC_KEY'),
+    secret_key=os.environ.get('LANGFUSE_SECRET_KEY'),
+    host=os.environ.get('LANGFUSE_HOST', 'http://langfuse:3000'),
+    flush_at=1,          # Flush on every event; increase in production
+    flush_interval=1,    # Flush every 1 second
+    sdk_metadata={"n8n_version": "1.88"}
+)
+
+# Get current execution's trace
+trace = langfuse.trace(
+    name="email-classification-pipeline",
+    metadata={
+        "execution_id": os.environ.get('N8N_EXECUTION_ID'),
+        "trigger": "schedule"  # Scheduled trigger
+    }
+)
+
+return [{"json": {"trace_id": trace.id, "langfuse_initialized": True }}]</code></pre>
+<h3>Step 2: Build the Classify → Extract → Generate Serial Chain</h3>
+<p>n8n workflow structure:</p>
+<pre><code>[Schedule Trigger: 9AM daily]
+       ↓
+[Set: Load pending email list]
+       ↓
+[Split In Batches: Process one by one]
+       ↓
+[Python Script: Classify + Langfuse generation]
+       ↓
+[IF: Classification = "technical"]
+       ↓              ↓
+[Branch A]       [Branch B: non-technical]
+[Python Script: Extract key info]
+       ↓
+[Python Script: Generate draft reply + Langfuse generation]
+       ↓
+[HTTP Request: Send email reply]
+       ↓
+[Loop continue]</code></pre>
+<h3>Step 3: Debug This Workflow in <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code</h3>
+<p>Connect <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code to this n8n instance:</p>
+<pre><code># In <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code, add n8n MCP
+claude mcp add-json n8n-mcp
+# Configure endpoint: http://your-n8n:5678/rest/mcp
+# Add auth: Bearer token</code></pre>
+<p>Now debug with natural language:</p>
+<pre><code>Show me traces from yesterday's 9AM email-classification-pipeline run
+where total_tokens exceeded 5000. I suspect there's token waste.</code></pre>
+<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code queries n8n MCP for execution logs and combines with Langfuse span data to give analysis.</p>
+<h3>Step 4: Verify Trace Completeness</h3>
+<pre><code># Query Langfuse API for a specific execution's complete trace
+curl -s "http://localhost:3000/api/public/traces?execution_id=N8N_EXECUTION_ID" \
+  -H "Authorization: Bearer $LANGFUSE_PUBLIC_KEY:$LANGFUSE_SECRET_KEY" | \
+  jq '.data[] | {name, id, observations: (.observations | length)}'</code></pre>
+<p>Expected output: each span's <code>parent_id</code> correctly points to its parent, forming a complete tree.</p>
+<h3>Step 5: Set Token Budget Alerts</h3>
+<p>In Langfuse dashboard, set <strong>soft budgets</strong>:</p>
+<ul><li>Single trace `total_tokens` > 3000 → Slack alert</li><li>Single day cumulative token consumption > 50000 → email alert</li></ul>
+<h2>Summary</h2>
+<p>The n8n + Langfuse three-piece combo's core value: <strong>turns LLM calls from black box to transparent box</strong>. v1 solves survivability, v2 solves visibility.</p>
+<p><strong>Related pitfall reports</strong>:</p>
+<ul><li>If you haven't gotten n8n + Langfuse running yet, start with <a href="https:///2026-06-15-n8n-self-hosted-5-real-problems.html" target="_blank" rel="nofollow sponsored">n8n self-hosted: 5 critical production pitfalls</a></li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code and n8n integration setup: <a href="https:///2026-07-05-n8n-langfuse-otel-tracing.html" target="_blank" rel="nofollow sponsored">Claude Code + n8n + Langfuse Three-Piece Combo</a></li></ul>
+<p><strong>Next steps</strong>:</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
