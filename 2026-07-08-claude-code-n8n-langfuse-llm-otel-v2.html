@@ -74,24 +74,24 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag">n8n工作流</span><span class="tag">Langfuse自托管</span><span class="tag">LLM观测</span><span class="tag">OTEL追踪</span><span class="tag"><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code调试</span>
   </div>
   <div class="content">
-    <p># <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + n8n + Langfuse 三件套实战：本地 LLM 全链路 OTEL 观测踩坑复盘 v2</p>
-<p>上次写了 n8n + Langfuse 自托管的 5 个真实生产坑（502/Redis 强依赖/2GB VPS OOM/PosMQ 连接超时/S3 对象命名冲突），那篇主要解决的是「能不能跑起来」。这次 v2 专注解决「跑起来之后怎么调」，核心痛点：<strong>token 漂移、span 断裂、跨节点 trace 丢失</strong>。</p>
+    <p># <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> + Langfuse 三件套实战：本地 LLM 全链路 OTEL 观测踩坑复盘 v2</p>
+<p>上次写了 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> + Langfuse 自托管的 5 个真实生产坑（502/Redis 强依赖/2GB VPS OOM/PosMQ 连接超时/S3 对象命名冲突），那篇主要解决的是「能不能跑起来」。这次 v2 专注解决「跑起来之后怎么调」，核心痛点：<strong>token 漂移、span 断裂、跨节点 trace 丢失</strong>。</p>
 <p>我在这套环境里踩了 2 周才全部解决。期间最崩溃的是：Langfuse dashboard 一片空白，但 API明明有请求进来——最后发现是 NDJSON 格式和 HTTP Request 节点默认 JSON 格式不匹配。另一个高频踩的坑是 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> API 返回的 <code>system_tokens</code> 单独计费，导致 Langfuse 记录的 token 数和 OpenRouter 账单永远对不上。这些坑都有具体日志和修复方案，记录在下面。</p>
 <h2>背景：为什么需要全链路观测</h2>
-<p>n8n 内置执行日志只能看到节点级别的输入输出，一旦涉及多步 LLM 调用（分类 → 提取 → 生成的串行链路），单个节点的日志根本看不出 token 消耗在哪一步。Langfuse 的 span 视图可以精确还原每个 LLM 调用的 token 消耗和延迟，但<strong>前提是你的 trace 能正确串联起来</strong>。</p>
+<p><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 内置执行日志只能看到节点级别的输入输出，一旦涉及多步 LLM 调用（分类 → 提取 → 生成的串行链路），单个节点的日志根本看不出 token 消耗在哪一步。Langfuse 的 span 视图可以精确还原每个 LLM 调用的 token 消耗和延迟，但<strong>前提是你的 trace 能正确串联起来</strong>。</p>
 <p>本文环境：</p>
-<ul><li>n8n 1.88.x 自托管（Docker Compose，SQLite 存储）</li><li>Langfuse v3 自托管（PostgreSQL 16，OTLP HTTP 端口 44381）</li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 3.5 Sonnet via OpenRouter（$0.008/1K 输入 token）</li><li>编程语言：Python 3.12 + Langfuse SDK 2.18.0</li></ul>
+<ul><li><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 1.88.x 自托管（Docker Compose，SQLite 存储）</li><li>Langfuse v3 自托管（PostgreSQL 16，OTLP HTTP 端口 44381）</li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 3.5 Sonnet via OpenRouter（$0.008/1K 输入 token）</li><li>编程语言：Python 3.12 + Langfuse SDK 2.18.0</li></ul>
 <h2>🛠️ 部署架构</h2>
-<p>n8n 和 Langfuse 通过 Docker Compose 同一网络内通信：</p>
+<p><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 和 Langfuse 通过 Docker Compose 同一网络内通信：</p>
 <pre><code># docker-compose.yml（核心片段）
 services:
-  n8n:
-    image: n8nio/n8n:1.88.2
+  <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>:
+    image: n8nio/<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>:1.88.2
     environment:
       - N8N_METRICS=true
       - N8N_TRUSTED_PROXIES=*
     volumes:
-      - ./n8n-data:/home/node/.n8n
+      - ./<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>-data:/home/node/.<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>
 
   langfuse:
     image: langfuse/langfuse:v3.9.1
@@ -115,25 +115,25 @@ services:
 
 volumes:
   pgdata:</code></pre>
-<p>Langfuse 的 OTLP HTTP 端点默认监听 <code>44381</code>（OTLP 协议规定），n8n 的 HTTP Request 节点直接 post 到这个端口。</p>
+<p>Langfuse 的 OTLP HTTP 端点默认监听 <code>44381</code>（OTLP 协议规定），<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 HTTP Request 节点直接 post 到这个端口。</p>
 <h2>💣 踩坑实录</h2>
-<h3>坑一：n8n HTTP Request 节点发 OTLP 时 header 格式错误导致 trace 全部丢失</h3>
+<h3>坑一：<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> HTTP Request 节点发 OTLP 时 header 格式错误导致 trace 全部丢失</h3>
 <p><strong>现象</strong>：Langfuse dashboard 里完全看不到任何 trace，但 Langfuse 日志显示有请求进来。</p>
 <p><strong>排查</strong>：</p>
 <pre><code># Langfuse 侧看 OTLP 请求
 docker compose logs langfuse 2>&1 | grep -i "otlp\|ingestion\|422\|400"
 # 输出：收到请求但返回 400</code></pre>
-<p>**原因**：Langfuse v3 的 OTLP HTTP 接收要求特定的 content-type 和 header 组合。n8n HTTP Request 节点默认 header <code>Content-Type: application/json</code>，但 OTLP 协议要求 <code>application/x-protobuf</code>（使用 gRPC）或 <code>application/json</code>（但 payload 格式不同）。</p>
+<p>**原因**：Langfuse v3 的 OTLP HTTP 接收要求特定的 content-type 和 header 组合。<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> HTTP Request 节点默认 header <code>Content-Type: application/json</code>，但 OTLP 协议要求 <code>application/x-protobuf</code>（使用 gRPC）或 <code>application/json</code>（但 payload 格式不同）。</p>
 <p>Langfuse 的 HTTP OTLP 接收（<code>/api/public/ingestion</code>）实际接受两种格式：</p>
 <p>1. **NDJSON**（每行一个 JSON 对象）：<code>{"resourceSpans":[...]}</code></p>
 <p>2. **JSON 数组**：<code>[{"resourceSpans":[...]}]</code></p>
-<p>但 n8n HTTP Request 节点默认把 body 当作普通 JSON 发，导致格式不匹配。</p>
-<p><strong>修复</strong>：在 n8n 的 HTTP Request 节点里手动设置：</p>
+<p>但 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> HTTP Request 节点默认把 body 当作普通 JSON 发，导致格式不匹配。</p>
+<p><strong>修复</strong>：在 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 HTTP Request 节点里手动设置：</p>
 <ul><li>**Method**: POST</li><li>**URL**: `http://langfuse:44381/api/public/ingestion`</li><li>**Headers**:</li></ul>
 <pre><code>  Content-Type: application/x-ndjson</code></pre>
 <ul><li>**Body Content Type**: Raw</li><li>**Specify Body**: JSON (NDJSON)</li><li>**Body**:</li></ul>
 <pre><code>{"resourceSpans":[{"scopeSpans":[{"spans":[{"name":"<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 3.5 Sonnet","attributes":[{"key":"llm.token_usage.prompt","value":{"intValue":"{{ $json.token_usage.prompt_tokens }}}},{"key":"llm.token_usage.completion","value":{"intValue":"{{ $json.token_usage.completion_tokens }}}}]}]}]}]}</code></pre>
-<p>实际上更可靠的方式是<strong>不用 n8n 的 HTTP Request 节点手动拼 OTLP</strong>，而是用 Python Script 节点 + Langfuse SDK，这样 SDK 自动处理所有 header 和序列化。</p>
+<p>实际上更可靠的方式是<strong>不用 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 HTTP Request 节点手动拼 OTLP</strong>，而是用 Python Script 节点 + Langfuse SDK，这样 SDK 自动处理所有 header 和序列化。</p>
 <h3>坑二：Python Script 节点中 Langfuse SDK 初始化后 span 断裂</h3>
 <p><strong>现象</strong>：同一个 workflow 里多个 Python Script 节点调用 Langfuse SDK，但 Langfuse dashboard 里每个节点显示为独立的 trace，而不是串联在同一个 workflow execution 下。</p>
 <p><strong>原因</strong>：Langfuse SDK 默认用<strong>内存中的 trace ID</strong> 来串联 span。如果你每个 Python Script 节点独立初始化 Langfuse client，它们互相不知道彼此的 trace ID。</p>
@@ -144,23 +144,23 @@ langfuse = Langfuse(
     secret_key="...",
     host="http://langfuse:3000"
 )</code></pre>
-<p><strong>修复</strong>：利用 n8n 的 <strong>execution ID</strong> 作为 parent trace ID：</p>
+<p><strong>修复</strong>：利用 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 <strong>execution ID</strong> 作为 parent trace ID：</p>
 <pre><code># ✅ 正确做法：跨节点共享 trace ID
 import os
 
-# 从 n8n 环境变量获取当前 execution ID
+# 从 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 环境变量获取当前 execution ID
 execution_id = os.environ.get('N8N_EXECUTION_ID', 'default')
 
 langfuse = Langfuse(
     public_key=os.environ.get('LANGFUSE_PUBLIC_KEY'),
     secret_key=os.environ.get('LANGFUSE_SECRET_KEY'),
     host=os.environ.get('LANGFUSE_HOST', 'http://langfuse:3000'),
-    tags=['n8n', f'execution-{execution_id}']
+    tags=['<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>', f'execution-{execution_id}']
 )
 
 # 获取或创建当前 span
 parent_trace = langfuse.trace(
-    name="n8n-workflow",
+    name="<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>-workflow",
     metadata={
         "execution_id": execution_id,
         "workflow_name": os.environ.get('N8N_WORKFLOW_NAME', 'unknown')
@@ -177,7 +177,7 @@ with parent_trace.span(
         output=result,
         metadata={"model": "claude-3-5-sonnet", "cost_usd": 0.001}
     )</code></pre>
-<p>在 n8n 里，每个 Python Script 节点通过 <code>N8N_EXECUTION_ID</code> 环境变量共享同一个 execution，用这个 ID 作为 trace 的关联键。</p>
+<p>在 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 里，每个 Python Script 节点通过 <code>N8N_EXECUTION_ID</code> 环境变量共享同一个 execution，用这个 ID 作为 trace 的关联键。</p>
 <h3>坑三：<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> API 返回的 token 用量和 Langfuse 记录的不一致（token 漂移）</h3>
 <p><strong>现象</strong>：Langfuse 显示某个 LLM 调用的 total_tokens 是 3200，但 OpenRouter 账单显示实际消耗了 4800 tokens。差值 1600 来自哪里？</p>
 <p>**排查**：在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> API 的原始响应里，usage 字段包含 <code>prompt_tokens</code>、<code>completion_tokens</code>、<code>system_tokens</code>（<a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> 特有的 system prompt 独立计数）：</p>
@@ -212,10 +212,10 @@ langfuse.score(
         "model": "claude-3-5-sonnet"
     }
 )</code></pre>
-<h3>坑四：n8n 子 workflow 的 trace context 没有传递给父 workflow</h3>
-<p><strong>现象</strong>：父 workflow 调用子 workflow（n8n Execute Workflow 节点），Langfuse 里能看到父 workflow 的 trace，但子 workflow 的 span 是孤立的，没有挂在父 trace 下面。</p>
-<p><strong>原因</strong>：n8n 的 Execute Workflow 节点默认<strong>不传递 context</strong>（环境变量、N8N_EXECUTION_ID 等）。子 workflow 不知道自己是被谁调用的。</p>
-<p><strong>修复</strong>：通过 n8n 的<strong>Execute Workflow 节点的「Pass on」配置</strong>显式传递 metadata：</p>
+<h3>坑四：<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 子 workflow 的 trace context 没有传递给父 workflow</h3>
+<p><strong>现象</strong>：父 workflow 调用子 workflow（<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> Execute Workflow 节点），Langfuse 里能看到父 workflow 的 trace，但子 workflow 的 span 是孤立的，没有挂在父 trace 下面。</p>
+<p><strong>原因</strong>：<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 Execute Workflow 节点默认<strong>不传递 context</strong>（环境变量、N8N_EXECUTION_ID 等）。子 workflow 不知道自己是被谁调用的。</p>
+<p><strong>修复</strong>：通过 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的<strong>Execute Workflow 节点的「Pass on」配置</strong>显式传递 metadata：</p>
 <p>1. 在父 workflow 的 Execute Workflow 节点：</p>
 <p>   - <strong>Mode</strong>: Reactive（推荐）</p>
 <p>   - **Pass on**: <code>={{ JSON.stringify({ "parent_trace_id": $vars.LANGFUSE_TRACE_ID, "parent_execution_id": $execution.id }) }}</code></p>
@@ -246,12 +246,12 @@ docker compose logs langfuse 2>&1 | grep -i "rate\|limit\|throttle"
   environment:
     - INGESTION_RATE_LIMIT=1000
     - INGESTION_BURST_LIMIT=2000</code></pre>
-<p>2. <strong>方案 B（推荐生产用）</strong>：在 n8n 侧加限速，使用 <strong>Loop Over Items 节点 + Sleep 节点</strong> 控制每秒请求数：</p>
+<p>2. <strong>方案 B（推荐生产用）</strong>：在 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 侧加限速，使用 <strong>Loop Over Items 节点 + Sleep 节点</strong> 控制每秒请求数：</p>
 <pre><code>HTTP Request (call LLM) → Sleep (500ms) → Loop继续</code></pre>
 <p>3. <strong>方案 C</strong>：用 Langfuse cloud 版本（原生无限 rate limit），或者在自托管版前面加 Redis 队列做缓冲。</p>
-<h2>实战：5 步搭建可调试的 n8n + <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + Langfuse 工作流</h2>
-<h3>Step 1：在 n8n 里配置 Langfuse 连接器（Python Script 节点）</h3>
-<p>n8n 的 **Python Script 节点**（Community Nodes，需要安装 <code>@n8n/n8n-nodes-python</code>）可以直接跑 Langfuse SDK。在 workflow 开头配置一次，后续节点复用同一个 client：</p>
+<h2>实战：5 步搭建可调试的 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> + <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code + Langfuse 工作流</h2>
+<h3>Step 1：在 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 里配置 Langfuse 连接器（Python Script 节点）</h3>
+<p><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的 **Python Script 节点**（Community Nodes，需要安装 <code>@<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>/<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>-nodes-python</code>）可以直接跑 Langfuse SDK。在 workflow 开头配置一次，后续节点复用同一个 client：</p>
 <pre><code>import os
 import json
 
@@ -276,7 +276,7 @@ trace = langfuse.trace(
 
 return [{"json": {"trace_id": trace.id, "langfuse_initialized": True }}]</code></pre>
 <h3>Step 2：构建分类 → 提取 → 生成串行链路</h3>
-<p>n8n workflow 结构：</p>
+<p><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> workflow 结构：</p>
 <pre><code>[Schedule Trigger: 每天 9AM]
        ↓
 [Set: 加载待处理邮件列表]
@@ -296,15 +296,15 @@ return [{"json": {"trace_id": trace.id, "langfuse_initialized": True }}]</code><
        ↓
 [Loop Continue]</code></pre>
 <h3>Step 3：在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 里调试这个 workflow</h3>
-<p>用 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 连接这个 n8n instance：</p>
-<pre><code># 在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 里连接 n8n MCP
-claude mcp add-json n8n-mcp
-# 配置 endpoint: http://your-n8n:5678/rest/mcp
+<p>用 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 连接这个 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> instance：</p>
+<pre><code># 在 <a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 里连接 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> MCP
+claude mcp add-json <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>-mcp
+# 配置 endpoint: http://your-<a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a>:5678/rest/mcp
 # 添加 auth: Bearer token</code></pre>
 <p>现在可以用自然语言调试：</p>
 <pre><code>帮我看一下昨天 9AM 执行的那个 email-classification-pipeline，
 哪些 trace 的 total_tokens 超过 5000？我怀疑有 token 浪费</code></pre>
-<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 通过 n8n MCP 直接查执行日志，结合 Langfuse 的 span 数据给出分析。</p>
+<p><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 通过 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> MCP 直接查执行日志，结合 Langfuse 的 span 数据给出分析。</p>
 <h3>Step 4：验证 trace 完整性</h3>
 <pre><code># 查 Langfuse API 看某次 execution 的完整 trace
 curl -s "http://localhost:3000/api/public/traces?execution_id=N8N_EXECUTION_ID" \
@@ -315,9 +315,9 @@ curl -s "http://localhost:3000/api/public/traces?execution_id=N8N_EXECUTION_ID" 
 <p>在 Langfuse dashboard 里设置 <strong>soft budget</strong>：</p>
 <ul><li>当单个 trace 的 total_tokens > 3000 → Slack 告警</li><li>当单日累计 token 消耗 > 50000 → 邮件告警</li></ul>
 <h2>总结与内链</h2>
-<p>n8n + Langfuse 三件套的核心价值：<strong>让 LLM 调用从黑盒变成白盒</strong>。v1 解决的是能不能跑，v2 解决的是跑起来之后怎么看得清楚。</p>
+<p><a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> + Langfuse 三件套的核心价值：<strong>让 LLM 调用从黑盒变成白盒</strong>。v1 解决的是能不能跑，v2 解决的是跑起来之后怎么看得清楚。</p>
 <p><strong>本文关联的踩坑经验</strong>：</p>
-<ul><li>如果你还没有跑起来 n8n + Langfuse，先看<a href="https:///2026-06-15-n8n-self-hosted-5-real-problems.html" target="_blank" rel="nofollow sponsored">《n8n自托管生产环境5个致命踩坑》</a></li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 和 n8n 的集成配置，看<a href="https:///2026-07-05-n8n-langfuse-otel-tracing.html" target="_blank" rel="nofollow sponsored">《Claude Code + n8n + Langfuse 三件套实战》</a></li></ul>
+<ul><li>如果你还没有跑起来 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> + Langfuse，先看<a href="https:///2026-06-15-n8n-self-hosted-5-real-problems.html" target="_blank" rel="nofollow sponsored">《n8n自托管生产环境5个致命踩坑》</a></li><li><a href="/2026-07-07-claude-code-n8n-langfuse-llm-2026.html" class="internal-link">Claude</a> Code 和 <a href="/2026-07-08-claude-code-n8n-langfuse-llm-otel-v2.html" class="internal-link">n8n</a> 的集成配置，看<a href="https:///2026-07-05-n8n-langfuse-otel-tracing.html" target="_blank" rel="nofollow sponsored">《Claude Code + n8n + Langfuse 三件套实战》</a></li></ul>
 <p><strong>下一步方向</strong>：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
 <div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
   <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
