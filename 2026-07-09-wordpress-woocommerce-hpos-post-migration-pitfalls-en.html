@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress WooCommerce HPOS Post-Migration Pitfalls 2026: orders clamp + wc_get_orders Broken + Order ID Mismatch + Legacy postmeta Still Writing 4 Real Traps - TechPassive</title>
+  <meta name="description" content="WooCommerce HPOS migrated but custom table queries error / wc_get_orders returns nothing / ERP ID drift / postmeta disk bloat — 4 real production scenarios">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WooCommerce HPOS Migration</h1>
+  <div class="post-tags">
+    <span class="tag">woocommerce</span><span class="tag">hpops</span><span class="tag">order storage</span><span class="tag">database migration</span><span class="tag">woocommerce 9.x</span><span class="tag">wc_get_orders</span>
+  </div>
+  <div class="content">
+    <p># <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS Post-Migration Pitfalls 2026: orders clamp + wc_get_orders Broken + Order ID Mismatch + Legacy postmeta Still Writing 4 Real Traps</p>
+<p>Last time I covered <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS migration (data validation, rollback strategy, neutral fields). That article solved "can we migrate." This one solves "what happens after you migrate" — the core pain points: order querying changed, external system IDs don't match, and legacy postmeta keeps writing to disk.</p>
+<p>---</p>
+<h2>Why HPOS Migration Doesn't Mean Smooth Sailing</h2>
+<p><a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS (High Performance Order Storage) moves orders from <code>wp_postmeta</code>/<code>wp_posts</code> to custom <code>wc_orders</code>/<code>wc_orders_meta</code> tables. After migration, old <code>wp_posts</code> order records go read-only — but <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> core and many plugins still write to <code>postmeta</code>:</p>
+<ul><li>Third-party plugins not HPOS-aware</li><li>Webhooks hardcoded to `update_post_meta`</li><li>HPOS "compatibility mode" writes to both tables simultaneously</li></ul>
+<p>So migration success ≠ problem-free. Here are 4 real production scenarios.</p>
+<p>---</p>
+<h2>🛠️ Prerequisites</h2>
+<ul><li><a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> 9.x (HPOS enabled, initial sync completed)</li><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+</li><li>Migration completed more than 24 hours ago (initial sync done)</li><li>SSH access for direct database queries</li></ul>
+<p>---</p>
+<h2>💣 Pitfall 1: orders clamp Causes Order ID Gaps</h2>
+<h3>Symptoms</h3>
+<p>After HPOS is enabled, sequential order IDs start skipping: 1001→1003→1005, evens are gone. This is <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> <code>orders clamp</code>, not a bug.</p>
+<h3>Root Cause</h3>
+<p><a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS uses its own <code>wc_orders</code> sequence, decoupled from <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> <code>wp_posts</code> IDs. The <code>orders clamp</code> exists to avoid conflicts with existing order IDs in the legacy <code>wp_posts</code> table, adding an offset to the starting position.</p>
+<h3>Verification Commands</h3>
+<pre><code># Check HPOS order ID sequence current value
+wp db query "SELECT MAX(id) as max_hpos_id FROM wp_wc_orders;"
+
+# Check max order ID in legacy wp_posts
+wp db query "SELECT MAX(ID) as max_post_id FROM wp_posts WHERE post_type='shop_order';"
+
+# Check <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS setting
+wp option get woocommerce_custom_orders_table_enabled
+# Expected output: yes</code></pre>
+<h3>Solutions</h3>
+<p><strong>Option A: Accept the gaps (Recommended)</strong></p>
+<p>Order ID skipping doesn't break anything. If your ERP/CRM uses order numbers as external references, switch to <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> order numbers (<code>get_order_number()</code>) instead of database IDs.</p>
+<pre><code>// Use this instead of $order->get_id() in templates/APIs
+$order_number = $order->get_order_number();
+// Format: #1001 (configurable)</code></pre>
+<p><strong>Option B: Manually reset clamp start value (Caution Required)</strong></p>
+<p>If the old <code>wp_posts</code> max order ID is 950 and new HPOS starts at 1001, you can tighten it:</p>
+<pre><code># Warning: Full backup required before this operation
+wp db query "ALTER TABLE wp_wc_orders AUTO_INCREMENT = 951;"</code></pre>
+<blockquote>⚠️ Risk: If archived orders (post_status = 'trash') still contain IDs 951-1000 in the old table, new order inserts will trigger primary key conflicts. Verify with the command above first.</blockquote>
+<p>---</p>
+<h2>💣 Pitfall 2: wc_get_orders() Returns Nothing for Product-Level Queries</h2>
+<h3>Symptoms</h3>
+<p>After HPOS migration, this query returns empty results:</p>
+<pre><code>// Returns nothing
+$orders = wc_get_orders(array(
+    'limit'     => -1,
+    'status'    => array('completed', 'processing'),
+    'meta_key'  => '_product_ids',
+    'meta_value'=> '123', // product ID
+));</code></pre>
+<h3>Root Cause</h3>
+<p>HPOS uses custom tables <code>wc_orders_meta</code> with different field structures than <code>wp_postmeta</code>. <code>wc_get_orders()</code> uses the <code>HPOSQuery</code> class in HPOS mode, but certain <code>meta_query</code> parameter combinations — especially <code>meta_value</code> wildcard queries — don't use indexes in HPOS mode, causing query failures or empty returns.</p>
+<h3>Verification</h3>
+<pre><code># Directly query wc_orders_meta to confirm data exists
+wp db query "SELECT * FROM wp_wc_orders_meta WHERE meta_key='_product_ids' AND meta_value LIKE '%123%' LIMIT 5;"
+
+# Should return records, otherwise the data was never written there</code></pre>
+<h3>Solutions</h3>
+<p><strong>Option A: Use WC_Order_Query Object (Recommended HPOS-Native)</strong></p>
+<pre><code>// HPOS-native query approach
+$args = array(
+    'limit'        => -1,
+    'status'       => array('completed', 'processing'),
+    'type'         => 'shop_order',
+    'date_after'   => '2024-01-01',
+    // Use 'return' to specify fields, avoid meta wildcard queries
+);
+
+$orders = wc_get_orders($args);
+
+// Filter by product in PHP
+foreach ($orders as $order) {
+    $items = $order->get_items();
+    foreach ($items as $item) {
+        if ($item->get_product_id() == 123) {
+            // match found
+        }
+    }
+}</code></pre>
+<p><strong>Option B: Direct wc_orders_meta Query (High Performance)</strong></p>
+<pre><code>SELECT o.order_id, o.meta_value as product_ids
+FROM wp_wc_orders_meta o
+JOIN wp_wc_orders o2 ON o.order_id = o2.id
+WHERE o.meta_key = '_product_ids'
+  AND FIND_IN_SET('123', o.meta_value)
+  AND o2.status IN ('completed', 'processing');</code></pre>
+<p>> 💡 If <code>meta_value</code> stores a JSON array (e.g., <code>["123","456"]</code>), use <code>JSON_CONTAINS</code>:</p>
+<p>> <code>`</code>sql</p>
+<blockquote>WHERE JSON_CONTAINS(o.meta_value, '"123"')</blockquote>
+<p>> <code>`</code></p>
+<p><strong>Option C: Fall Back to Union Query (Legacy Plugin Compatibility)</strong></p>
+<p>If a third-party plugin's order query fails in HPOS mode, temporarily enable the "legacy table fallback":</p>
+<pre><code>// functions.php or Must-Use plugin
+add_filter('woocommercehq_hpos_force_post_table_read', '__return_true');</code></pre>
+<blockquote>⚠️ Significant performance penalty. Only as a temporary workaround. The real fix is getting the plugin HPOS-compatible.</blockquote>
+<p>---</p>
+<h2>💣 Pitfall 3: External ERP/CRM Order ID Drift</h2>
+<h3>Symptoms</h3>
+<p>After <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> HPOS migration, the order ID in the ERP system (ERP-side) doesn't match <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> order ID. For example, ERP order #1001 actually corresponds to WC order #1043.</p>
+<h3>Root Cause</h3>
+<p>HPOS order ID gaps (Pitfall 1) + legacy <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Post ID sequence coexistence cause the two systems to have different "next available ID" values. ERPs typically get the ID returned from WC when creating an order, then link it to their own order.</p>
+<h3>Verification</h3>
+<pre><code>// Check ID distribution of recent 10 orders
+$orders = wc_get_orders(array('limit' => 10, 'orderby' => 'date', 'order' => 'DESC'));
+foreach ($orders as $order) {
+    error_log(sprintf(
+        "HPOS ID: %d | Order #: %s | Date: %s",
+        $order->get_id(),
+        $order->get_order_number(),
+        $order->get_date_created()->format('Y-m-d H:i:s')
+    ));
+}</code></pre>
+<h3>Solutions</h3>
+<p>**Core Principle: Always use <code>get_order_number()</code> instead of <code>get_id()</code> for external references.**</p>
+<pre><code>// ❌ Wrong: ERP references the database ID
+$external_ref = $order->get_id();
+
+// ✅ Correct: ERP references <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> order number
+$external_ref = $order->get_order_number();
+// Format: #1001 (customizable in <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> settings)</code></pre>
+<p>If the ERP already uses IDs, generate a one-time sync mapping:</p>
+<pre><code>-- Generate ID mapping table
+SELECT
+    o.id as hpos_order_id,
+    o.status,
+    o.date_created_gmt,
+    om.meta_value as order_number
+FROM wp_wc_orders o
+LEFT JOIN wp_wc_orders_meta om ON o.id = om.order_id AND om.meta_key = '_order_number'
+ORDER BY o.id DESC
+LIMIT 100;</code></pre>
+<p>Export this result to your ERP to establish a bidirectional ID ↔ order_number mapping table.</p>
+<p>---</p>
+<h2>💣 Pitfall 4: Legacy postmeta Still Writing to Disk</h2>
+<h3>Symptoms</h3>
+<p>One week after HPOS migration, <code>wp_postmeta</code> table size grows instead of shrinking — some plugin is still writing order-related data to <code>wp_postmeta</code>.</p>
+<h3>Root Cause</h3>
+<p>Three simultaneous sources:</p>
+<p>1. **HPOS compatibility mode writes to both**: Settings like <code>woocommerce_default_customer_locations</code> write to both tables</p>
+<p>2. <strong>Legacy Webhook callbacks still writing postmeta</strong>: Third-party plugin webhooks not HPOS-aware</p>
+<p>3. <strong>Incomplete initial sync</strong>: Migration interrupted mid-way, some orders only partially synced</p>
+<h3>Diagnosis</h3>
+<pre><code># Check wp_postmeta order-related entry growth (requires daily sampling)
+wp db query "
+SELECT DATE(post_date) as date, COUNT(*) as cnt
+FROM wp_postmeta pm
+JOIN wp_posts p ON pm.post_id = p.ID
+WHERE p.post_type = 'shop_order'
+GROUP BY DATE(post_date)
+ORDER BY date DESC
+LIMIT 14;
+"
+
+# Find which meta_keys are still being written (last 7 days)
+wp db query "
+SELECT meta_key, COUNT(*) as cnt
+FROM wp_postmeta pm
+JOIN wp_posts p ON pm.post_id = p.ID
+WHERE p.post_type = 'shop_order'
+  AND p.post_date > DATE_SUB(NOW(), INTERVAL 7 DAY)
+GROUP BY meta_key
+ORDER BY cnt DESC
+LIMIT 20;
+"</code></pre>
+<h3>Solutions</h3>
+<p><strong>Step 1: Identify which plugin is still writing postmeta</strong></p>
+<pre><code># Enable all <a href="/2026-06-26-woocommerce-hpos-9x-complete-migration-guide-5-rea-en.html" class="internal-link">WooCommerce</a> plugins, disable one by one to test
+wp plugin list --status=active
+
+# Or use Query Monitor plugin (woocommerce/db.php hook) for real-time monitoring</code></pre>
+<p><strong>Step 2: Clean up legacy postmeta for migrated orders (Safe Cleanup)</strong></p>
+<pre><code># Only clean completed migration orders older than 30 days
+wp db query "
+DELETE pm FROM wp_postmeta pm
+JOIN wp_posts p ON pm.post_id = p.ID
+WHERE p.post_type = 'shop_order'
+  AND p.post_status IN ('completed', 'cancelled', 'refunded', 'trash')
+  AND p.post_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
+  AND pm.meta_key NOT IN (
+      SELECT meta_key FROM wp_wc_orders_meta LIMIT 0
+  );
+"
+
+# Verify cleanup result
+wp db query "SELECT COUNT(*) as remaining_postmeta FROM wp_postmeta pm JOIN wp_posts p ON pm.post_id = p.ID WHERE p.post_type = 'shop_order';"</code></pre>
+<blockquote>⚠️ Test the above SQL in staging first. Full backup mandatory before any cleanup.</blockquote>
+<p><strong>Step 3: Confirm HPOS migration is complete</strong></p>
+<pre><code># Check migration status
+wp wc tool run clear_transformers
+wp wc tool run recalculate_tax_data
+
+# Check for remaining sync errors
+wp wc tool run display_errors</code></pre>
+<p>---</p>
+<h2>✅ Complete Verification Checklist</h2>
+<p>After migrating HPOS, use this checklist to verify each issue:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Step</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Command/Action</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Expected Result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">`wp option get woocommerce_custom_orders_table_enabled`</td><td style="border:1px solid #ddd;padding:8px;">`yes`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">`wp db query "SELECT COUNT(*) FROM wp_wc_orders WHERE status='pending';"`</td><td style="border:1px solid #ddd;padding:8px;">Returns non-negative integer</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">`wp db query "SELECT COUNT(*) FROM wp_wc_orders_meta;"`</td><td style="border:1px solid #ddd;padding:8px;">Returns non-negative integer (non-zero)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">`wc_get_orders(array('limit'=>1))` in PHP</td><td style="border:1px solid #ddd;padding:8px;">Returns one order object</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">`wc_get_orders(array('meta_query'=>...))`</td><td style="border:1px solid #ddd;padding:8px;">Returns query results (see Pitfall 2)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">6</td><td style="border:1px solid #ddd;padding:8px;">Confirm ERP/external system uses `get_order_number()` not `get_id()`</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">7</td><td style="border:1px solid #ddd;padding:8px;">`wp_postmeta` new entries in last 7 days</td><td style="border:1px solid #ddd;padding:8px;">Growth stalled or near zero</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">`wp db query "SHOW TABLE STATUS LIKE 'wp_postmeta';"`</td><td style="border:1px solid #ddd;padding:8px;">Data_length stabilizing</td></tr></tbody></table>
+<p>---</p>
+<h2>Related Reading</h2><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
