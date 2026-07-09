@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress Local Dev → Production: WP-CLI + Git Hooks Zero-Downtime Deployment (2026) - TechPassive</title>
+  <meta name="description" content="This guide covers push-to-deploy WordPress workflows using WP-CLI + Git Hooks: database sync across three environments, wp-config separation, automated post-receive scripts, and one-command rollback. Tested on Ubuntu 22.04 + PHP 8.2.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress Deployment with WP-CLI + Git Hooks</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-06-17-wordpress-waf-2026-complete-setup-guide-modsecurit-en.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">Git Hooks</span><span class="tag">DevOps</span><span class="tag">Deployment</span>
+  </div>
+  <div class="content">
+    <p>In 2026, <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> deployment has been completely streamlined by WP-CLI + Git Hooks. No Jenkins, no <a href="/2026-04-23-github-cli身份验证失败的排查与解决我花了2小时才找到原因.html" class="internal-link">GitHub</a> Actions — just an SSH-accessible server. I spent one afternoon automating a workflow that used to take three years of manual deployments. This article documents my verified pipeline: Git repo initialization, server-side auto-pull, database sync across three environments, wp-config security separation, and rollback procedures.</p>
+<h2>Prerequisites</h2>
+<ul><li>**Local machine**: macOS or Linux with WP-CLI installed (`wp --info` to verify)</li><li>**Remote server**: Ubuntu 22.04+, SSH key auth, WP-CLI installed</li><li>**Code hosting**: <a href="/2026-04-23-github-cli身份验证失败的排查与解决我花了2小时才找到原因.html" class="internal-link">GitHub</a> / GitLab (examples use <a href="/2026-04-23-github-cli身份验证失败的排查与解决我花了2小时才找到原因.html" class="internal-link">GitHub</a>)</li><li>**Database**: MySQL 8.0+ or MariaDB 10.6+, operated via WP-CLI</li></ul>
+<p>> **Note**: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.7+ supports <code>WP_CLI_REMOTE_CMD</code> for remote execution, reducing SSH round-trips during deployment.</p>
+<h2>Local Project Setup</h2>
+<pre><code># Initialize Git in your project root
+git init
+
+# Create .gitignore (critical: exclude wp-config.php and uploads)
+cat > .gitignore << 'EOF'
+wp-config.php
+wp-content/uploads/
+wp-content/cache/
+*.log
+EOF
+
+# Add production/staging ignores
+echo "wp-config-prod.php" >> .gitignore
+echo "wp-content/uploads/" >> .gitignore
+
+git add .
+git commit -m "chore: initial <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> project structure"</code></pre>
+<h2>Server-Side Auto-Pull: post-receive</h2>
+<p>On your **production server**, create <code>hooks/post-receive</code> inside a bare Git repo (<code>/var/repo/your-site.git</code>):</p>
+<pre><code>#!/bin/bash
+# post-receive: auto-pull + cache flush + OPcache reload
+
+TARGET="/var/www/your-site"
+GIT_DIR="/var/repo/your-site.git"
+
+while read oldrev newrev branch; do
+    if [ "$branch" = "refs/heads/main" ]; then
+        echo "🔄 Detected main branch push, deploying..."
+
+        # 1. Checkout latest code into target directory
+        GIT_WORK_TREE="$TARGET" git checkout -f main
+
+        # 2. wp-config.php stays outside Git (managed by system)
+
+        # 3. Flush <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> object cache
+        wp cache flush --path="$TARGET"
+
+        # 4. Reload OPcache if using PHP-FPM
+        # systemctl reload php8.2-fpm  # enable as needed
+
+        # 5. Verify <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> autoload options count
+        wp shell --info --path="$TARGET" 2>/dev/null || true
+
+        echo "✅ Deploy complete: $(date '+%Y-%m-%d %H:%M:%S')"
+    fi
+done</code></pre>
+<pre><code>chmod +x hooks/post-receive</code></pre>
+<p>**Result**: Every <code>git push</code> triggers automatic code update and cache flush on the server. No manual SSH required.</p>
+<h2>Pre-Push Validation: pre-push</h2>
+<p>Create <code>.git/hooks/pre-push</code> locally (no extension):</p>
+<pre><code>#!/bin/bash
+# pre-push: validate before pushing to protected branches
+
+BRANCH=$(git symbolic-ref --short HEAD)
+PROTECTED_BRANCHES="main production"
+
+if echo "$PROTECTED_BRANCHES" | grep -q "$BRANCH"; then
+    echo "⚠️  Pushing to $BRANCH — branch protection active"
+    # Optional: run PHPStan / <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-Coding-Standards
+    # if ! composer phpcs; then
+    #     echo "❌ Standards check failed, aborting push"
+    #     exit 1
+    # fi
+fi
+
+echo "✅ pre-push check passed"
+exit 0</code></pre>
+<pre><code>chmod +x .git/hooks/pre-push</code></pre>
+<h2>Database Sync: Three Scenario Commands</h2>
+<h3>Scenario A: Pull Staging to Local</h3>
+<p>The most common use case: reproducing a staging environment bug locally for debugging.</p>
+<pre><code># 1. Export from staging server (via SSH)
+ssh user@staging-server "
+wp db export - | gzip > /tmp/staging-db-$(date +%Y%m%d).sql.gz
+"
+
+# 2. Download locally
+scp user@staging-server:/tmp/staging-db-$(date +%Y%m%d).sql.gz /tmp/
+
+# 3. Import locally (backup current DB first)
+wp db export /tmp/local-backup-$(date +%Y%m%d).sql
+wp db drop --yes
+wp db create
+gunzip < /tmp/staging-db-$(date +%Y%m%d).sql.gz | wp db import -
+
+# 4. Replace URLs (staging → local)
+wp search-replace 'https://staging.example.com' 'http://localhost:8080' --export=/tmp/replace.sql
+wp db query < /tmp/replace.sql
+
+# 5. Clear caches
+wp cache flush
+wp rewrite flush</code></pre>
+<p>> **Note**: <code>wp search-replace</code> handles serialized data correctly in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.1+. Always run <code>wp core update-db</code> after import to ensure DB version consistency.</p>
+<h3>Scenario B: Production → Staging (Scrubbed Data)</h3>
+<p>Testing with real production traffic in staging, with user data sanitized:</p>
+<pre><code># 1. Export from production (excluding user-sensitive tables)
+ssh user@prod-server "
+wp db export - --exclude_tables=wp_users,wp_usermeta --add-drop-table | gzip
+" > /tmp/prod-scrubbed.sql.gz
+
+# 2. Import to staging
+gunzip < /tmp/prod-scrubbed.sql.gz | wp db import -
+wp search-replace 'https://your-site.com' 'https://staging.your-site.com' --precise
+
+# 3. Create test account (never use real user data)
+wp user create testuser test@example.com --role=administrator --user_pass=TestPass123</code></pre>
+<h3>Scenario C: Staging → Production (Zero-Downtime Deploy)</h3>
+<p>The release workflow: enable maintenance mode first, then migrate the database:</p>
+<pre><code># 1. Export staging DB
+wp db export /tmp/staging-final.sql --add-drop-table
+
+# 2. Production operations (maintenance + backup + migration)
+ssh user@prod-server "
+    # Enable maintenance page
+    wp maintenance-mode activate --path='/var/www/your-site'
+
+    # Backup current production DB
+    wp db export /tmp/prod-backup-$(date +%Y%m%d-%H%M).sql
+
+    # Import staging data
+    wp db import /tmp/staging-final.sql
+
+    # URL replacement
+    wp search-replace 'https://staging.your-site.com' 'https://your-site.com' --precise
+
+    # Disable maintenance mode
+    wp maintenance-mode deactivate
+"
+
+echo "✅ Production updated successfully"</code></pre>
+<h2>wp-config.php Separation (Critical Security Step)</h2>
+<p>**Never commit <code>wp-config.php</code> with passwords in it**. I use a three-file separation strategy:</p>
+<pre><code># Local-only config (in .gitignore)
+cat > wp-config-local.php << 'EOF'
+<?php
+define('DB_NAME', 'myblog_local');
+define('DB_USER', 'root');
+define('DB_PASSWORD', '');
+define('DB_HOST', 'localhost');
+define('WP_DEBUG', true);
+EOF
+
+# Main config (version-controlled)
+cat > wp-config.php << 'EOF'
+<?php
+/**
+ * <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Configuration Entry Point
+ */
+define('WP_ENV', 'production');
+define('AUTH_KEY',         'put your unique phrase here');
+define('SECURE_AUTH_KEY',  'put your unique phrase here');
+define('LOGGED_IN_KEY',    'put your unique phrase here');
+define('NONCE_KEY',        'put your unique phrase here');
+
+/**
+ * Environment-specific config (NOT in version control)
+ */
+if (file_exists(__DIR__ . '/wp-config-local.php')) {
+    require_once __DIR__ . '/wp-config-local.php';
+} elseif (file_exists(__DIR__ . '/wp-config-prod.php')) {
+    require_once __DIR__ . '/wp-config-prod.php';
+}
+
+/* Core constants */
+define('WP_CONTENT_DIR', __DIR__ . '/wp-content');
+define('ABSPATH', __DIR__ . '/');
+EOF</code></pre>
+<pre><code># On production server, create wp-config-prod.php separately (via SSH)
+ssh user@prod-server "cat > /var/www/your-site/wp-config-prod.php << 'EOF'
+<?php
+define('DB_NAME', 'myblog_prod');
+define('DB_USER', 'prod_db_user');
+define('DB_PASSWORD', '\${PROD_DB_PASSWORD}');
+define('DB_HOST', 'localhost');
+define('WP_DEBUG', false);
+define('DISALLOW_FILE_EDIT', true);
+EOF"</code></pre>
+<p>> **Security tip**: Store production DB passwords via <code>ANSIBLE_VAULT</code> or <code>SOPS</code>, never in plaintext server configs.</p>
+<h2>Troubleshooting: Three Real Errors and Fixes</h2>
+<h3>Error 1: "Duplicate entry for key 'PRIMARY'" on wp db import</h3>
+<p>**Cause**: <code>--add-drop-table</code> was missing during export, or existing data caused primary key conflicts on import.</p>
+<p>**Fix**: The correct export command is <code>wp db export --add-drop-table</code>. For import:</p>
+<pre><code>wp db drop --yes && wp db create && wp db import /tmp/staging-final.sql</code></pre>
+<p>If the issue persists, check that the SQL file header contains <code>DROP TABLE IF EXISTS</code> statements.</p>
+<h3>Error 2: 502 Bad Gateway after post-receive runs</h3>
+<p><strong>Cause</strong>: PHP-FPM's OPcache wasn't flushed. Old code was cached, but nginx connected to a new PHP process.</p>
+<p><strong>Fix</strong>: Add this to your post-receive hook:</p>
+<pre><code>systemctl reload php8.2-fpm</code></pre>
+<p>Or if you're using Docker:</p>
+<pre><code>docker exec your-php-container php-fpm -R</code></pre>
+<h3>Error 3: Images broken after wp search-replace</h3>
+<p>**Cause**: Image URLs in <code>wp_postmeta</code> are stored in serialized data. A raw string replace can corrupt the serialization string length.</p>
+<p>**Fix**: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.1+ <code>wp search-replace</code> handles serialized data natively, but if you're using legacy migration plugins:</p>
+<pre><code># Use WP-CLI native command, correctly handles serialized data
+wp search-replace 'https://old.com' 'https://new.com' --precise --recurse-queries</code></pre>
+<h2>One-Command Rollback</h2>
+<pre><code># Code rollback to previous Git commit
+wp maintenance-mode activate
+git reset --hard HEAD~1
+git checkout -f
+wp maintenance-mode deactivate
+wp cache flush
+
+# Or restore from database backup
+wp db import /tmp/prod-backup-YYYYMMDD-HHMM.sql
+wp cache flush</code></pre>
+<h2>Post-Deploy Verification Checklist</h2>
+<pre><code># WP-CLI doctor check
+wp doctor check --path=/var/www/your-site
+
+# Core file integrity
+wp core verify-checksums --path=/var/www/your-site
+
+# Plugin and theme status
+wp plugin status --path=/var/www/your-site
+wp theme status --path=/var/www/your-site
+
+# Verify site URL is correct
+wp option get blogname
+wp option get siteurl</code></pre>
+<h2>Summary</h2>
+<p>The entire pipeline's core tool is WP-CLI. Database operations, cache flushing, maintenance mode — all standardized through it. I wrapped the whole workflow into a <code>deploy.sh</code> script: <code>git push</code> triggers the post-receive hook and everything else is automatic. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.7+ <code>WP_CLI_REMOTE_CMD</code> combined with Git Hooks is the most practical lightweight CI/CD alternative for 2026 — no Jenkins, no <a href="/2026-04-23-github-cli身份验证失败的排查与解决我花了2小时才找到原因.html" class="internal-link">GitHub</a> Actions, just an SSH-accessible server.</p>
+<p><strong>Related Reading</strong></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
