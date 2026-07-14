@@ -44,7 +44,7 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TechPassive - 零成本被动收入实战</title>
-    <meta name="description" content="分享真实可执行的被动收入方法，从零开始构建在线收入流">
+    <meta name="description" content="TechPassive 是面向程序员的零成本被动收入实战站点，专注真实测试内容。覆盖亚马逊联盟选购评测、WordPress 自建站全流程、GitHub Actions 自动化部署、Claude Code 与 n8n AI 工作流、VPS 与服务器选型对比等。中文为主，附英文译版，全部文章经人工复核。">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
@@ -200,7 +200,7 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>TechPassive - Passive Income That Works</title>
-    <meta name="description" content="Practical guides on passive income, automation, and making money online with technology">
+    <meta name="description" content="Hands-on passive income testing site for developers. AI, WordPress, Amazon, Claude Code, n8n in 2026. Chinese-first, selected English, human-reviewed.">
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px; }
