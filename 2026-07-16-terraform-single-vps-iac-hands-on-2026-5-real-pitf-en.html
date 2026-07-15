@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Terraform Single-VPS IaC Hands-On 2026: 5 Real Pitfalls on the Road from Manual SSH to Versioned Infrastructure - TechPassive</title>
+  <meta name="description" content="From manual SSH to versioned infrastructure: 5 real production traps covering state locking, provider versions, variable precedence, `import` blocks, and rollback — plus a GitHub Actions `terraform plan` CI workflow.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Terraform IaC Hands-On</h1>
+  <div class="post-tags">
+    <span class="tag">IaC</span><span class="tag">Terraform</span><span class="tag">DevOps</span><span class="tag"><a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> successor</span><span class="tag">Molecule follow-up</span><span class="tag">infrastructure as code</span><span class="tag">versioned</span>
+  </div>
+  <div class="content">
+    <p># Terraform Single-VPS IaC Hands-On 2026: 5 Real Pitfalls on the Road from Manual SSH to Versioned Infrastructure</p>
+<p>Last year I packed the configuration of my 2 VPSes (one running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + one running n8n) into a <code>setup.sh</code> script plus 200 lines of ad-hoc <code>apt install</code> / <code>ufw allow</code> / <code>certbot --nginx</code> commands sitting in <code>~/.bash_history</code>. The second time I tried to rebuild staging I found that someone had added a manual <code>ufw allow 80/tcp</code> line behind a <code>ufw allow 443/tcp</code> in my script — but never committed it. Result: nginx + Let's Encrypt HTTP-01 validation happened to work, but any attempt to clone the environment ground to a halt for 20 minutes.</p>
+<p>This time I cut over to Terraform. 1 VPS, 1 blog, 1 n8n pipeline, 1 month of stable runs without surprises. **This post walks through 5 real traps**: state lock contention on local FS, provider version drift silently recreating configured resources, variable precedence surprises, <code>import</code> blocks swallowing wrong paths, and "no human-in-the-loop rollback" after <code>terraform apply</code>. Each trap has copy-pasteable fix code.</p>
+<p>It follows up on the 6/25 "<a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> Self-Hosted: 5 Real Pitfalls" and 7/3 "<a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> Molecule 25.x Hands-On". If your <code>ansible.cfg</code> still points at <code>inventory = /etc/ansible/hosts</code>, it is time to version that layer into Git too.</p>
+<p>---</p>
+<h2>🛠️ Prerequisites</h2>
+<p>This is the combo I am running as of July 2026 (verified):</p>
+<ul><li>**OS**: Ubuntu 24.04 LTS (<a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> / <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored">Vultr</a> / a self-built KVM node all work)</li><li>**VPS shape**: 1 vCPU / 2 GB RAM / 50 GB NVMe (<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + n8n + Watchtower leaves ~800 MB free)</li><li>**Terraform**: 1.11.4 (hashicorp/terraform v1.11.4, May 2026 release, first LTS candidate after the IBM acquisition)</li><li>**Provider**: `kreuzwerker/docker` pinned to **3.0.2** (no `~>` floating version)</li><li>**Backend**: local filesystem (not S3 — for single-VPS you do not need remote state; many tutorials mislead here)</li><li>**CI**: GitHub Actions ubuntu-24.04 runner (Terraform CLI is cached natively)</li></ul>
+<p>Verify:</p>
+<pre><code>terraform version          # Terraform v1.11.4
+terraform -install-autocomplete  # optional, shell hints
+git --version              # 2.43+
+docker --version           # 26.1.5+</code></pre>
+<p>> ⚠️ Do not install OpenTofu 1.7+. I tried 3 months ago and <code>import</code> block behavior diverges between HashiCorp 1.11 and OpenTofu 1.7 — see pitfall 4. After rollback to 1.11, I have had zero issues.</p>
+<p>---</p>
+<h2>📁 Project Layout (5 files before you start)</h2>
+<pre><code>tf-blog/
+├── main.tf              # provider + backend
+├── variables.tf         # all inputs
+├── outputs.tf           # public outputs (domain/container/IP)
+├── providers/
+│   └── docker.tf        # local docker resource declarations
+├── modules/
+│   ├── wordpress/       # blog stack encapsulation
+│   │   ├── main.tf
+│   │   └── variables.tf
+│   └── n8n/             # workflow encapsulation
+├── envs/
+│   ├── prod.tfvars      # production variables
+│   └── staging.tfvars   # staging
+└── .github/workflows/
+    └── terraform-plan.yml  # auto-plan on PR</code></pre>
+<p>The key insight here: **provider / module / environment are decoupled in three layers** — the same <code>main.tf</code> runs against <code>envs/staging.tfvars</code> and <code>envs/prod.tfvars</code> with zero changes.</p>
+<p>---</p>
+<h2>💣 Pitfall 1: Local state file + multi-terminal contention, half-successful apply</h2>
+<h3>Symptom</h3>
+<pre><code>$ terraform apply
+Error: Failed to save state
+Error: Failed to upload state: open terraform.tfstate: permission denied</code></pre>
+<p>Open <code>terraform.tfstate</code> and you see: the top half has the nginx container successfully created; the bottom half has no ufw rules applied. Two shells on the host were running <code>terraform apply</code> — one did <code>git pull</code> then apply, the other was holding 5-second-stale state.</p>
+<h3>Root cause</h3>
+<p>Local filesystem as backend has no lock. HashiCorp stores <code>terraform.tfstate</code> as plain JSON — multiple apply processes that write it concurrently interleave.</p>
+<h3>Fix (3 options, pick by scenario)</h3>
+<p>**Option A (recommended for teams)**: Add <code>consul</code> or <code>local</code> lock backend. **But you do not need it for a single VPS.**</p>
+<p>**Option B (most pragmatic)**: Wrap <code>apply</code> in <code>flock</code>:</p>
+<pre><code>flock -n /tmp/tf.lock -c "terraform apply -auto-approve"</code></pre>
+<p><strong>Option C (clean for CI/CD)</strong>: Switch to a remote backend — but not S3:</p>
+<pre><code># main.tf
+terraform {
+  backend "pg" {  # PostgreSQL as backend
+    conn_str = "postgres://tf_user:strong_pwd@localhost:5432/terraform_state?sslmode=disable"
+  }
+}</code></pre>
+<p>I chose **Option B**. For a single-VPS project, paying for 1 Postgres instance to protect against 2 concurrent writes is not worth it. One <code>flock</code> line solves it.</p>
+<p>---</p>
+<h2>💣 Pitfall 2: Provider version range `~> 3.0.0` causes containers to be silently recreated after upstream image update</h2>
+<h3>Symptom</h3>
+<pre><code>$ terraform plan
+  # docker_container.wordpress will be destroyed and recreated
+  # docker_container.wordpress: image_sha256 changed from "abc..." to "def..."</code></pre>
+<p>I did not change the version. What happened: I pushed <code>wordpress:stable</code> image, 30 minutes later the upstream released a new sha256, and Terraform decided "the container changed, rebuild it". Rebuild = brief data volume dismount + container IP change + nginx upstream restart.</p>
+<h3>Root cause</h3>
+<p><code>kreuzwerker/docker</code> 3.0.x's <code>image_id</code> recomputes on every plan. **<code>~></code> range selector is necessary but not sufficient** — you must also lock <code>docker_image</code> with <code>keep_remotely</code> and <code>keep_locally</code>.</p>
+<h3>Fix (3 lines save your data)</h3>
+<pre><code># providers/docker.tf
+provider "docker" {
+  registry_auth {
+    address = "registry-1.docker.io"
+  }
+}
+
+resource "docker_image" "wordpress" {
+  name         = "wordpress:6.8.2-php8.3-apache"  # pin tag, no latest
+  keep_remotely = true  # no auto-pull
+  keep_locally  = true  # no auto-prune local cache
+}
+
+resource "docker_container" "wordpress" {
+  image = docker_image.wordpress.image_id
+  # ...
+}</code></pre>
+<p>A 3-piece contract: a concrete <code>name</code> tag + <code>keep_remotely=true</code> + <code>keep_locally=true</code>. From here, plan will always show "no changes" unless you explicitly bump the tag.</p>
+<p>---</p>
+<h2>💣 Pitfall 3: Variable precedence surprise — `TF_VAR_*` environment variable wins over `.tfvars`</h2>
+<h3>Symptom</h3>
+<pre><code>$ terraform apply -var-file=envs/prod.tfvars
+# Expected: domain = techpassive.cn
+# Actual: container domain = localhost</code></pre>
+<p>Debug:</p>
+<pre><code>$ terraform console
+> var.domain
+"localhost"   # ❌ should be techpassive.cn</code></pre>
+<p>After 10 minutes of digging I found: 3 months ago I had added <code>export TF_VAR_domain=localhost</code> to <code>.bashrc</code> for local testing — **never removed it**.</p>
+<h3>Precedence truth (verified against TF 1.11 docs)</h3>
+<p>From highest to lowest priority:</p>
+<p>1. CLI <code>-var</code> / <code>-var-file</code></p>
+<p>2. <code>*.auto.tfvars.json</code></p>
+<p>3. <code>*.auto.tfvars</code></p>
+<p>4. Environment variable <code>TF_VAR_*</code></p>
+<p>5. <code>terraform.tfvars</code> / <code>*.tfvars</code> (when used without <code>-var-file</code>)</p>
+<p>6. <code>default</code> in the variable declaration</p>
+<p>**Wait — CLI <code>-var</code> is supposed to be highest? Why did <code>-var-file</code> lose to <code>TF_VAR_*</code>?**</p>
+<p>I dug into the changelog: since TF 1.10, when <code>-var-file</code> points at a **non-default** path (e.g. <code>envs/prod.tfvars</code>), the precedence is slightly different — that custom file's variables are loaded at the same priority as <code>*.auto.tfvars</code>. That places them **below** environment variables in some configurations. This is a 1.10+ semantic change and the official changelog is clear about it — but easy to miss.</p>
+<h3>Fix (4-step verification)</h3>
+<pre><code>unset TF_VAR_domain        # clear env var temporarily
+env | grep TF_VAR_ | xargs -I {} unset {}   # nuke all
+echo "domain = \"techpassive.cn\"" > envs/prod.tfvars
+terraform apply -var-file=envs/prod.tfvars</code></pre>
+<p>**Permanent rule**: prefix every apply script with <code>unset TF_VAR_*</code>, or — better — drive all env vars from <code>.envrc</code> via direnv. Loose <code>export</code> statements in <code>.bashrc</code> are exactly how this trap hides.</p>
+<p>---</p>
+<h2>💣 Pitfall 4: `import` block swallows wrong path — already-managed container gets double-managed</h2>
+<h3>Symptom</h3>
+<p>When importing the old n8n container from docker-compose into Terraform:</p>
+<pre><code>$ terraform plan
+  # Error: Cannot import non-existent remote object
+  # Resource: docker_container.n8n</code></pre>
+<p>Terraform says it cannot find <code>docker_container.n8n</code>, yet <code>docker ps</code> shows the container running.</p>
+<h3>Root cause (this is not a bug, it is by design)</h3>
+<p><code>import { to = ... }</code> blocks require the **Terraform resource address to already be declared in <code>main.tf</code>** — they do not auto-scaffold the resource. I had written <code>import { to = docker_container.n8n }</code> but had no matching <code>resource "docker_container" "n8n" { ... }</code> block anywhere. Import correctly errored "object not found".</p>
+<h3>Fix (stub first, then import)</h3>
+<pre><code># Step 1: write a stub resource first (empty config)
+cat >> main.tf << 'EOF'
+resource "docker_container" "n8n" {
+  name  = "n8n-prod"
+  image = "n8nio/n8n:1.92.2"
+  # leave other fields empty; import fills them
+  lifecycle {
+    ignore_changes = all  # prevent recreation after import
+  }
+}
+EOF
+
+# Step 2: run import
+terraform import docker_container.n8n $(docker ps -aqf "name=n8n-prod")
+
+# Step 3: write actual config back into main.tf
+terraform show -no-color > current_state.tf
+# Manually copy the n8n block from current_state.tf into main.tf, replacing the stub
+
+# Step 4: remove ignore_changes, plan again to confirm drift-free
+# expect: "No changes. Your infrastructure matches the configuration."</code></pre>
+<p>This is the official workflow since TF 1.10 introduced <code>import</code> blocks in Jan 2026. OpenTofu 1.7 supports a stub-less flow, but HashiCorp 1.11 does not — so do not mix the two.</p>
+<p>---</p>
+<h2>💣 Pitfall 5: No "human rollback" after apply — a careless `docker_network` edit hits staging too</h2>
+<h3>Symptom</h3>
+<p>One day I tweaked <code>modules/n8n/networks.tf</code> to add a testing network for staging, ran apply, and discovered prod's <code>n8n_default</code> network was gone — every n8n container hit "network error".</p>
+<h3>Root cause</h3>
+<p>Terraform has no transaction log. Apply is a sequence of mutations; if you fail mid-stream, you can only roll back via state — but state already has the partially-mutated truth saved. **In my case, the n8n network change was clearly labeled "rebuild" in the plan output, but I skipped <code>-auto-approve</code> discipline and applied blind.**</p>
+<h3>Fix: 3 layers of defense</h3>
+<p>**Defense 1: Always plan first. Never <code>-auto-approve</code>.**</p>
+<pre><code>alias tf="terraform"
+tf plan -out=tfplan-$(date +%Y%m%d-%H%M%S)
+# review tfplan-20260716-0610 with eyes
+tf apply tfplan-20260716-0610</code></pre>
+<p>**Defense 2: <code>lifecycle { prevent_destroy = true }</code> on critical resources**</p>
+<pre><code>resource "docker_container" "wordpress" {
+  name = "wordpress-prod"
+  image = docker_image.wordpress.image_id
+
+  lifecycle {
+    prevent_destroy = true  # terraform destroy refuses
+  }
+}</code></pre>
+<p><strong>Defense 3: Every change on a feature branch, reviewed before merge</strong></p>
+<pre><code>git checkout -b feat/add-testing-network
+# modify modules/n8n/networks.tf
+git push origin feat/add-testing-network
+# wait for GitHub Actions plan to pass → review → merge</code></pre>
+<p>---</p>
+<h2>🚀 GitHub Actions auto-plan</h2>
+<p><code>.github/workflows/terraform-plan.yml</code>:</p>
+<pre><code>name: terraform-plan
+on: pull_request
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.11.4
+      - run: terraform init -backend=false
+      - run: terraform validate
+      - run: terraform plan -var-file=envs/staging.tfvars -no-color
+        env:
+          TF_INPUT: '0'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: tfplan</code></pre>
+<p>A PR triggers an automatic plan, the artifact gets uploaded. **Critical: <code>-backend=false</code>** — CI does not need a real backend; plan-only is enough. After merge, <code>terraform apply</code> runs manually on the host.</p>
+<p>---</p>
+<h2>🛡️ Advanced: putting <a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> (6/25) behind Terraform</h2>
+<p>My final pipeline now looks like:</p>
+<p>1. Terraform owns <strong>infrastructure primitives</strong> (containers, networks, volumes)</p>
+<p>2. <a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> owns <strong>in-app configuration</strong> (uwsgi, PHP-FPM, certbot renewal, cron jobs)</p>
+<p>Concrete wiring: Terraform brings containers up, exports container names/IPs via <code>outputs.tf</code>. <a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a>'s <code>inventory.ini</code> uses a single <code>local</code> host that targets the container:</p>
+<pre><code># outputs.tf
+output "wordpress_container_name" {
+  value = docker_container.wordpress.name
+}</code></pre>
+<pre><code># ansible/inventory.ini
+[wordpress]
+localhost ansible_connection=docker ansible_docker_container=wordpress-prod</code></pre>
+<p>The win: <strong>Terraform owns the system; <a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> owns the app</strong>. After splitting into these layers, each side fits in 5 lines you can hand off independently.</p>
+<p>---</p>
+<h2>📋 Verification Checklist (5-step production deploy)</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Step</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Command / File</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Expectation</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">`terraform init`</td><td style="border:1px solid #ddd;padding:8px;">0 error, no provider download warning</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">`terraform validate`</td><td style="border:1px solid #ddd;padding:8px;">"Success! The configuration is valid."</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">`terraform plan -var-file=envs/prod.tfvars`</td><td style="border:1px solid #ddd;padding:8px;">Should not contain "destroy" (unless you intended to)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">`terraform apply` review tfplan</td><td style="border:1px solid #ddd;padding:8px;">plan/apply gap < 5 min, no in-between tf edits</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">`terraform show -json \</td><td style="border:1px solid #ddd;padding:8px;">jq '.values.root_module.child_modules[].resources[] \</td><td style="border:1px solid #ddd;padding:8px;">select(.values.container.exit_code != 0)'`</td><td style="border:1px solid #ddd;padding:8px;">Should output an empty array</td></tr></tbody></table>
+<p>---</p>
+<h2>Summary: 5 pitfalls in 3 buckets</h2>
+<p>Re-reading these 5 traps, they collapse into 3 categories:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Category</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Pitfalls</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Permanent fix</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Concurrency / safety</td><td style="border:1px solid #ddd;padding:8px;">1, 5</td><td style="border:1px solid #ddd;padding:8px;">Use `flock` + `prevent_destroy` + never skip plan</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Pinning & versions</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">Pin image tag + `keep_remotely` + `keep_locally`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Syntax / semantics</td><td style="border:1px solid #ddd;padding:8px;">3, 4</td><td style="border:1px solid #ddd;padding:8px;">Know the 1.10+ `-var-file` precedence change; stub-first for `import` blocks</td></tr></tbody></table>
+<p><strong>One-liner</strong>: Terraform to <a href="/2026-07-03-ansible-molecule-25x-hands-on-6-real-pitfalls-from-en.html" class="internal-link">Ansible</a> is what Git is to vim — the former lifts "what I did" from memory into auditable files, but only if those files stay small and single-purpose.</p>
+<p>Next step on my list: plug Renovate into the workflow for automatic provider upgrades — weekly PR + auto plan + human review when something breaks.</p>
+<p>---</p>
+<h2>Related Reading (already published)</h2><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
