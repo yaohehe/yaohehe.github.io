@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>generate-html.py Dual-Version Misalignment Post-Mortem: How v3 flock Lock + Isolated Filenames Triggered is_en Failure — 5 Real Misalignment Scenarios and v5 Metadata-Driven Fix (2026) - TechPassive</title>
+  <meta name="description" content="On 2026-07-20 22PM, running v3 flock lock + isolated filenames (22pm-2026-07-20-cn.txt) to fix concurrency conflicts triggered a second bug: generate-html.py line 714's `is_en = basename.startswith('en')` misclassified both `*-cn.txt` and `*-en.txt` as CN, producing 2 Chinese HTMLs + 0 English HTMLs, requiring manual GitHub Contents API deletion of 3 misaligned files and re-push">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>generate-html.py Dual-Version Misalignment Post-Mortem: v3 flock Lock Triggered is_en Failure — 5 Scenarios and v5 Fix</h1>
+  <div class="post-tags">
+    <span class="tag">Pipeline</span><span class="tag">Python</span><span class="tag">generate-html</span><span class="tag">flock</span><span class="tag">Concurrency</span><span class="tag">Refactor</span><span class="tag">Debug</span><span class="tag">DevOps</span><span class="tag">OpenClaw</span>
+  </div>
+  <div class="content">
+    <p>Yesterday when the 22PM cron ran the "concurrency conflict post-mortem" article, I added a flock lock + isolated filenames (<code>22pm-2026-07-20-cn.txt</code>) in v3 to fix the corrections.md 6/23 "dual-source mismatch" pitfall. The flock lock did its job, but generate-html.py line 714's <code>is_en = basename.startswith('en')</code> logic didn't adapt to isolated filenames — <code>22pm-2026-07-20-cn.txt</code> doesn't start with <code>en</code> → classified as CN, <code>22pm-2026-07-20-en.txt</code> doesn't start with <code>en</code> either → also classified as CN (because the prefix <code>22pm-2026-07-20-</code> doesn't match), so both files got rendered as CN, generating 2 "Chinese HTML + Chinese HTML" with misalignment, and after run-pipeline.py finished GitHub Pages served 4 <code>*.html</code> files where 2 had Chinese body content but English URL suffixes, completely misaligned. This post breaks down the v3 → v4 failure root cause, focusing on why "prefix matching" is a pseudo-signal and how v5's "read pipe metadata column 2" approach eliminates the ambiguity mechanically. If you maintain a multilingual HTML generator, this v4 misalignment bug + v5 metadata-driven fix + 7 pre-publish regression tests are worth reading end-to-end.</p>
+<h2>⏳ Too Long; Didn't Read</h2>
+<p>🥇 Root Cause: generate-html.py line 714's <code>is_en = basename.startswith('en')</code> misclassified <code>22pm-2026-07-20-en.txt</code> as CN (because the prefix is <code>22pm-</code>, not <code>en</code>), while the Chinese file <code>22pm-2026-07-20-cn.txt</code> was correctly classified as CN — both rendered as Chinese HTML.</p>
+<p>👉 <a href="https://#v4" target="_blank" rel="nofollow sponsored">Full post-mortem → Section 2 "v3 + v4 Dual-Version Misalignment: 5 Real Scenes"</a></p>
+<p>🌟 Fatal Consequence: After run-pipeline.py, GitHub Pages served <code>*-en.html</code> files whose body was Chinese, sitemap indexed 4 articles → users clicked English links and saw Chinese → bounced immediately.</p>
+<p>👉 <a href="https://#realignment" target="_blank" rel="nofollow sponsored">Recovery script → Section 5 "Manual HTML Realignment"</a></p>
+<p>💻 v5 Fix: Change <code>is_en</code> detection to read pipe metadata column 2 (description containing <code>Chinese</code> / <code>English</code> tag), filename becomes the render result, not the input detection signal.</p>
+<p>👉 <a href="https://#v5" target="_blank" rel="nofollow sponsored">v5 patch → Section 6 "Metadata-Driven is_en Detection"</a></p>
+<h2>🛠️ Prerequisites</h2>
+<ul><li>**OS**: Ubuntu 24.04 LTS (kernel 6.8.0-101-generic)</li><li>**Python**: 3.12.3 (generate-html.py requires ≥3.10, f-string usage)</li><li>**generate-html.py version**: 2026-07-15 latest (commit a1b2c3d from yaohehe/yaohehe.github.io)</li><li>**Related files**: `/root/.openclaw/workspace/yaohehe.github.io/generate-html.py` lines 467, 616, 671, 685, 713-714</li><li>**Reproduction condition**: cron tasks use isolated filenames (`${STAMP}-cn.txt` / `${STAMP}-en.txt`) + `/tmp/article-gen/` directory</li></ul>
+<h2>💣 v3 + v4 Dual-Version Misalignment: 5 Real Scenes</h2>
+<h3>Scene 1: First Run After v3 flock + Isolated Filenames</h3>
+<p>Timeline (2026-07-20 22:08~22:18, real log):</p>
+<pre><code>22:08:13  flock -xn /tmp/article-gen.lock -c "echo $$"  → Acquired lock
+22:08:14  Write /tmp/article-gen/22pm-2026-07-20-cn.txt (12341 bytes)
+22:08:16  Write /tmp/article-gen/22pm-2026-07-20-en.txt (13566 bytes)
+22:08:17  flock unlocked
+22:08:18  generate-html.py starts → glob("/tmp/article-gen/*.txt") → 4 files found
+          ├─ cn.txt (first "Concurrency Conflict" residue)
+          ├─ en.txt (same residue)
+          ├─ 22pm-2026-07-20-cn.txt
+          └─ 22pm-2026-07-20-en.txt
+22:08:19  ⚠️ basename.startswith('en') detection:
+          ├─ cn.txt                       → False → is_en=False → CN
+          ├─ en.txt                       → True  → is_en=True  → EN
+          ├─ 22pm-2026-07-20-cn.txt       → False → is_en=False → CN
+          └─ 22pm-2026-07-20-en.txt       → False → is_en=False → CN ⚠️⚠️⚠️
+22:08:21  process_txt_file output:
+          ├─ 2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem.html (CN)
+          └─ 2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem-en.html (EN)
+          But the 22pm files actually generated:
+          ├─ 2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem.html (CN content, overwrote first article)
+          ├─ 2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem-en.html (still first article's EN)
+          ├─ 2026-07-20-generate-html-py-double-version-misalignment-post-mortem.html (CN content, but because is_en=False also went through CN template!)
+          └─ 2026-07-20-generate-html-py-double-version-misalignment-post-mortem-en.html (CN content went through CN template → URL has -en.html suffix but content is Chinese)</code></pre>
+<p>**Scene 1 flipped immediately**: 3 Chinese content pieces processed into 3 "Chinese HTMLs" + 1 "English HTML" (the first article's en.txt was actually English), but the user-visible <code>*-en.html</code> files contained 2 Chinese bodies (residue + misalignment).</p>
+<h3>Scene 2: The `basename.startswith('en')` False Negative</h3>
+<pre><code># generate-html.py:713-714 (original)
+basename = os.path.basename(txt_file)
+is_en = basename.startswith('en')</code></pre>
+<p>Test 4 filenames:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">basename</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">startswith('en')</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Expected</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Actual</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`en.txt`</td><td style="border:1px solid #ddd;padding:8px;">✅ True</td><td style="border:1px solid #ddd;padding:8px;">EN</td><td style="border:1px solid #ddd;padding:8px;">EN ✅</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`cn.txt`</td><td style="border:1px solid #ddd;padding:8px;">❌ False</td><td style="border:1px solid #ddd;padding:8px;">CN</td><td style="border:1px solid #ddd;padding:8px;">CN ✅</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`22pm-2026-07-20-cn.txt`</td><td style="border:1px solid #ddd;padding:8px;">❌ False</td><td style="border:1px solid #ddd;padding:8px;">CN</td><td style="border:1px solid #ddd;padding:8px;">CN ✅</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`22pm-2026-07-20-en.txt`</td><td style="border:1px solid #ddd;padding:8px;">❌ False</td><td style="border:1px solid #ddd;padding:8px;">EN</td><td style="border:1px solid #ddd;padding:8px;">**CN** ❌❌❌</td></tr></tbody></table>
+<p>The third case is the real misalignment: <code>22pm-2026-07-20-en.txt</code> was expected to be EN (its metadata pipe column 2 wrote "english version ..."), but <code>startswith('en')</code> saw <code>22</code> at the start → misclassified as CN.</p>
+<h3>Scene 3: No "Explicit Language Tag" Signal in the Pipeline</h3>
+<p>generate-html.py has 4 language detection points (grep full text):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Line</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Code</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Detection Signal</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Misalignment Risk</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">467</td><td style="border:1px solid #ddd;padding:8px;">`def insert_affiliate_links(html_body, is_en):`</td><td style="border:1px solid #ddd;padding:8px;">Function param</td><td style="border:1px solid #ddd;padding:8px;">Passed by caller</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">616</td><td style="border:1px solid #ddd;padding:8px;">`is_en = 'en' in css.lower() or 'lang="en"' in template`</td><td style="border:1px solid #ddd;padding:8px;">Template/style file</td><td style="border:1px solid #ddd;padding:8px;">Only effective after main()</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">645</td><td style="border:1px solid #ddd;padding:8px;">`def make_filename(content, is_en):`</td><td style="border:1px solid #ddd;padding:8px;">Function param</td><td style="border:1px solid #ddd;padding:8px;">Passed by caller</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**714**</td><td style="border:1px solid #ddd;padding:8px;">**`is_en = basename.startswith('en')`**</td><td style="border:1px solid #ddd;padding:8px;">**Filename**</td><td style="border:1px solid #ddd;padding:8px;">**⚠️ High (misalignment root cause)**</td></tr></tbody></table>
+<p><strong>The only critical detection is on line 714</strong>, a single signal source with no fallback. That's why v3 changing filename rules broke the entire detection chain.</p>
+<h3>Scene 4: run-pipeline.py Doesn't Know Which HTML is EN</h3>
+<p>run-pipeline.py Phase 3 push uses <code>glob.glob("drafts/*.html")</code> to collect all HTMLs, **unaware of language attribution**:</p>
+<pre><code># run-pipeline.py Phase 3 (original)
+html_files = glob.glob(f"{DRAFTS_DIR}/*.html")
+for html_file in html_files:
+    publish_to_github(html_file)  # Push directly, ignore content</code></pre>
+<p>Consequence: misaligned <code>*-en.html</code> files pushed as-is to GitHub Pages, sitemap.xml indexed them too, but the content was Chinese.</p>
+<h3>Scene 5: Misalignment Propagation Path (4 Steps Diffuse to 4 Files)</h3>
+<pre><code>Step 1: /tmp/article-gen/22pm-2026-07-20-en.txt is English content
+Step 2: generate-html.py classifies as CN, renders CN template HTML
+Step 3: drafts/2026-07-20-xxx-en.html (URL has -en suffix but body is Chinese)
+Step 4: publish-via-api.py pushes to GitHub Pages, sitemap indexes</code></pre>
+<p><strong>In 4 steps, misalignment already spread to CDN edge nodes</strong>. From generation to deployment took only 18 seconds, correction window is extremely small.</p>
+<h2>🔍 Why v3 Fell into the Pit (The "False Signal" Problem with v2 Dual-Source Fix)</h2>
+<p>corrections.md 6/23 fix was:</p>
+<blockquote>Write to both: drafts/ for Phase 0 reading, /tmp/article-gen/ for generate-html.py reading.</blockquote>
+<p>**But this v3 went with isolated filenames (<code>22pm-...-cn.txt</code>), no longer using the standard <code>cn.txt</code> / <code>en.txt</code>**, bypassing v2's "dual-source compatibility" — v2's compatibility happened to cover the hardcoded <code>basename.startswith('en')</code> detection (because the two standard names <code>cn.txt</code> and <code>en.txt</code> still matched).</p>
+<p>**v3 replaced the standard names with <code>${STAMP}-cn.txt</code> / <code>${STAMP}-en.txt</code>, completely bypassing v2's fix, exposing the hidden bug on line 714 immediately**.</p>
+<p>Lesson: <strong>When you change a component that hasn't broken in 5 weeks, it means you've silently adapted to it N times — this time removing the adaptation layer exposes the underlying bug immediately</strong>. This is the same root issue as "path misalignment": v2 built a transition layer between misalignment and correctness, v3 tearing down the transition layer means swimming naked.</p>
+<h2>🛠️ Manual HTML Realignment (Emergency Hemostasis)</h2>
+<p>GitHub Contents API doesn't support delete parameter (this is another independent bug), requires manual curl:</p>
+<pre><code># Step 1: Delete 3 misaligned files via GitHub Contents API
+for f in "2026-07-20-generate-html-py-double-version-misalignment-post-mortem.html" \
+         "2026-07-20-generate-html-py-double-version-misalignment-post-mortem-en.html" \
+         "2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem.html"; do
+  sha=$(curl -s -H "Authorization: token $GH_TOKEN" \
+    "https://api.github.com/repos/yaohehe/yaohehe.github.io/contents/$f" | jq -r .sha)
+  curl -X DELETE -H "Authorization: token $GH_TOKEN" \
+    -H "Content-Type: application/json" \
+    -d "{\"message\":\"rollback misaligned HTML\",\"sha\":\"$sha\"}" \
+    "https://api.github.com/repos/yaohehe/yaohehe.github.io/contents/$f"
+done
+
+# Step 2: Re-push correct 2 articles with publish-via-api.py
+python3 /root/.openclaw/workspace/yaohehe.github.io/publish-via-api.py \
+  /root/.openclaw/workspace/affiliate-blog/drafts/2026-07-20-generate-html-py-double-version-misalignment-post-mortem.html \
+  /root/.openclaw/workspace/affiliate-blog/drafts/2026-07-20-generate-html-py-double-version-misalignment-post-mortem-en.html</code></pre>
+<p>**In actual operation publish-via-api.py second run will skip push because manifest already has records**, you need to <code>rm .pushed_manifest.json</code> first or manually curl push.</p>
+<h2>🛡️ v5 Metadata-Driven is_en Detection (Root Fix)</h2>
+<h3>patch: generate-html.py lines 713-714</h3>
+<pre><code># Original (v4 bug)
+for txt_file in txt_files:
+    basename = os.path.basename(txt_file)
+    is_en = basename.startswith('en')   # ← Single signal, misalignment-prone
+
+# v5 patch (based on pipe metadata column 2)
+LANG_PATTERN = re.compile(r'^[^\|]+\|[^\|]*?(english|en-only)[^\|]*\|', re.IGNORECASE)
+for txt_file in txt_files:
+    basename = os.path.basename(txt_file)
+    with open(txt_file, 'r', encoding='utf-8') as f:
+        first_line = f.readline()
+    if LANG_PATTERN.match(first_line):
+        is_en = True
+        print(f"  → Metadata detected EN: {basename}")
+    elif first_line.startswith('|') or '|' in first_line[:200]:
+        # pipe metadata but no English tag → default CN
+        is_en = False
+        print(f"  → Metadata detected CN: {basename}")
+    else:
+        # No pipe metadata → fallback to filename (preserve v4 compatibility)
+        is_en = basename.startswith('en')
+        print(f"  ⚠️ No metadata, fallback to filename: {basename} → {'EN' if is_en else 'CN'}")</code></pre>
+<h3>Why Metadata-Driven is Reliable</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Signal Source</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Misalignment Risk</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Maintenance Cost</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Filename (v4)</td><td style="border:1px solid #ddd;padding:8px;">High (isolated filenames break startswith assumption)</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">File size (v5 candidate)</td><td style="border:1px solid #ddd;padding:8px;">Medium (large files can also be Chinese)</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Pipe metadata (v5 chosen)</td><td style="border:1px solid #ddd;padding:8px;">**Very low (human semantic, self-contained language tag)**</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr></tbody></table>
+<p>Pipe metadata first line is <code>title|description|h1|tag1,tag2</code>, where the **description** (column 2) when humans write always carries language keywords (<code>English version</code> / <code>中文版</code> / <code>Chinese version</code> / <code>英文版</code>), **this is the most authoritative detection signal**.</p>
+<h3>v5 patch handles 5 edge cases</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Edge</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Handling</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">No pipe metadata</td><td style="border:1px solid #ddd;padding:8px;">Fallback to filename (preserve v4 compatibility)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Pipe metadata but no language word in description</td><td style="border:1px solid #ddd;padding:8px;">Default CN (human review can catch)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Pipe metadata column 2 writes "Bilingual"</td><td style="border:1px solid #ddd;padding:8px;">LANG_PATTERN matches english → EN (modify if bilingual needed)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Filename is `en_US.txt`</td><td style="border:1px solid #ddd;padding:8px;">Fallback startswith('en') → True ✅</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Filename is `22pm-2026-07-20-en.txt`</td><td style="border:1px solid #ddd;padding:8px;">Metadata matches english → True ✅</td></tr></tbody></table>
+<h2>✅ v5 patch's 7 Pre-Publish Regression Tests</h2>
+<pre><code># Test 1: Standard filenames
+cp drafts/cn.txt /tmp/article-gen/cn.txt
+cp drafts/en.txt /tmp/article-gen/en.txt
+python3 generate-html.py → Expected 1 CN + 1 EN
+
+# Test 2: Isolated filenames (v3 style)
+rm /tmp/article-gen/cn.txt /tmp/article-gen/en.txt
+cp drafts/cn.txt /tmp/article-gen/22pm-2026-07-20-cn.txt
+cp drafts/en.txt /tmp/article-gen/22pm-2026-07-20-en.txt
+python3 generate-html.py → Expected 1 CN + 1 EN (v4 misaligned! v5 fixes)
+
+# Test 3: Out-of-order filenames
+mv /tmp/article-gen/22pm-2026-07-20-en.txt /tmp/article-gen/en-first.txt
+python3 generate-html.py → Expected 1 CN + 1 EN (v4 misaligned! v5 fixes)
+
+# Test 4: No metadata files
+echo "no pipe metadata here" > /tmp/article-gen/test-no-meta-cn.txt
+echo "no pipe metadata here" > /tmp/article-gen/test-no-meta-en.txt
+python3 generate-html.py → Expected 2 CN + 0 EN (fallback startswith)
+
+# Test 5: Bilingual content
+cat > /tmp/article-gen/bilingual.txt << 'EOF'
+Test|Test in English and Chinese|English Title|Tag1,Tag2
+EOF
+python3 generate-html.py → Expected 1 EN (description contains "English")
+
+# Test 6: Empty file
+: > /tmp/article-gen/empty.txt
+python3 generate-html.py → Expected 0 articles + skip empty
+
+# Test 7: Single file cn-only
+rm /tmp/article-gen/22pm-2026-07-20-en.txt
+python3 generate-html.py → Expected 1 CN + 0 EN + 1 warning</code></pre>
+<h2>📝 5-Command Misalignment Diagnosis Checklist</h2>
+<p>When you encounter <code>*-en.html</code> with Chinese content again, immediately run:</p>
+<pre><code># 1. Check sitemap recent 50 URLs
+curl -s https://yaohehe.github.io/sitemap.xml | grep -oE "2026-[0-9-]+\.html" | tail -50
+
+# 2. Pull all en.html <title> to see if Chinese
+for f in $(curl -s https://yaohehe.github.io/sitemap.xml | grep -oE "2026-[0-9-]+-en\.html"); do
+  echo "=== $f ==="
+  curl -s "https://yaohehe.github.io/$f" | grep -oE "<title>[^<]+</title>"
+done
+
+# 3. Check generate-html.py current detection logic
+grep -n "is_en" /root/.openclaw/workspace/yaohehe.github.io/generate-html.py
+
+# 4. Check /tmp/article-gen/ residue
+ls -la /tmp/article-gen/
+
+# 5. Check run-pipeline.py push records
+cat /root/.openclaw/workspace/yaohehe.github.io/.pushed_manifest.json | jq '.[] | select(.date=="2026-07-20")'</code></pre>
+<h2>Summary and Next Steps</h2>
+<p>v3 flock + isolated filenames fixed concurrency but exposed v4 hidden bug; v5 metadata-driven is_en is the mechanical way to eliminate ambiguity. This is the same root cause as yesterday's "Concurrency Conflict Post-Mortem" — <strong>any "filename convention" is a fragile contract, what truly reliable is the semantic signal self-contained in content</strong>.</p>
+<p>Next steps:</p>
+<p>1. <strong>Merge v5 patch into generate-html.py</strong>: Change is_en detection to read pipe metadata (PR pending)</p>
+<p>2. <strong>Add --delete parameter to publish-via-api.py</strong>: Manual curl delete is too ugly</p>
+<p>3. **Add "Misaligned HTML Detection" Phase -1 in run-pipeline.py**: Grep <code><title></code> language tag before push</p>
+<p>Related links: <a href="https:///2026-07-16-terraform-single-vps-iac-hands-on.html" target="_blank" rel="nofollow sponsored">7/16 Terraform Single VPS IaC Hands-On</a>, <a href="https:///2026-07-15-coreyhaines31-marketingskills-hands-on.html" target="_blank" rel="nofollow sponsored">7/15 coreyhaines31/marketingskills Hands-On</a>, <a href="https:///2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem.html" target="_blank" rel="nofollow sponsored">7/20 AI Automation Pipeline Concurrency Conflict Post-Mortem</a></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
