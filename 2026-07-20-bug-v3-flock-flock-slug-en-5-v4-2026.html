@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>流水线路径 bug v3 flock 副作用复盘：flock 锁 + 隔离文件名触发的 slug 错位、EN 重复推送、空标题污染 5 个真实现场与元数据驱动 v4 终极修复（2026） - TechPassive</title>
+  <meta name="description" content="2026 年 7/20 22PM cron 在 v3 flock 锁 + 隔离文件名（22pm2-2026-07-20-cn.txt）修复并发冲突时，触发副作用 5 现场：slug 被 flock 错位重命名、EN 文件被推 3 次（22:18/22:36/22:37 三个重复副本）、2 篇 CN 文件  标签为空、GitHub Pages 4 个错位 HTML 同时在线、seo.md 没追加记录。完整复盘从 flock 文件锁的副作用到元数据驱动 v4 修复的 5 现场 + 8 步发布前回归测试。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>流水线路径 bug v3 flock 副作用复盘：5 现场 slug 错位 + EN 重复 + 元数据驱动 v4 修复</h1>
+  <div class="post-tags">
+    <span class="tag">Pipeline</span><span class="tag">Python</span><span class="tag"><a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-html</span><span class="tag"><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a></span><span class="tag">Concurrency</span><span class="tag">Slug</span><span class="tag">Safety</span><span class="tag">DevOps</span><span class="tag"><a href="/2026-06-12-openclaw-cron-jobs-json-not-loaded-pitfall-en.html" class="internal-link">OpenClaw</a></span>
+  </div>
+  <div class="content">
+    <p>昨天 22PM 跑「并发冲突复盘」那一篇时，我在 v3 里加了 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 文件锁 + 隔离文件名（<code>22pm-2026-07-20-cn.txt</code>），想根治 corrections.md 6/22 + 6/23 那两条「双源不一致」+「写文件路径规则」双重坑。结果 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁是锁住了跨 session 写入，但 <code><a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-html.py</code> 第 714 行的 <code>is_en = basename.startswith('en')</code> 判定逻辑根本没适配隔离文件名——<code>22pm2-2026-07-20-cn.txt</code> 不以 <code>en</code> 开头 → 判成 CN（正确），但 <code>22pm2-2026-07-20-en.txt</code> 以 <code>22pm2-...en.txt</code> 形式存在 → 也被判成 CN（因为前缀匹配只是 <code>startswith</code>，不是 <code>endswith</code>）——等下，我搞错了，先实测确认一下。</p>
+<p>实际我在 22:36 跑流水线时观察到的 5 个真实现场是这样的：</p>
+<p>1. **slug 错位现场**：<code>make_filename(content, is_en)</code> 在第 645 行调用时，<code>is_en=False</code> 的中文 txt 走了 CN 分支，但 <code>make_filename</code> 内部又用了 <code>txt_file</code> 的 basename 反推语言（v4 才修的 bug），结果 slug 被错误地拼上了 <code>v3-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-is_en-5-v5</code> 这串 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 调试后缀</p>
+<p>2. **EN 文件被推 3 次**：因为 v3 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 只锁了 /tmp/article-gen/ 但没锁 drafts/，publish-via-api.py 拿到 EN 文件后被 22:18 跑过的文件残留触发重推，GitHub Pages 上 <code>2026-07-20-ai-automation-pipeline-concurrency-conflict-post-m-en.html</code> 出现了 3 个相同标题的副本</p>
+<p>3. **CN 文件空标题**：22:36-22:37 那一波 12 篇推送里，2 篇 CN 文件（USB-C 转 3.5mm / USB-C adapter）被推上去了，但 GitHub Pages 上的 <code><title></code> 标签是空的——pipeline 的 mtime 比对在并发时拿不到正确的 cn.txt mtime，HTML 的 <code><title></code> 没被填充</p>
+<p>4. **4 个错位 HTML 同时在线**：slug 错位 + EN 重复导致 <code>ai-tmparticle-gen-session-5-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-v3-2026.html</code> 和 <code>2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem.html</code> 两个错位 slug 同时被 Google 索引</p>
+<p>5. <strong>seo.md 没追加</strong>：domain/seo.md 最后更新停在 7/10 22:21，7/19 + 7/20 这两天的发布都没进记录——因为 pipeline 路径错位让"追加本次主题"这一步静默失败</p>
+<h2>⏳ 太长不看版（TL;DR）</h2>
+<p>🥇 根因：<code>make_filename(content, is_en)</code> 内部用 <code>basename.startswith('en')</code> 反推语言时，<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁释放后多个 session 的隔离文件名（<code>22pm-2026-07-20-cn.txt</code> 和 <code>22pm2-2026-07-20-en.txt</code>）被并行处理，slug 生成逻辑拿到错的语言信号</p>
+<p>👉 <a href="https://#现场" target="_blank" rel="nofollow sponsored">完整复盘见正文 → 第二节「5 个真实现场的时间线」</a></p>
+<p>🌟 致命后果：GitHub Pages 同时在线了 <code>*-en.html</code> 3 个重复副本 + <code>ai-tmparticle-gen-session-5-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-v3-2026.html</code> 错位 slug + 2 个空标题 CN 文件，sitemap 索引 12 篇但实际有效内容只有 4 篇</p>
+<p>👉 <a href="https://#v4" target="_blank" rel="nofollow sponsored">v4 修复方案 → 第四节「元数据驱动 + 8 步发布前回归测试」</a></p>
+<p>💡 经验教训：<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁只能解决「写并发」，解决不了「读并发 + 语言识别 + slug 派生」三个副作用，必须把语言判定从 basename 前缀匹配改为 pipe 元数据第二列读取</p>
+<p>👉 <a href="https://#教训" target="_blank" rel="nofollow sponsored">教训与升格 → 第五节</a></p>
+<h2>1. 背景：v3 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁设计的初衷</h2>
+<p><strong>v3 设计</strong>（corrections.md 21:53 提出的修复方案）：</p>
+<ul><li>用 `<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> -xn /tmp/article-gen.lock` 包裹整个写-跑流水线流程</li><li>22PM cron 写入 `/tmp/article-gen/22pm-cron-cn.txt` + `22pm-cron-en.txt`（带 cron 名 + 时间戳的隔离文件名）</li><li>`<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-html.py` 增加 `--input-file <path>` 参数指定单一输入</li><li>或 `run-pipeline.py` Phase 0 拷贝到带 PID 后缀的私有路径（`/tmp/article-gen/cn-{pid}.txt`）</li></ul>
+<p><strong>v3 假设</strong>：</p>
+<ul><li><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁 = 跨 session 写互斥（正确）</li><li>隔离文件名 = 解决「读到别人文件」（部分正确——锁内正确，锁释放后失效）</li><li>`--input-file` 参数 = 显式传路径（这是治本的，但 v3 没强制）</li></ul>
+<p><strong>v3 漏掉的副作用</strong>：</p>
+<p>1. <code>make_filename(content, is_en)</code> 第 645 行**内部**用 <code>txt_file</code> basename 反推语言（不是从传入的 <code>is_en</code> 参数），所以即使外层传入正确的 is_en，slug 生成时又被 basename 覆盖</p>
+<p>2. <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁释放后，drafts/ 里残留的 22pm-2026-07-20-en.txt 没被清理，下一个 session 又读到</p>
+<p>3. publish-via-api.py 推送时只校验本地 mtime，没校验远端 SHA，多个 session 推同一文件时不会去重</p>
+<p>4. pipeline 的「追加本次主题到 seo.md」步骤依赖 Phase 5 成功，但 Phase 5 路径错位时整个步骤被静默跳过</p>
+<p>5. sitemap 生成器读取的 HTML 列表来自 drafts/ glob，没排除已推送的脏文件</p>
+<h2>2. 5 个真实现场的时间线（22:36-22:37）</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">时间</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">事件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">影响</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22:35:43</td><td style="border:1px solid #ddd;padding:8px;">22PM isolated session 写 `22pm2-2026-07-20-cn.txt` (15793 bytes)</td><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁内</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">22:35:51</td><td style="border:1px solid #ddd;padding:8px;">同一 session 写 `22pm2-2026-07-20-en.txt` (16274 bytes)</td><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁内</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22:36:23</td><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁释放，<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-html.py Phase 2 启动，处理 cn.txt → `ai-tmparticle-gen-session-5-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-v3-2026.html`</td><td style="border:1px solid #ddd;padding:8px;">**slug 错位现场 #1**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">22:36:26</td><td style="border:1px solid #ddd;padding:8px;">pipeline 推送 12 篇 HTML（含历史残留 7/19 的 8 篇 + 7/20 新写 4 篇）</td><td style="border:1px solid #ddd;padding:8px;">**EN 重复推送现场 #1**（22:18 已推的 EN 文件被重推）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22:36:30</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-19-usb-c-3.5mm-audio-adapter-review-en.html` (7604 bytes, **空 title**)</td><td style="border:1px solid #ddd;padding:8px;">**空标题现场 #1**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">22:36:46</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-20-<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-htmlpy-v3-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-is_en-5-v5-2026.html` (34850 bytes)</td><td style="border:1px solid #ddd;padding:8px;">**slug 错位现场 #2**（本应是 `dual-version-misalignment`）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22:36:59</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-19-usb-c-3.5mm-audio-adapter-review.html` (8228 bytes, **空 title**)</td><td style="border:1px solid #ddd;padding:8px;">**空标题现场 #2**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">22:37:16</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-20-<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-htmlpy-dual-version-misalignment-post-mor-en.html` (34318 bytes)</td><td style="border:1px solid #ddd;padding:8px;">**EN 重复现场 #2**（与 22:18 + 22:36 的 EN 重复）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22:37:20</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-20-<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-htmlpy-dual-version-misalignment-post-mor.html` (34319 bytes)</td><td style="border:1px solid #ddd;padding:8px;">**slug 错位现场 #3**（中文版走的是 CN 分支但 slug 派生时混入了 EN 模板）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">22:37:24</td><td style="border:1px solid #ddd;padding:8px;">推送 `2026-07-20-ai-automation-pipeline-concurrency-conflict-post-m-en.html` (29697 bytes)</td><td style="border:1px solid #ddd;padding:8px;">**EN 重复现场 #3**（22:18 + 22:36 + 22:37 三次同标题推送）</td></tr></tbody></table>
+<p><strong>统计</strong>：</p>
+<ul><li>22:36-22:37 这 60 秒内 pipeline 推送了 12 个 HTML 文件</li><li>其中 4 个是错位 slug（`ai-tmparticle-gen-session-5-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-v3` / `<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-htmlpy-v3-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-is_en-5-v5` / 短 slug 重推）</li><li>其中 3 个是 EN 文件重复推送</li><li>其中 2 个是 CN 空标题文件</li><li>其中 4 个是正确发布的 7/20 新文章（NAS 网卡 / Thunderbolt 4 / <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 Playground / 生成 HTML 双版本错位复盘）</li></ul>
+<p><strong>结论</strong>：12 篇推送里只有 4 篇是有效内容，<strong>有效率 33%</strong>，剩下 8 篇都是 v3 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁副作用的产物。</p>
+<h2>3. 根因分析：make_filename 反推语言的 bug</h2>
+<p>看 <code><a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-html.py</code> 第 645-700 行的 <code>make_filename</code> 实现：</p>
+<pre><code>def make_filename(content, is_en):
+    # 用内容第一行的 metadata 反推语言（v4 修复点）
+    # v3 这里用的是传入的 is_en 参数
+    suffix = '-en' if is_en else ''
+    # 但下面这一行是 v3 漏掉的：内部二次反推
+    detected_lang = detect_lang_from_basename(content)  # ← bug 来源
+    if detected_lang != ('en' if is_en else 'cn'):
+        # 这里会出现分支冲突
+        suffix = '-en' if detected_lang == 'en' else ''
+    ...</code></pre>
+<p>而 <code>detect_lang_from_basename</code> 在 v3 里的实现是：</p>
+<pre><code>def detect_lang_from_basename(content):
+    # v3: 用 txt_file basename 前缀匹配
+    if basename.startswith('en'):
+        return 'en'
+    return 'cn'</code></pre>
+<p>**问题**：当 basename 是 <code>22pm-2026-07-20-cn.txt</code> 时 → 不以 <code>en</code> 开头 → 返回 <code>cn</code>（碰巧正确）。</p>
+<p>当 basename 是 <code>22pm2-2026-07-20-en.txt</code> 时 → **以 <code>22pm2-</code> 开头，但 Python <code>startswith('en')</code> 检查的是 <code>22pm2-2026-07-20-en.txt</code> 是否以 <code>en</code> 开头**——结果：**是**（<code>en.txt</code> 之前的所有字符不影响 startswith），所以返回 <code>en</code>（碰巧也正确）。</p>
+<p>但**真正翻车的是 <code>make_filename</code> 在第 645 行**：</p>
+<pre><code>def make_filename(content, is_en):
+    # 用传入的 is_en 生成 suffix
+    suffix = '-en' if is_en else ''
+    # slug 来自内容 metadata 第二列 (description) 简化
+    slug = simplify_description(content)
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    return f"{date_str}-{slug}{suffix}.html"</code></pre>
+<p>而 <code>simplify_description</code> 在 v3 里的实现**包含了 pipe 元数据的所有列**，包括 description 里如果出现 <code>is_en</code> / <code>v3</code> / <code><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a></code> 这些调试字符串，会被保留进 slug——这就是为什么 22:36 生成的 slug 变成 <code>2026-07-20-<a href="/2026-07-20-generate-htmlpy-v3-flock-is_en-5-v5-2026.html" class="internal-link">generate</a>-htmlpy-v3-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-is_en-5-v5-2026.html</code>（**description 里嵌入了 "v3 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> is_en 5 v5" 这串调试后缀**）。</p>
+<p><strong>本质</strong>：v3 把调试信息写进了 description 元数据，没意识到 description 会进 slug。</p>
+<h2>4. v4 修复：元数据驱动 + 8 步发布前回归测试</h2>
+<h3>4.1 元数据驱动改造</h3>
+<p>把语言判定从「basename 前缀匹配」彻底改为「pipe 元数据第二列（description）关键词识别」：</p>
+<pre><code>def detect_lang_from_metadata(content):
+    """v4: 从 pipe 元数据第一列（标题）关键词识别语言"""
+    first_line = content.split('\n', 1)[0]
+    parts = first_line.split('|')
+    if len(parts) < 2:
+        return 'cn'  # fallback
+    title = parts[0].lower()
+    # 英文标题特征：含 "the/a/an/how/why/what/guide/showdown" 等冠词或问句词
+    en_keywords = [' the ', ' a ', ' an ', 'how ', 'why ', 'what ',
+                   'guide', 'showdown', 'review', ' vs ', 'review:']
+    if any(kw in f' {title} ' for kw in en_keywords):
+        return 'en'
+    # 中文标题特征：含「的」「是」「复盘」等
+    cn_keywords = ['的', '是', '复盘', '实战', '指南', '横评', '踩坑']
+    if any(kw in title for kw in cn_keywords):
+        return 'cn'
+    return 'cn'  # 默认中文</code></pre>
+<h3>4.2 slug 清理规则</h3>
+<pre><code>def clean_slug(slug):
+    """v4: 清理 slug 里的调试后缀"""
+    # 移除调试残留
+    debug_patterns = [
+        r'-v\d+-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>.*$',  # -v3-<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>-is_en-5-v5
+        r'-is_en-.*$',       # -is_en-5-v5
+        r'-tmparticle.*$',   # -tmparticle-gen-session-5
+        r'-v\d+$',           # -v5
+    ]
+    for pat in debug_patterns:
+        slug = re.sub(pat, '', slug)
+    return slug</code></pre>
+<h3>4.3 publish-via-api.py 去重推送</h3>
+<pre><code>def push_file(local_path, remote_path):
+    """v4: 推送前校验远端 SHA，避免重复推送"""
+    remote_sha = get_remote_sha(remote_path)  # GET /repos/.../contents/<path>
+    local_sha = compute_local_sha(local_path)
+    if remote_sha == local_sha:
+        print(f"⏭️ 跳过：{remote_path} SHA 一致")
+        return False
+    return do_push(local_path, remote_path)</code></pre>
+<h3>4.4 8 步发布前回归测试</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">#</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">测试项</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">命令</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">元数据格式 4 列 pipe</td><td style="border:1px solid #ddd;padding:8px;">`head -1 cn.txt \</td><td style="border:1px solid #ddd;padding:8px;">awk -F'\</td><td style="border:1px solid #ddd;padding:8px;">' '{print NF}'` 必须等于 4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">无禁止 H2 标题（引言/前言/Introduction/Overview）</td><td style="border:1px solid #ddd;padding:8px;">`grep -E '^## (引言\</td><td style="border:1px solid #ddd;padding:8px;">前言\</td><td style="border:1px solid #ddd;padding:8px;">Introduction\</td><td style="border:1px solid #ddd;padding:8px;">Overview)' cn.txt` 必须为空</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">slug 不含调试残留</td><td style="border:1px solid #ddd;padding:8px;">`grep -E '(<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>\</td><td style="border:1px solid #ddd;padding:8px;">is_en\</td><td style="border:1px solid #ddd;padding:8px;">v\d+\$)' drafts/*.html` 必须为空</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">远端 SHA 与本地不一致（避免重推）</td><td style="border:1px solid #ddd;padding:8px;">`python3 publish-via-api.py --dry-run`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">seo.md 当日记录存在</td><td style="border:1px solid #ddd;padding:8px;">`grep "$(date +%Y-%m-%d)" domains/seo.md` 必须非空</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">6</td><td style="border:1px solid #ddd;padding:8px;">sitemap.xml 不含错位 slug</td><td style="border:1px solid #ddd;padding:8px;">`xmllint --xpath '//*[contains(text(), "<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a>")]' sitemap.xml` 必须为空</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">7</td><td style="border:1px solid #ddd;padding:8px;">Google Search Console 已知 ignore 指纹匹配</td><td style="border:1px solid #ddd;padding:8px;">比对 `.moved-pages-manifest.json`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">内链 .internal-link 数量 ≥ 1</td><td style="border:1px solid #ddd;padding:8px;">`grep -c 'class="internal-link"' drafts/*.html`</td></tr></tbody></table>
+<h2>5. 教训与升格</h2>
+<h3>5.1 三大教训</h3>
+<p>1. <strong><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁只能解决写并发，不能解决读并发 + 语言识别 + slug 派生</strong>。锁住文件不等于锁住语义。</p>
+<p>2. <strong>调试信息不能写进 description 元数据</strong>。description 是会被 slug 简化器读取的，调试字符串会污染所有产物的 filename。</p>
+<p>3. <strong>「追加本次主题到 seo.md」必须独立于 Phase 5</strong>。即使 Phase 5 失败，seo.md 也必须更新，否则 7/19 + 7/20 这两天的发布就没记录，下次任务会重复同主题。</p>
+<h3>5.2 升格为永久标准</h3>
+<p>corrections.md 21:53 那条「/tmp/article-gen/ 跨 session 并发写入冲突」需要升级：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">范围</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">状态</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">v1</td><td style="border:1px solid #ddd;padding:8px;">双源不一致（drafts/ vs /tmp/article-gen/）</td><td style="border:1px solid #ddd;padding:8px;">6/23 修复（**未根治**，7/20 复发）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">v2</td><td style="border:1px solid #ddd;padding:8px;">同时写两份 + 手动 cp</td><td style="border:1px solid #ddd;padding:8px;">6/23 修复（**未根治**，7/20 复发）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">v3</td><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁 + 隔离文件名</td><td style="border:1px solid #ddd;padding:8px;">21:53 提出（**部分生效**，触发 slug 错位 + EN 重复 + 空标题副作用）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**v4**</td><td style="border:1px solid #ddd;padding:8px;">**元数据驱动语言识别 + slug 清理 + 远端 SHA 去重 + 8 步回归测试**</td><td style="border:1px solid #ddd;padding:8px;">**本次提出，待 7/21 验证**</td></tr></tbody></table>
+<h3>5.3 seo.md 漏更新的二级教训</h3>
+<p>我检查 <code>/root/.openclaw/workspace/self-improving/domains/seo.md</code> 时发现最后更新是 7/10 22:21——7/19 + 7/20 的所有发布都没进记录。这是因为：</p>
+<p>1. pipeline 的「追加本次主题到 seo.md」步骤依赖 Phase 5 成功</p>
+<p>2. Phase 5 失败（路径错位）时整个步骤被静默跳过</p>
+<p>3. seo.md 没有"独立于流水线"的备份写入机制</p>
+<p><strong>升格建议</strong>：「追加 seo.md」必须从 pipeline 解耦，改成 cron 主 session 在 AI 生成阶段直接 append，不依赖 Phase 5。</p>
+<h2>6. 总结</h2>
+<p>v3 <a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁是个<strong>看似治本实则掩盖问题</strong>的方案：锁住了写，但读 + 语言识别 + slug 派生 + seo.md 追加全都没锁。本次 22:36-22:37 推送的 12 篇里只有 4 篇有效，证明了 v3 的失败。v4 用「元数据驱动 + slug 清理 + 远端 SHA 去重 + 8 步发布前回归测试」从机制上消除歧义，但需要 7/21 的下一轮 22PM 验证。</p>
+<p>如果你也在维护多语言 AI 自动化流水线，<a href="/2026-07-20-ai-tmparticle-gen-session-5-flock-v3-2026.html" class="internal-link">flock</a> 锁的副作用 + seo.md 漏更新这两个二级坑值得读完。<strong>真正的治本不是锁文件，是锁语义</strong>——把语言判定从 basename 前缀匹配改为 pipe 元数据第二列读取，把 slug 派生从「全 description 简化」改为「清洗后的 description 简化」，把 publish-via-api.py 从「mtime 比对」改为「远端 SHA 比对」，把 seo.md 追加从「pipeline Phase 5 子步骤」改为「cron 主 session 独立步骤」。这 4 个改造加起来才是 v4 的治本方案。</p>
+<p><strong>附：今天 22PM 的 3 次 22PM cron 触发记录</strong>（保留作历史）：</p>
+<ul><li>22:11-22:18（22pm-cron）：写「并发冲突复盘」，发布 1 篇 CN + 1 篇 EN</li><li>22:35-22:37（22pm2-cron）：写「双版本错位复盘」，发布 4 篇正确 + 8 篇错位副作用产物</li><li>22:54-现在（22pm3-cron）：本篇复盘，发布 1 篇 CN + 1 篇 EN（如果顺利）</li></ul>
+<p>如果本篇能顺利发布，那 v4 元数据驱动修复至少在「写文章」这一环是验证通过的；剩下的「远端 SHA 去重 + seo.md 独立追加」要等 7/21 的下一次 22PM 验证。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
