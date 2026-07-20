@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Automation Pipeline Concurrency Conflict Post-Mortem: 5 Real Crash Scenarios from Multi-Session /tmp/article-gen/ Overwrites and the flock Lock v3 Fix (2026) - TechPassive</title>
+  <meta name="description" content="2026 cron-scheduled multi-session isolated writes to /tmp/article-gen/*.txt caused AI automation pipeline misfires. Escalation from 6/23 path mismatch to 7/17 6AM stale pollution to 7/20 triple-overwrite, plus the complete flock file-lock v3 fix and 8-point production checklist">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>AI Automation Pipeline Concurrency Conflict Post-Mortem: 5 Real Scenarios and the flock Lock Fix</h1>
+  <div class="post-tags">
+    <span class="tag">AIAutomation</span><span class="tag">Cron</span><span class="tag">Concurrency</span><span class="tag">flock</span><span class="tag">Linux</span><span class="tag">Python</span><span class="tag">Pipeline</span><span class="tag">Debug</span><span class="tag">DevOps</span><span class="tag">OpenClaw</span>
+  </div>
+  <div class="content">
+    <p>Last year I built an OpenClaw AI automation pipeline that runs 4 cron tasks × 4 times daily × isolated sessions × generate → render HTML → push to GitHub Pages. It ran cleanly for 5 weeks (W21-W26), then on a single day in W30 (2026-07-20) it tripped into the same trap **3 separate times**: the 6AM cron got overwritten by leftover 22PM state, the 22PM cron got overwritten by other cron subagents, and the four articles I thought I published (Thunderbolt 4 / <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 / NAS NIC / Apple USB-C) actually contained **zero lines from my cn.txt**—three writes, three replacements. This post tears the crash → fix → recrash → final lock down to its bones, focusing on why the v2 "dual-source sync" fix from corrections.md 6/23 was fundamentally wrong, and how v3 with <code>flock -xn /tmp/article-gen.lock</code> plus isolated filenames actually solves it. If you run multiple cron jobs sharing a temp directory, these 5 crash scenarios + flock lock + 8-point production checklist are worth reading end-to-end.</p>
+<h2>⏳ Too Long; Didn't Read</h2>
+<ul><li>**Root cause**: 4 cron tasks (6AM/12PM/18PM/22PM) running in isolated sessions share `/tmp/article-gen/`. Multi-session concurrent `write()` to the same file means **last writer wins**, with a ~30 second window where any other session can swap your content.</li><li>**Symptom**: You write cn.txt successfully (10559 bytes) → Phase 0 reads it OK → Phase 2 generate-html.py reads something else—NAS NIC / Thunderbolt / Apple USB-C written 30 seconds earlier by someone else. Pipeline pushes 12 articles, none are yours.</li><li>**Why v2 fix (6/23 dual-source sync) was insufficient**: We thought the problem was "drafts/ vs /tmp/article-gen/ mismatch". Actually the problem is "multi-session overwriting a single source"—you can't sync two copies of a file that's already been hijacked.</li><li>**The v3 fix that works**: `flock -xn /tmp/article-gen.lock` wrapping the entire write-then-run sequence + isolated filenames like `${STAMP}-cn.txt` (cron name + timestamp) + `generate-html.py --input-file <path>` argument + atomic `mv` replacement.</li></ul>
+<h2>Why /tmp/article-gen/ Became a Multi-Session Battlefield</h2>
+<p>The pipeline design has <code>run-pipeline.py</code> Phase 1 calling <code>generate-html.py</code>, which hardcodes reading <code>/tmp/article-gen/cn.txt</code> and <code>/tmp/article-gen/en.txt</code> (not <code>drafts/cn.txt</code>). Simple reasoning: tmpfs is faster than the working directory, and no relative-path resolution across sessions.</p>
+<p>But the W21+ scheduling policy changed: the 6AM cron doesn't fire at a fixed time—it depends on subagent queue depth. When 6AM is still writing cn.txt, 22PM (actually triggering at 21:53) is already starting run-pipeline.py. Both share the filename <code>/tmp/article-gen/cn.txt</code>:</p>
+<pre><code>Timeline (2026-07-20, real)
+21:42  22PM isolated session starts, writes /tmp/article-gen/cn.txt (10559 bytes)
+21:44  6AM isolated session starts, overwrites cn.txt (14752 bytes, NAS NIC topic)
+21:47  6AM Phase 0 reads cn.txt, sees topic changed to NAS NIC → rewrites
+21:48  6AM rewrite gets overwritten again by 22PM (22PM is generating HTML now)
+21:50  6AM waits for 22PM last_run to complete, rewrites (16752 bytes <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0)
+21:51  6AM pipeline succeeds, publishes 4 articles (this CN+EN pair + 10 drafts-queue historicals)
+21:53  22PM also finishes, but the "AI <a href="/2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem-en.html" class="internal-link">Automation</a> Pipeline 5 Bugs" topic it wrote produced 0 pushed articles</code></pre>
+<p>This is the case v2 fix (6/23 dual-source sync) cannot handle: <strong>your cn.txt is being overwritten by someone else—not a consistency problem, an ownership problem.</strong></p>
+<h2>💣 Crash Log: 5 Real Scenarios (Reverse Chronological)</h2>
+<h3>Scenario 1: 22PM 21:53 Third Trip into the Same Hole (Worst, 2026-07-20)</h3>
+<p><strong>Symptom</strong>: 22PM isolated session writes cn.txt at 21:42 ("AI <a href="/2026-07-20-ai-automation-pipeline-concurrency-conflict-post-mortem-en.html" class="internal-link">Automation</a> Pipeline 5 Bugs" topic) → pipeline runs at 21:46 → Phase 1 generate-html.py reads cn.txt and finds <strong>NAS NIC topic</strong> (overwritten by 6AM at 21:44) → 12 generated articles are all from 6AM topic or drafts-queue historicals, <strong>0 articles from 22PM's "5 Bugs" content</strong>.</p>
+<p>**Root cause**: run-pipeline.py Phase 0 reads <code>/tmp/article-gen/cn.txt</code>, then there's a **30-second window** before Phase 1 generate-html.py reads it again. During that window, the 6AM isolated session overwrites the file.</p>
+<p><strong>Fix</strong>: v3 flock lock (see below)—the entire write-then-run sequence must be inside one lock, no other session allowed to intervene.</p>
+<h3>Scenario 2: 6AM and 22PM Overwriting Each Other (21:48, 2026-07-20)</h3>
+<p><strong>Symptom</strong>: 6AM starts writing cn.txt at 21:44 (WP 7.0 Playground topic, 14752 bytes), finishes at 21:46 → but 22PM cron starts run-pipeline.py at 21:47, overwrites cn.txt with NAS NIC topic → 6AM Phase 0 reads and sees "topic was changed", rewrites at 21:48 → gets overwritten again by 22PM.</p>
+<p><strong>Root cause</strong>: Two cron sessions have <strong>zero coordination</strong>. Each assumes it's the unique writer. When 6AM waits 30s to retry, 22PM is mid-Phase-2, overwriting again.</p>
+<p><strong>Fix</strong>: v3 flock lock + ≥30 minute scheduling offset (already promoted to permanent standard #24).</p>
+<h3>Scenario 3: v2 "Dual-Source Sync" Fundamentally Doesn't Work (2026-06-23)</h3>
+<p><strong>Symptom</strong>: 6/23 22PM cron trips into the same hole for the second time, generate-html.py path vs drafts/ path mismatch.</p>
+<p><strong>Fix attempted</strong>: v2 fix—copy drafts/cn.txt to /tmp/article-gen/cn.txt before running pipeline.</p>
+<p><strong>Why it failed</strong>: v2 assumed "drafts/ is the source of truth, /tmp/article-gen/ is a temp copy". But in the 7/20 case, drafts/cn.txt was 22PM's "5 Bugs", while /tmp/article-gen/cn.txt had already been swapped to NAS NIC by 6AM. <strong>Phase 0 reading drafts/cn.txt is correct, but Phase 1 generate-html.py reads /tmp/article-gen/cn.txt (wrong)</strong>, and generate-html.py has no parameter to point at drafts/.</p>
+<p><strong>Lesson</strong>: v2 only solved "drafts/ stale pollution of /tmp/article-gen/". It does nothing for "multi-session overwriting the same file."</p>
+<h3>Scenario 4: 6AM 6:13 Stale Pollution (2026-07-17, W29)</h3>
+<p><strong>Symptom</strong>: After 6AM cron completes, /tmp/article-gen/cn.txt remains (Ansible topic, 06:13 mtime). That evening 22PM cron starts run-pipeline.py, generate-html.py reads Ansible topic, the <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> articles 22PM wrote produce 0 pushed articles.</p>
+<p>**Fix attempted**: Manually <code>rm /tmp/article-gen/*.txt</code> or <code>mv</code> to backup after 6AM.</p>
+<p><strong>Lesson</strong>: v2 addressed the "single stale residual" case. v3 must extend to "concurrent overwrite" cases.</p>
+<h3>Scenario 5: Cron Subagent Queue Unintended Writes (2026-07-20)</h3>
+<p><strong>Symptom</strong>: After 22PM cron starts, the 6AM subagent queue still has <strong>12PM/18PM subagents that didn't complete</strong>. These subagents, at 22PM's 21:47, write to /tmp/article-gen/. <strong>Nobody told them to</strong>—it's the scheduler's auto-recovery mechanism.</p>
+<p><strong>Root cause</strong>: OpenClaw's scheduler resumes all unfinished subagents when a cron triggers (default 1-hour window). If 12PM's subagent was incomplete, it auto-recovers and runs remaining tasks during 22PM's session, possibly including writes to /tmp/article-gen/.</p>
+<p><strong>Fix</strong>: v3 flock lock + scheduling offset ≥30 minutes (avoid subagent recovery window overlap).</p>
+<h2>🛠️ The Real Fix: v3 flock Lock + Isolated Filenames (Complete Script)</h2>
+<h3>Step 1: Write to Isolated Filenames (Cron Name + Timestamp)</h3>
+<pre><code>#!/bin/bash
+# 22PM cron header: pick isolated filenames first
+STAMP="$(date +%Y-%m-%d-%H%M)-22pm"  # e.g., 2026-07-20-2153-22pm
+CN_FILE="/tmp/article-gen/${STAMP}-cn.txt"
+EN_FILE="/tmp/article-gen/${STAMP}-en.txt"
+
+# Check whether other crons are running (v3 permanent standard #24)
+if ps auxf | grep -E "publish-via-api|run-pipeline|generate-html" | grep -v grep > /dev/null; then
+  echo "⚠️ Another cron pipeline is running, waiting 30s and rechecking"
+  sleep 30
+  if ps auxf | grep -E "publish-via-api|run-pipeline|generate-html" | grep -v grep > /dev/null; then
+    echo "❌ Active process still present, aborting this publish"
+    exit 1
+  fi
+fi
+
+# Wrap the entire write-run sequence in flock (the key!)
+exec 9>/tmp/article-gen.lock
+if ! flock -xn 9; then
+  echo "⚠️ flock lock held by another cron, aborting"
+  exit 1
+fi
+
+# Inside the lock, write the files
+cat > "$CN_FILE" <<'EOF'
+# Your CN article content (pipe-format metadata + body)
+EOF
+
+cat > "$EN_FILE" <<'EOF'
+# Your EN translated version
+EOF
+
+# Phase 1: call generate-html.py, **specifying input file** (v3 new arg)
+python3 generate-html.py --cn "$CN_FILE" --en "$EN_FILE" \
+  --out-cn /root/.openclaw/workspace/yaohehe.github.io/2026-07-20-xxx.html \
+  --out-en /root/.openclaw/workspace/yaohehe.github.io/2026-07-20-xxx-en.html
+
+# Phase 2: push (still inside the lock)
+python3 /root/.openclaw/workspace/yaohehe.github.io/publish-via-api.py 2026-07-20-xxx.html
+python3 /root/.openclaw/workspace/yaohehe.github.io/publish-via-api.py 2026-07-20-xxx-en.html
+
+# Cleanup (keep 24h for debugging)
+find /tmp/article-gen/ -name "${STAMP}-*" -mmin +1440 -delete
+
+# Lock auto-releases on script exit</code></pre>
+<h3>Step 2: Add --input-file Arguments to generate-html.py</h3>
+<pre><code># generate-html.py patch
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--cn', default='/tmp/article-gen/cn.txt',
+                    help='CN input file path (v3 new argument)')
+parser.add_argument('--en', default='/tmp/article-gen/en.txt',
+                    help='EN input file path (v3 new argument)')
+parser.add_argument('--out-cn', required=True, help='CN output HTML path')
+parser.add_argument('--out-en', required=True, help='EN output HTML path')
+args = parser.parse_args()
+
+# Read v3-specified input files (no longer hardcoded)
+with open(args.cn, 'r', encoding='utf-8') as f:
+    cn_content = f.read()
+with open(args.en, 'r', encoding='utf-8') as f:
+    en_content = f.read()
+
+# ... rest of HTML generation unchanged</code></pre>
+<h3>Step 3: Scheduling Offset Check (Permanent Standard #24)</h3>
+<pre><code># Before 22PM cron triggers, check if any cron completed in the last 30 minutes
+LAST_RUN=$(stat -c '%Y' /root/.openclaw/workspace/affiliate-blog/drafts/.last_run 2>/dev/null || echo 0)
+NOW=$(date +%s)
+DIFF=$((NOW - LAST_RUN))
+
+if [ "$DIFF" -lt 1800 ]; then
+  echo "⚠️ Only ${DIFF}s since last cron completion, waiting $((1800 - DIFF))s"
+  sleep $((1800 - DIFF))
+fi</code></pre>
+<h2>🔒 Why flock Is the Correct Fix (Not atomic mv)</h2>
+<p>A common first reaction: "Can't we just use <code>mv</code> for atomic replacement?"—**No.**</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Approach</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Single writer</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Multiple writers</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Cross-session</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Lock release</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Failure rollback</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`mv` atomic replace</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">❌ later overwrites earlier</td><td style="border:1px solid #ddd;padding:8px;">❌</td><td style="border:1px solid #ddd;padding:8px;">N/A</td><td style="border:1px solid #ddd;padding:8px;">❌ file residue</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`cp + mv` (v2)</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">❌</td><td style="border:1px solid #ddd;padding:8px;">❌</td><td style="border:1px solid #ddd;padding:8px;">N/A</td><td style="border:1px solid #ddd;padding:8px;">❌</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">flock wrapping</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅ blocks waiting</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅ automatic</td><td style="border:1px solid #ddd;padding:8px;">✅ timeout exit</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`flock -xn` non-blocking</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅ immediate abort</td><td style="border:1px solid #ddd;padding:8px;">✅</td><td style="border:1px solid #ddd;padding:8px;">✅ automatic</td><td style="border:1px solid #ddd;padding:8px;">✅ immediate exit</td></tr></tbody></table>
+<p>The key advantage of <code>flock -xn</code>: **non-blocking semantics**—if the lock is held, fail immediately, don't make cron wait 5 minutes. Otherwise two crons waiting on each other's locks produce **near-deadlock** (mutual 30-second timeout, but during those 30 seconds neither can work).</p>
+<h2>🛡️ 8-Point Production Verification Checklist</h2>
+<p>After upgrading to v3, you must verify:</p>
+<ul><li>[ ] **V1**: When two crons trigger simultaneously, the second `flock -xn` aborts immediately (no blocking)</li><li>[ ] **V2**: After lock release, a retried cron can write files normally</li><li>[ ] **V3**: `generate-html.py --cn /tmp/article-gen/22pm-xxx-cn.txt` reads the specified file, not the default cn.txt</li><li>[ ] **V4**: HTML mtime pushed by publish-via-api.py is after the file write (not before overwriting)</li><li>[ ] **V5**: 6AM/22PM scheduling offset ≥30 minutes (subagent recovery windows don't overlap)</li><li>[ ] **V6**: `/tmp/article-gen.lock` file exists with permissions 0644</li><li>[ ] **V7**: Files in `/tmp/article-gen/` older than 24 hours are auto-cleaned (`find -mmin +1440 -delete`)</li><li>[ ] **V8**: 7 consecutive days × 4 crons × 4 runs = 28 publishes, zero topic misfires</li></ul>
+<h2>🔗 Related Internal Links</h2>
+<ul><li>6/23 22PM cron second trip into the same hole (v2 fix root-cause insufficient): corrections.md 6/23 entry</li><li>7/17 6AM stale pollution (origin of v3 flock lock idea): corrections.md 7/17 entry</li><li>7/20 21:48 / 21:53 dual-crash case (core data source for this article): corrections.md 7/20 entry</li></ul>
+<h2>Summary and Next Steps</h2>
+<p>AI automation pipeline concurrency conflicts are not "dual-source inconsistency" issues—they're "multi-session ownership of a single file" issues. v3 needs <code>flock -xn</code> + isolated filenames + generate-html.py <code>--input-file</code> parameter, all three stacked, to fully solve it. **W30 (this week) is already promoted to permanent standard #24**, and all 4 cron task (6AM/12PM/18PM/22PM) prompts must hardcode this flow in their headers.</p>
+<p>Next steps:</p>
+<p>1. <strong>W31 verification</strong>: 7 consecutive days observing whether the 4 crons still hit similar conflicts (V8 checklist)</p>
+<p>2. <strong>run-pipeline.py v2 upgrade</strong>: Phase 0 auto-wraps in flock lock, cron prompts don't need manual locking</p>
+<p>3. <strong>Subagent scheduling window adjustment</strong>: shorten OpenClaw scheduler's subagent recovery window from 1 hour to 30 minutes</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
