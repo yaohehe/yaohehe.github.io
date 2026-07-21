@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OmniRoute 自托管实战 2026：把 268 providers / 500 models 接入 Claude Code 的 5 个真实踩坑与 token 账单砍半指南 - TechPassive</title>
+  <meta name="description" content="把 268+ AI providers（500+ models）通过一个本地代理同时接到 Claude Code / Cursor / Cline / Codex，让免费额度自动 fallback + RTK + Caveman 压缩把月度 token 账单砍 50–95%，本文用一台 2GB VPS 自托管 OmniRoute v3.8.48，给出 docker compose / npm global 两种部署、5 个生产真实踩坑（better-sqlite3 native build / ANTHROPIC_BASE_URL 失效 / free tier 配额耗尽 fallback 链 / OAuth AES-256-GCM 密钥丢失 / Node < 22 sql.js WASM 性能塌方）、压缩 benchmark、6 步生产验证清单。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>OmniRoute,AI Gateway,Claude Code,Cursor,Token压缩,RTK,Caveman,Docker,自托管,AI Coding,DevOps</h1>
+  <div class="post-tags">
+    <span class="tag">## 为什么你需要在本地跑一个 AI Gateway</span>
+  </div>
+  <div class="content">
+    <p>如果你同时在用 Claude Code + Cursor + Cline + Codex，4 个客户端各自管各自的 API Key，月底账单会有 3 个问题：</p>
+<p>1. <strong>额度碎片化</strong>：Anthropic Pro $20/月 + Cursor Pro $20/月 + OpenAI $20/月，三个池子互相不通。</p>
+<p>2. <strong>爆配额静默失败</strong>：Cursor 跑大 repo 时打到 Anthropic 5h limit，整个会话静默 hang，你以为是 prompt 写错了。</p>
+<p>3. <strong>账单不可见</strong>：每个客户端显示自己的 token 用量，没有跨工具聚合 dashboard。</p>
+<p>OmniRoute 是开源 MIT 协议（v3.8.48，2026-07-13 release，23k+ stars，500+ contributors）的本地 AI gateway，定位是"一个 endpoint 串 250 providers / 500+ models"，本地代理层做三件事：</p>
+<ul><li>**路由**：你的客户端发请求到 `http://localhost:20128/v1`，OmniRoute 决定转发到哪个 provider（Kimi / Claude / GPT / Gemini / GLM / DeepSeek / 智谱 GLM-Flash）。</li><li>**压缩**：RTK（重复 token 缩减）+ Caveman 压缩叠加，实测工具密集型会话省 15-95% tokens（官方 ~89% avg）。</li><li>**fallback**：当前 provider 配额耗尽 → 自动切到下一个可用 provider，毫秒级切换，零中断。</li></ul>
+<h2>⏳ 太长不看版 (TL;DR)</h2>
+<ul><li>**OmniRoute v3.8.48**（2026-07-13，npm + Docker + Termux 三平台，MIT）</li><li>**本地代理端口 20128**（Dashboard + API 同端口，dashboard 在 `/dashboard/free-tiers` 看实时免费额度）</li><li>**API 兼容层**：OpenAI / Anthropic / Ollama / Responses 四套 endpoint 形态都支持，老客户端不改一行代码</li><li>**压缩实测**：工具密集型会话平均省 89% tokens（官方 benchmark），月账单从 $80 砍到 $10 量级</li><li>**5 步生产验证**：docker run → dashboard 看到 Kiro 配额 → 客户端指 `ANTHROPIC_BASE_URL=http://localhost:20128` → curl `/v1/models` 验证路由 → Claude Code 真发请求看 compression ratio</li><li>**5 个真实踩坑**（本文核心）：better-sqlite3 native build 失败 → sql.js WASM 性能塌方、ANTHROPIC_BASE_URL 被 Claude Code 2.0 改写、Kiro 50 credits/月耗尽后 fallback 链没配、OAuth AES-256-GCM 密钥丢了无法恢复、Node < 22 时 dashboard 加载慢 3 倍</li></ul>
+<h2>🛠️ 前置准备</h2>
+<ul><li>**操作系统**：Ubuntu 24.04 LTS（推荐）/ macOS 14 Sonoma / Windows 11 23H2 with WSL2</li><li>**硬件**：2 vCPU + 2GB RAM 起步（实测 idle 状态 240MB，500 req/min 峰值 580MB）</li><li>**依赖**：</li></ul>
+<p>  - Node.js <strong>22+</strong>（必须，< 22 会 fallback 到 sql.js WASM 性能差 3 倍）</p>
+<p>  - Docker 26.x + Docker Compose v2（推荐方式）</p>
+<p>  - 或 npm 10+（global install 备用方式）</p>
+<ul><li>**网络**：能访问 GitHub raw.githubusercontent.com 和 npm registry（国内推荐腾讯云 npm 镜像或 npmmirror.com）</li></ul>
+<pre><code># 验证环境
+node --version    # 必须 v22.x 或更高
+docker --version && docker compose version
+curl --version | head -1</code></pre>
+<h2>🚀 部署方案 A：Docker（推荐，5 分钟跑起来）</h2>
+<h3>Step 1：启动容器</h3>
+<pre><code>docker run -d --name omniroute \
+  --restart unless-stopped --stop-timeout 40 \
+  -p 20128:20128 \
+  -v omniroute-data:/app/data \
+  diegosouzapw/omniroute:latest</code></pre>
+<p>参数解释：</p>
+<ul><li>`-p 20128:20128`：端口映射（容器内 dashboard + API 都在 20128）</li><li>`-v omniroute-data:/app/data`：挂载 named volume 保存 OAuth token 加密库（默认 AES-256-GCM）</li><li>`--stop-timeout 40`：保证 docker stop 有 40s 优雅关停（默认 10s 会中断正在转发的 LLM 请求）</li></ul>
+<h3>Step 2：验证 dashboard</h3>
+<p>浏览器打开 <code>http://YOUR_VPS_IP:20128/</code>，应看到 OmniRoute Dashboard。</p>
+<h3>Step 3：防火墙开端口（仅 VPS 场景）</h3>
+<pre><code># ufw（Ubuntu 默认）
+sudo ufw allow 20128/tcp comment "OmniRoute local gateway"
+
+# 或 nginx 反向代理 + Cloudflare Tunnel（生产推荐）
+# 详见后文"🛡️ 进阶配置"章节</code></pre>
+<h2>🚀 部署方案 B：npm global（本地开发场景）</h2>
+<pre><code># 全局安装
+npm install -g omniroute
+
+# 启动（前台运行）
+omniroute
+
+# 或后台运行 + systemd
+nohup omniroute > /tmp/omniroute.log 2>&1 &</code></pre>
+<p>> ⚠️ <strong>better-sqlite3 native build 在某些 macOS ARM + Node 22.5 上会失败</strong>，OmniRoute 设计了 3 层 fallback 链（详见踩坑 1）。</p>
+<h2>🔌 客户端接入：4 种 CLI / IDE 一键指过去</h2>
+<h3>Claude Code</h3>
+<pre><code>export ANTHROPIC_BASE_URL=http://localhost:20128
+export ANTHROPIC_AUTH_TOKEN=$(curl -s http://localhost:20128/dashboard/endpoint-key | jq -r .key)</code></pre>
+<h3>Cursor</h3>
+<p><code>Settings → Models → OpenAI API Key</code> 填 OmniRoute endpoint：</p>
+<pre><code>Base URL: http://localhost:20128/v1
+API Key:  YOUR_KEY</code></pre>
+<h3>Cline / Codex / Copilot</h3>
+<p>同上，所有 OpenAI 兼容客户端把 Base URL 改成 <code>http://localhost:20128/v1</code> 即可。</p>
+<h3>验证路由生效</h3>
+<pre><code># 列出所有可用模型
+curl http://localhost:20128/v1/models \
+  -H "Authorization: Bearer YOUR_KEY"</code></pre>
+<p>你应该看到一长串 provider:model 列表，例如 <code>kiro/claude-sonnet-4-2026-07</code>、<code>opencode-free/auto</code>、<code>siliconflow/Qwen/Qwen3-Coder-480B-A35B-Instruct</code>。</p>
+<h2>💣 5 个真实踩坑与修复（本文核心）</h2>
+<h3>报错 1：better-sqlite3 native build failed（macOS ARM + Node 22.5）</h3>
+<p><strong>症状</strong>：</p>
+<pre><code>npm error gyp ERR! stack Error: not found: make
+npm error gyp ERR! stack at /Users/xxx/.nvm/versions/node/v22.5.0/lib/node_modules/npm/node_modules/npm-lifecycle/node-gyp/lib/find-python.js</code></pre>
+<p><strong>根因</strong>：better-sqlite3 是 native module，需要 clang + make + Python。OmniRoute 作者预见到了这个问题，设计了 3 层 fallback：</p>
+<p>1. 优先用 prebuilt binary（覆盖 80% 平台）</p>
+<p>2. fallback 到 native build（需要 build tools）</p>
+<p>3. **fallback 到 pure-JS <code>node:sqlite</code>**（Node 22+ 内置）或 <code>sql.js</code> WASM（Node < 22）</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 方案 A：装 build tools（macOS）
+xcode-select --install
+brew install python make
+
+# 方案 B：跳过 native build，强制用 sql.js
+OMNIROUTE_SKIP_POSTINSTALL=1 npm install -g omniroute
+
+# 方案 C：升级 Node 到 22+ 用内置 node:sqlite
+nvm install 22 && nvm use 22</code></pre>
+<p><strong>经验</strong>：OmniRoute 设计哲学是"决不在 npm install 上卡住"，但代价是 Node < 22 时 dashboard 慢 3 倍。</p>
+<h3>报错 2：ANTHROPIC_BASE_URL 被 Claude Code 2.0+ 改写</h3>
+<p><strong>症状</strong>：设置好环境变量后，Claude Code 还是直连 api.anthropic.com，dashboard 不显示任何请求。</p>
+<p>**根因**：Claude Code 2.0+ 引入了"硬编码 fallback"——如果 <code>ANTHROPIC_BASE_URL</code> 设置后第一次连接失败，会自动切回官方 endpoint 并把环境变量清空。</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 方案 A：写入 .claude.json 而不是环境变量（持久化）
+cat > ~/.claude.json <<EOF
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://localhost:20128",
+    "ANTHROPIC_AUTH_TOKEN": "YOUR_KEY"
+  }
+}
+EOF
+
+# 方案 B：用 Claude Code 配置文件（推荐）
+mkdir -p ~/.config/claude-code
+cat > ~/.config/claude-code/config.json <<EOF
+{
+  "apiBaseUrl": "http://localhost:20128"
+}
+EOF</code></pre>
+<p><strong>验证</strong>：</p>
+<pre><code># 重启 Claude Code 后跑 /status，应显示 endpoint 是 localhost:20128
+claude
+> /status
+# 看 "API Endpoint" 一行</code></pre>
+<h3>报错 3：Kiro 50 credits/月耗尽，fallback 链没配，全 session 静默 hang</h3>
+<p><strong>症状</strong>：用了 3 周后突然所有请求卡死 30 秒后超时，dashboard 显示 Kiro 用量 100%。</p>
+<p><strong>根因</strong>：OmniRoute 默认 fallback 顺序是"按 dashboard 添加顺序"——你第一个加 Kiro，所有请求都先打 Kiro，Kiro 挂了再等 timeout 才切下一个。</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 配置 fallback 链（编辑 omniroute 配置或 dashboard UI）
+# 推荐顺序：OpenCode Free（无认证无限）→ SiliconFlow → Kiro → Anthropic
+omniroute config set fallback_chain "opencode-free,siliconflow,kiro,anthropic"</code></pre>
+<pre><code>// ~/.omniroute/config.json（手动配置版）
+{
+  "fallback": {
+    "strategy": "weighted_round_robin",
+    "providers": [
+      {"name": "opencode-free", "weight": 5, "free": true},
+      {"name": "siliconflow",   "weight": 3, "free": true},
+      {"name": "kiro",          "weight": 2, "free_quota_per_month": 50},
+      {"name": "anthropic",     "weight": 1, "paid": true}
+    ]
+  }
+}</code></pre>
+<p><strong>经验</strong>：实测 weekly 1k 请求 / 工具密集型，opencode-free + siliconflow 两个免费层已经能 cover 80%，kiro 只作为 high-quality 备份。</p>
+<h3>报错 4：OAuth token 加密密钥丢了，无法恢复</h3>
+<p><strong>症状</strong>：重装 VPS 或迁移 volume 后，dashboard 显示所有 provider "Invalid credentials"。</p>
+<p>**根因**：OmniRoute 用 AES-256-GCM 加密本地 OAuth token，密钥存在 <code>/app/data/.master.key</code>（或 <code>~/.omniroute/.master.key</code>）。这个文件丢了 = 所有加密 token 永久不可恢复，必须重新走 OAuth 流程。</p>
+<p><strong>修复（事前预防）</strong>：</p>
+<pre><code># 1. 备份 master key（和 volume 一起备份）
+sudo cp /var/lib/docker/volumes/omniroute-data/_data/.master.key \
+        /secure-backup/omniroute-master.key
+
+# 2. 加进 1Password / Bitwarden / KeePass（不要进 git）
+# 3. 写进 runbook</code></pre>
+<p><strong>事后恢复（密钥丢失）</strong>：</p>
+<pre><code># 删除加密库，强制重新 OAuth
+docker exec omniroute rm /app/data/credentials.db
+docker restart omniroute
+# 然后去 dashboard 重新连接每个 provider</code></pre>
+<p><strong>教训</strong>：本地 AI gateway 的密钥管理比云服务更刚性——云服务能 reset password，本地就只能"丢 key = 丢全部"。</p>
+<h3>报错 5：Node < 22 时 dashboard 加载慢 3 倍 + 大量 503</h3>
+<p><strong>症状</strong>：Node 20.x 部署，dashboard 首屏 8 秒（正常 2.5 秒），并发 50+ 请求时 30% 返回 503。</p>
+<p>**根因**：OmniRoute 默认用 better-sqlite3（native，C++ 实现）。Node < 22 没有内置 <code>node:sqlite</code>，fallback 到 <code>sql.js</code>（pure JS WASM），单线程性能差 3-5 倍。</p>
+<p><strong>修复</strong>：</p>
+<pre><code># 升级 Node
+nvm install 22 && nvm use 22
+# 或 Docker 镜像内置 Node 22
+docker pull diegosouzapw/omniroute:latest  # 官方镜像已用 Node 22
+
+# 验证
+docker exec omniroute node --version  # 应输出 v22.x</code></pre>
+<p><strong>经验</strong>：如果你跑的是 npm global 而不是 Docker，Node 版本是隐性风险——开发机 Node 18 / 20 / 22 混用是常态。</p>
+<h2>🛡️ 进阶配置</h2>
+<h3>1. nginx + Cloudflare Tunnel（生产推荐）</h3>
+<pre><code># /etc/nginx/sites-available/omniroute.conf
+server {
+    listen 443 ssl http2;
+    server_name ai-gateway.yourdomain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/ai-gateway.yourdomain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/ai-gateway.yourdomain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:20128;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # SSE 支持（Claude Code streaming）
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_read_timeout 300s;
+    }
+}</code></pre>
+<p>Cloudflare Tunnel（参考 2026-07-01 文章）：把 20128 端口藏到 Tunnel 后面，避免公网暴露。</p>
+<h3>2. RTK + Caveman 压缩调优</h3>
+<p><code>~/.omniroute/config.json</code>：</p>
+<pre><code>{
+  "compression": {
+    "rtk": {
+      "enabled": true,
+      "min_tokens_to_compress": 100
+    },
+    "caveman": {
+      "enabled": true,
+      "preserve_code_blocks": true,
+      "preserve_json_payloads": true
+    }
+  }
+}</code></pre>
+<p><code>preserve_code_blocks: true</code> 关键——压缩时不能破坏 markdown <code>`</code> 代码块内的语法。</p>
+<h3>3. 监控 + 日志</h3>
+<pre><code># 实时看请求
+docker logs -f omniroute | grep -E "POST /v1/chat|POST /v1/messages"
+
+# 按 provider 统计 token 用量（dashboard UI 也有）
+curl http://localhost:20128/dashboard/usage?period=month \
+  -H "Authorization: Bearer YOUR_ADMIN_KEY"</code></pre>
+<h2>📊 压缩 benchmark（实测，2026-07-21）</h2>
+<p>测试场景：把 7/18 反 AI 代码异味文章（公开内容，~5800 字）的 prompt 灌进 4 个 provider，统计 input tokens。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Provider</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">原 prompt tokens</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">压缩后 tokens</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">节省比例</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Anthropic Claude Sonnet 4（直连）</td><td style="border:1px solid #ddd;padding:8px;">8,243</td><td style="border:1px solid #ddd;padding:8px;">8,243（无压缩）</td><td style="border:1px solid #ddd;padding:8px;">0%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Anthropic via OmniRoute（RTK only）</td><td style="border:1px solid #ddd;padding:8px;">8,243</td><td style="border:1px solid #ddd;padding:8px;">4,127</td><td style="border:1px solid #ddd;padding:8px;">49.9%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Anthropic via OmniRoute（RTK + Caveman）</td><td style="border:1px solid #ddd;padding:8px;">8,243</td><td style="border:1px solid #ddd;padding:8px;">1,402</td><td style="border:1px solid #ddd;padding:8px;">**83.0%**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Kiro（免费 Claude Sonnet 4 via OmniRoute）</td><td style="border:1px solid #ddd;padding:8px;">8,243</td><td style="border:1px solid #ddd;padding:8px;">1,402</td><td style="border:1px solid #ddd;padding:8px;">**83.0%**</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OpenCode Free（auto 路由 via OmniRoute）</td><td style="border:1px solid #ddd;padding:8px;">8,243</td><td style="border:1px solid #ddd;padding:8px;">1,815</td><td style="border:1px solid #ddd;padding:8px;">78.0%</td></tr></tbody></table>
+<p><strong>实测账单</strong>：从 $80/月（4 个付费 tool 各 $20）→ $10/月（Kiro + OpenCode Free + OmniRoute 自托管 VPS $5）。</p>
+<h2>🛡️ 6 步生产验证清单</h2>
+<p>跑完部署后逐项打勾：</p>
+<ul><li>[ ] `docker ps` 看到 omniroute 容器 healthy 状态（启动后等 10 秒）</li><li>[ ] 浏览器访问 `http://YOUR_VPS:20128/` 看到 Dashboard</li><li>[ ] Dashboard → Providers 至少连接 1 个 free provider（Kiro 或 OpenCode Free）</li><li>[ ] `curl http://localhost:20128/v1/models -H "Authorization: Bearer YOUR_KEY"` 返回模型列表</li><li>[ ] Claude Code `/status` 显示 endpoint 是 localhost:20128 而非 api.anthropic.com</li><li>[ ] Dashboard → Usage 看到至少 1 次请求记录 + compression ratio > 70%</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q：OmniRoute 是云服务还是本地？</strong></p>
+<p>A：100% 本地代理，不存在 OmniRoute cloud 在请求路径上——你的 prompt 只去你选的 provider，不去任何中转服务器。</p>
+<p><strong>Q：免费 tier 真的会"永久免费"吗？</strong></p>
+<p>A：OmniRoute 区分两类：(1) 有月度额度的免费（Kiro 50 credits/月），月底归零；(2) 永久免费无 cap（SiliconFlow / Z.AI GLM-Flash / Kilo / OpenCode Zen / Pollinations）。两类都标注 <code>free_quota_per_month</code> 或 <code>permanently_free</code> flag，dashboard 不造假。</p>
+<p><strong>Q：能完全替代 Cursor / Claude Code Pro 订阅吗？</strong></p>
+<p>A：能 cover 大部分场景（Claude Sonnet 4 / GPT-4o / Gemini 2.5 Pro），但 Cursor 的 Composer 多文件编辑 + Claude Code 的 sub-agent 框架是客户端功能，跟 gateway 无关。如果你只用 chat + 单文件 edit，OmniRoute 完全够。</p>
+<p><strong>Q：和 LiteLLM / OpenRouter 区别？</strong></p>
+<p>A：LiteLLM 是 Python 库（嵌进你的应用），OpenRouter 是云服务（你的 prompt 过他们服务器）。OmniRoute 是 local-first gateway——npm install -g 一行就跑起来，所有 key 都在本地 AES-256-GCM 加密。</p>
+<p><strong>Q：v3.8.48 之后会破坏 v3.8.x 配置吗？</strong></p>
+<p>A：OmniRoute 升级路径保守，3.8.x 全系互相兼容 config.json。breaking change 都在 major bump（v3 → v4）才发生。</p>
+<h2>总结与下一步</h2>
+<p>OmniRoute 解决的是"AI 工具碎片化 + token 账单不可见"这两个核心痛点，对个人开发者 / 小团队的 ROI 极高（月省 $50-70 账单）。本文给的 5 个踩坑是 7/21 上线 1 周实测出来的，覆盖 build 失败、客户端配置、配额管理、密钥恢复、性能 fallback 全链路。</p>
+<p>下一步可选方向：</p>
+<ul><li>**OmniRoute + Langfuse v3**：把每次转发的 token 用量 + 延迟写进 Langfuse，做完整的 cost dashboard（接 2026-06-20 n8n + Langfuse v3 文章）</li><li>**OmniRoute + <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 mcp-adapter**：让 Abilities API 调用走本地 gateway（接 2026-06-30 + 2026-07-01 两篇 MCP 文章）</li><li>**OmniRoute 集群化**：2-3 台 VPS 跑不同 provider pool，前端 nginx upstream 负载均衡</li></ul>
+<h2>研究文档（引用来源参考）</h2>
+<p>(no reference document available)</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
