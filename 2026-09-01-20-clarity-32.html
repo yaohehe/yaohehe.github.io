@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>博客流水线静默死亡20天：为什么 Clarity 32 会话骗过了所有健康检查 - TechPassive</title>
+  <meta name="description" content="我的自动化博客发布流水线在8月10日之后完全停止工作，但直到8月30日才被发现——因为旧文章的长尾流量掩盖了停摆事实。这篇复盘拆解了监控盲区的根因，以及如何用3行shell脚本堵住这个漏洞。博客流水线静默死亡20天：为什么 Clarity 32 会话骗过了所有健康检查|我的自动化博客发布流水线在8月10日之后完全停止工">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>流水线静默死亡20天：Clarity流量掩盖与git log真相</h1>
+  <div class="post-tags">
+    <span class="tag">流水线监控</span><span class="tag">DevOps</span><span class="tag">SRE</span><span class="tag">博客自动化</span><span class="tag">git log</span><span class="tag">健康检查</span><span class="tag">长尾流量</span>
+  </div>
+  <div class="content">
+    <p>那天晚上11点我照常打开 Clarity 后台，看到32个会话、27个独立用户，心想"流量又涨了"。然后顺手跑了 <code>git log --since="2026-08-10" --oneline --grep="auto: publish"</code>，返回空。我揉了揉眼睛，以为 git log 参数写错了，换了个姿势再跑一遍，还是空。</p>
+<p>这就是我的博客发布流水线"静默死亡"20天的发现现场——8月10日之后，没有一篇新文章被发布，但 Clarity 后台每天都在报漂亮的数字，4AM 健康检查每天都在报"一切正常"，整个监控体系集体瞎了。</p>
+<h2>事故现场：8月10日之后发生了什么</h2>
+<p>8月10日是最后一次正常发布日。那天发了3篇文章：USB-C全球旅行适配器横评、<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> ActivityPub集成、以及一篇 git pull rebase 导致177篇404的事故复盘。之后，流水线彻底停了。</p>
+<p>但停摆这件事没有任何人——包括我自己写的自动化监控脚本——发现它。原因是：</p>
+<p><strong>Clarity 每天还在报流量数据。</strong> 8月28日甚至报了32个会话（近期最高），Top页面全是旧文：Claude Code API Key 配置那篇（5月31日发的）连续3天每天7个会话，GLM-5本地部署实测（4月27日发的）每天2个会话，Paperless-ngx自托管文档管理（4月29日发的）每天2个会话。</p>
+<p>旧文的长尾SEO效应正在累积，即使停更20天流量仍在增长。这让所有人都以为"一切正常"。</p>
+<p><strong>4AM健康检查每天在跑，但只检查了两件事：</strong> 第一，pushed_manifest.json 是否同步（是的，它一直在同步）；第二，远端main和本地文件数是否差异>10篇（没有，因为两边都没变）。它完全没有检查"最近24小时有没有新文章被发布"这个最基础的指标。</p>
+<h2>错误的信号：三个"正常"的假象</h2>
+<h3>假象一：Clarity 流量 = 博客健康</h3>
+<p>这是最致命的认知错误。Clarity 报告的是"有多少人访问了网站"，而不是"网站有没有在更新内容"。一个已经积累了600+篇文章的博客，即使完全停更，靠旧文的长尾搜索流量也能维持每天20-30个会话——至少能撑3-6个月。</p>
+<p>我把 Clarity 会话数当成了博客健康度的代理指标，这就像用"公司银行账户还有余额"来判断"公司业务是否正常"——余额可以来自上个月的营收，不代表这个月没有停产。</p>
+<h3>假象二：pushed_manifest.json 同步 = 发布正常</h3>
+<p>4AM健康检查的逻辑是：如果 pushed_manifest.json 里记录的文件在远端main都能找到，就认为"推送正常"。但 pushed_manifest.json 的最后一次更新是8月10日——它本身就没有新记录需要同步。检查"已推送列表中的文件是否在远端"和检查"是否有新文件被推送"是两个完全不同的问题。</p>
+<h3>假象三：git commit 存在 = 内容在更新</h3>
+<p>4AM健康检查确实跑了 <code>git commit</code>——但那只是 <code>chore: sync pushed manifest [4am-health-check]</code>，是健康检查自己生成的提交，不是文章发布。git log 里每天都有commit，但没有任何一个是 <code>auto: publish</code>。</p>
+<h2>根因剖析：为什么监控体系集体失效</h2>
+<p>问题的根因不是某个脚本有bug，而是<strong>整个监控体系只检查了"管道是否通畅"，没有检查"管道里有没有水流"</strong>。</p>
+<p>我画了一张图来说明这个问题：</p>
+<pre><code>监控层              检查项                    8/10-8/30 状态
+─────────────────────────────────────────────────────────
+Clarity            网站访问量                 ✅ 20-32会话/天（旧文长尾）
+4AM health-check   pushed_manifest同步       ✅ 无新文件需同步
+4AM health-check   远端vs本地文件数差异       ✅ 差异<10（两边都没变）
+4AM health-check   git commit 存在           ✅ 每天有 chore commit
+─────────────────────────────────────────────────────────
+缺失的检查         最近24h auto:publish数     ❌ 从未被检查
+缺失的检查         drafts/ 队列堆积           ❌ 从未被检查
+缺失的检查         cron任务最后执行时间       ❌ 从未被检查</code></pre>
+<p>三层"正常"的假象完美覆盖了一个"完全停止"的事实。</p>
+<h2>黑客解法：3行shell脚本堵住漏洞</h2>
+<p>修复方案不需要重构整个监控体系，只需要在4AM健康检查的最前面加一个Step 0：</p>
+<pre><code># Step 0: 检查最近24小时是否有 auto: publish commit
+AUTO_PUBLISH_COUNT=$(git log --since="24 hours ago" --oneline --grep="auto: publish" | wc -l)
+if [ "$AUTO_PUBLISH_COUNT" -eq 0 ]; then
+  echo "⚠️ 警告：最近24小时无新文章发布！流水线可能停摆。"
+  # 这里可以接入告警（邮件/Telegram/Slack）
+  ALERT_SENT=true
+fi</code></pre>
+<p>这三行代码的核心逻辑是：**用 git log 作为唯一的真相来源**。不看Clarity（会被旧文长尾流量骗），不看pushed_manifest（只检查已有记录不检查新增），只看一件事——最近24小时有没有 <code>auto: publish</code> 这个关键词出现在git commit里。</p>
+<p>如果你的流水线用的是不同的commit消息格式，把 <code>--grep="auto: publish"</code> 换成你自己的关键词就行。</p>
+<h3>进阶版：连续N天告警升级</h3>
+<p>三行脚本只解决了"能发现问题"，还需要解决"问题被忽略"：</p>
+<pre><code># 连续3天0发布 → 升级告警
+CONSECUTIVE_ZERO_DAYS=$(cat /tmp/pipeline-zero-publish-streak 2>/dev/null || echo 0)
+if [ "$AUTO_PUBLISH_COUNT" -eq 0 ]; then
+  CONSECUTIVE_ZERO_DAYS=$((CONSECUTIVE_ZERO_DAYS + 1))
+  echo "$CONSECUTIVE_ZERO_DAYS" > /tmp/pipeline-zero-publish-streak
+  if [ "$CONSECUTIVE_ZERO_DAYS" -ge 3 ]; then
+    echo "🚨 严重：流水线连续 ${CONSECUTIVE_ZERO_DAYS} 天0发布！需要人工介入。"
+    # 升级告警：发邮件 + Telegram + 停止12PM/18PM/22PM cron
+  fi
+else
+  echo "0" > /tmp/pipeline-zero-publish-streak
+fi</code></pre>
+<h2>肌肉记忆防复发：我的监控清单</h2>
+<p>这次事故之后，我在4AM健康检查脚本里加了以下检查项，按优先级排序：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">优先级</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检查项</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">告警条件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检查方式</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">P0</td><td style="border:1px solid #ddd;padding:8px;">最近24h auto:publish数</td><td style="border:1px solid #ddd;padding:8px;">=0</td><td style="border:1px solid #ddd;padding:8px;">git log --grep</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">P1</td><td style="border:1px solid #ddd;padding:8px;">连续0发布天数</td><td style="border:1px solid #ddd;padding:8px;">≥3天</td><td style="border:1px solid #ddd;padding:8px;">/tmp计数文件</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">P2</td><td style="border:1px solid #ddd;padding:8px;">drafts/ 队列文件数</td><td style="border:1px solid #ddd;padding:8px;">>20个</td><td style="border:1px solid #ddd;padding:8px;">ls + wc</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">P3</td><td style="border:1px solid #ddd;padding:8px;">cron任务最后执行时间</td><td style="border:1px solid #ddd;padding:8px;">>25小时无执行</td><td style="border:1px solid #ddd;padding:8px;">crontab日志</td></tr></tbody></table>
+<p>P0就是前面那3行shell脚本。P1是升级版。P2检查草稿队列是否堆积（如果有20+个draft文件说明pipeline消费能力出了问题）。P3是最底层的检查——如果cron任务本身就没在跑，前面的检查全白搭。</p>
+<h2>我从这次事故里学到的3件事</h2>
+<p><strong>第一，旧文长尾流量是蜜糖也是毒药。</strong> 它能让你的博客在完全停更的情况下仍然看起来"健康"，这既是SEO资产的价值，也是监控盲区的来源。你需要把"内容更新频率"和"流量指标"分开监控，不能用一个代替另一个。</p>
+<p><strong>第二，"管道通畅"不等于"有水在流"。</strong> pushed_manifest同步、远端文件数一致、git commit存在——这些都是"管道通畅"的检查。但你需要额外检查"最近24小时有多少新内容被推送"这个"水流"指标。</p>
+<p>**第三，git log是自动化流水线最好的审计日志。** 它不会被Clarity的长尾流量干扰，不会被pushed_manifest的同步状态迷惑，不会被chore commit的假象欺骗。只要你的流水线在commit消息里打了标签（比如 <code>auto: publish</code>），git log就是判断"有没有新内容被发布"的唯一可信来源。</p>
+<p>---</p>
+<p><em></em></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
