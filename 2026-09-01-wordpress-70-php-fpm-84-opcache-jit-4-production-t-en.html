@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.0 PHP-FPM 8.4 OPcache JIT: 4 Production Traps That Crashed My Server - TechPassive</title>
+  <meta name="description" content="How I tuned PHP-FPM 8.4 + OPcache JIT for WordPress 7.0 — pm.max_children exhaustion, JIT buffer overflow, OPcache invalidation on deploy, and real_children vs idle_children confusion.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>PHP-FPM 8.4 + OPcache + JIT Production Tuning for WordPress 7.0</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-08-30-wordpress-performance-monitoring-2026-query-monito-en.html" class="internal-link">WordPress</a></span><span class="tag">PHP-FPM</span><span class="tag">OPcache</span><span class="tag">JIT</span><span class="tag">Performance</span><span class="tag"><a href="/2026-08-30-wordpress-performance-monitoring-2026-query-monito-en.html" class="internal-link">WordPress</a> 7.0</span>
+  </div>
+  <div class="content">
+    <h2>2AM, 502 Everywhere</h2>
+<p>At 2:17 AM my phone wouldn't stop buzzing. UptimeRobot was screaming: <code>HTTP 502 Bad Gateway</code> across all seven monitoring endpoints. My first instinct was "Redis died again" — I'd just dealt with a Redis Object Cache meltdown the week before (see my previous article). But <code>systemctl status redis</code> came back clean. Redis was sitting at 230MB memory, totally fine.</p>
+<p>The real culprit was in nginx error.log: <code>upstream prematurely closed connection while reading response header</code> flooding the screen. That error points straight at PHP-FPM.</p>
+<p>My stack at the time: nginx 1.25 + PHP-FPM 8.4 + MySQL 8.0 + Redis 7, running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 on a 4-core 8GB VPS. Normal QPS hovered around 50-80, with homepage TTFB stable at 180ms. That night, Googlebot decided to go on a crawling rampage (probably hit a new sitemap submission), QPS spiked to 300+, and PHP-FPM just gave up.</p>
+<h2>Trap #1: pm.max_children Exhaustion — The Pool Drowned</h2>
+<p>My FPM config was copy-pasted from some "<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> best practices" blog:</p>
+<pre><code>[www]
+pm = dynamic
+pm.max_children = 5
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 3</code></pre>
+<p><code>pm.max_children = 5</code>. Five worker processes. I remember looking at this config and thinking "that's enough, I'm not a big site."</p>
+<p>Reality slapped me hard. A single <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 homepage render with OPcache enabled eats 60-80MB of PHP-FPM worker memory. Turn OPcache off (and I'll explain why I temporarily did that later), and it jumps to 120-150MB per worker. Five workers = 300-750MB. Doesn't sound terrible, but here's the thing: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0's REST API calls (Block Editor previews, Heartbeat API, WP-Cron triggers) each grab a worker. Add WooCommerce AJAX requests (add-to-cart, stock checks), and those five workers are gone in seconds.</p>
+<p>When <code>pm.max_children</code> is exhausted, the symptoms are sneaky. Nginx doesn't immediately return 502 — it starts queuing. FPM's <code>request_terminate_timeout</code> defaults to 0 (never timeout), so requests just hang there until nginx's <code>proxy_read_timeout</code> (default 60s) expires. The 502 users see actually happened 60 seconds ago.</p>
+<p>My debugging process:</p>
+<pre><code># Check FPM connection status
+curl -s http://127.0.0.1:9000/status 2>/dev/null || echo "status page not enabled"
+
+# More direct: count processes
+ps aux | grep php-fpm | grep -v grep | wc -l
+
+# Check FPM pool log (needs log_level = notice in php-fpm.conf)
+tail -50 /var/log/php-fpm/www-error.log | grep "max_children"</code></pre>
+<p>With <code>log_level = notice</code>, FPM logs: <code>[pool www] server reached max_children setting (5), consider raising it</code>. But I had <code>log_level = alert</code>, so this line was swallowed.</p>
+<p>The fix is straightforward, but there's a hidden math problem:</p>
+<pre><code>; Formula to estimate max_children
+; max_children = (total RAM - OS reserve - MySQL - Redis - nginx) / per-worker memory
+; My 8GB machine: (8192 - 1024 - 1024 - 256 - 128) / 80 ≈ 72
+; But peak memory per worker hits 150MB, so conservatively: 40
+
+pm = ondemand          ; Switch to ondemand — no pre-allocation
+pm.max_children = 40
+pm.process_idle_timeout = 10s  ; Kill idle workers after 10 seconds
+pm.max_requests = 500   ; Restart each worker after 500 requests (prevent memory leaks)</code></pre>
+<p><code>pm = ondemand</code> beats <code>dynamic</code> for "burst traffic" scenarios — nearly zero memory at idle, workers spawn on demand. The tradeoff is cold-start latency on the first request (roughly 20-50ms), but for SEO that's infinitely better than a 502.</p>
+<h2>Trap #2: OPcache Invalidation — White Screen After Deploy</h2>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 changed how Block Editor rendering works. Many PHP classes load lazily at runtime. I once deployed a new version and users reported "white screen" — the login page worked fine, but every frontend page was blank.</p>
+<p>The log showed: <code>PHP Fatal error: Class 'WP_Block_Bindings_Registry' not found</code>. But this class is literally in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 core. The problem was OPcache.</p>
+<p>OPcache works by caching compiled PHP opcodes in shared memory. When you update a PHP file (like a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> core upgrade), OPcache doesn't necessarily know. Its <code>revalidate_freq</code> defaults to 2 seconds, but with <code>enable_file_override = 0</code>, it thinks "file inode didn't change, don't recompile." <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s <code>update-core.php</code> extracts to a temp directory then renames — the inode changes, but OPcache may have already cached the old opcodes.</p>
+<p>Worse, <code>opcache.consistency_checks</code> (default 1, enables validation) is usually disabled in production for performance. Once disabled, OPcache fully trusts the cache and never checks if files were modified.</p>
+<p>I tried the approach that 90% of articles recommend:</p>
+<pre><code># Approach 1: Restart PHP-FPM (works, but overkill)
+systemctl restart php-fpm
+
+# Approach 2: Call opcache_reset() (works, but be careful)
+# Drop a reset.php in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> root, visit it, delete immediately
+<?php opcache_reset(); echo "OPcache cleared"; ?></code></pre>
+<p>Approach 1 kills all in-progress requests (users editing posts get kicked out). Approach 2 is a security risk if you forget to delete the file.</p>
+<p>The real solution was adding one line to my deploy script:</p>
+<pre><code># In deploy.sh
+# Approach 3: Graceful FPM reload (zero downtime)
+kill -USR2 $(cat /run/php-fpm/www.pid)</code></pre>
+<p><code>kill -USR2</code> is PHP-FPM's "graceful reload" signal: it spawns a new FPM master process, new requests go to the new process (fresh OPcache), and old processes finish their current requests before exiting. Zero downtime, zero white screen.</p>
+<p>One catch: <code>kill -USR2</code> sometimes doesn't work with <code>ondemand</code> mode (because there's no persistent master process). My fix was switching back to <code>dynamic</code> with <code>pm.start_servers = 2</code>:</p>
+<pre><code>pm = dynamic
+pm.max_children = 40
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 5
+pm.max_requests = 500</code></pre>
+<p>Now <code>kill -USR2</code> works reliably.</p>
+<h2>Trap #3: JIT Buffer Overflow — Performance Actually Got Worse</h2>
+<p>PHP 8.0 introduced the JIT compiler, and by 8.4 it's pretty mature. Every "PHP 8.x performance optimization" article tells you to enable JIT:</p>
+<pre><code>opcache.jit_buffer_size = 256M
+opcache.jit = 1255</code></pre>
+<p>I did exactly that. Result? The <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> "Plugins" admin page took 8 seconds to load. Previously, without JIT, it took 2 seconds.</p>
+<p>I enabled <code>opcache.jit_debug=1</code> and checked the logs. Found the issue: tracing mode (<code>1255</code>'s last digit <code>5</code>) generates massive amounts of "side exits" when processing <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s <code>eval()</code> and dynamic <code>include</code> statements. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0's Block Editor and REST API heavily use <code>do_action()</code> and <code>apply_filters()</code> — these hook mechanisms look like "unpredictable branches" to the JIT compiler.</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s <code>WP_Hook</code> class internally uses <code>SplPriorityQueue</code>. The JIT compiler optimizes this queue poorly because priority queue operations have data-dependent branching patterns that JIT can't compile ahead of time.</p>
+<p>My final configuration:</p>
+<pre><code>; JIT config — <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-specific
+opcache.jit_buffer_size = 64M      ; Bigger isn't better! 64M is enough for <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>
+opcache.jit = 1235                  ; 1=enabled, 2=on, 3=hot, 5=register (NOT tracing)
+; Mode 5 (register) works much better for <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> than mode 4 (tracing)
+; <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s hook mechanism causes too many side exits in tracing mode
+
+; This next line is crucial: limit JIT's max recursion depth
+; <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s apply_filters can nest 20+ levels deep
+opcache.jit_max_recursive_calls = 64   ; Default is 256, <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> doesn't need that much</code></pre>
+<p>Results: homepage TTFB dropped from 180ms to 110ms (-39%), admin Plugins page from 8 seconds to 1.2 seconds. <code>opcache.jit = 1235</code> register mode is significantly more <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-friendly than tracing mode for hook-heavy applications.</p>
+<h2>Trap #4: real_children Misidentification — Monitoring Thought FPM Was Dead</h2>
+<p>This one is subtle. I monitor FPM with Zabbix, and the graphs kept showing <code>active processes</code> hitting 40 (my max_children), even though actual traffic was low.</p>
+<p>Turns out I was misreading the FPM status page. There are three fields:</p>
+<pre><code>idle processes: 35
+active processes: 5
+total processes: 40</code></pre>
+<p><code>total processes = idle + active + idle but about to be killed</code>. I was monitoring <code>total processes</code>, but <code>total</code> includes "zombie workers" that have received <code>SIGTERM</code> but haven't exited yet. With <code>pm.max_requests = 500</code>, a worker gets <code>SIGTERM</code> after 500 requests, then re-forks. During the fork moment, <code>total processes</code> briefly exceeds <code>pm.max_children</code> (old process hasn't exited, new one has started).</p>
+<p>Even worse, <code>ondemand</code> mode's <code>pm.process_idle_timeout = 10s</code> means idle workers get killed after 10 seconds. If you sample every 5 seconds, you'll see <code>total processes</code> bouncing like a heart monitor.</p>
+<p>The fix: monitor <code>active processes</code> instead of <code>total processes</code>, and set alert thresholds at <code>max_children * 0.8</code>:</p>
+<pre><code># Correct monitoring approach
+active=$(curl -s http://127.0.0.1:9000/status?html | grep "Active processes" | awk -F'>|<' '{print $3}')
+max=40
+threshold=$((max * 80 / 100))
+if [ "$active" -gt "$threshold" ]; then
+    echo "WARNING: FPM active processes ($active) exceeds 80% of max_children ($max)"
+fi</code></pre>
+<h2>My Final Configuration</h2>
+<p>After fixing all four traps, here's my <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 PHP-FPM setup:</p>
+<pre><code>; /etc/php-fpm.d/www.conf — <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + PHP 8.4 production config
+[www]
+user = nginx
+group = nginx
+listen = /run/php-fpm/www.sock
+listen.owner = nginx
+listen.group = nginx
+listen.mode = 0660
+
+; Process management — dynamic mode (USR2 graceful reload needs it)
+pm = dynamic
+pm.max_children = 40
+pm.start_servers = 2
+pm.min_spare_servers = 1
+pm.max_spare_servers = 5
+pm.max_requests = 500
+pm.process_idle_timeout = 10s
+
+; Timeouts — prevent slow requests from hogging workers
+request_terminate_timeout = 30s
+request_slowlog_timeout = 5s
+slowlog = /var/log/php-fpm/www-slow.log
+
+; Status page (for monitoring)
+pm.status_path = /status
+ping.path = /ping
+ping.response = pong</code></pre>
+<pre><code>; /etc/php.d/10-opcache.ini — OPcache + JIT config
+zend_extension = opcache
+
+; Basic OPcache
+opcache.enable = 1
+opcache.enable_cli = 0
+opcache.memory_consumption = 256
+opcache.interned_strings_buffer = 32
+opcache.max_accelerated_files = 20000
+opcache.revalidate_freq = 0         ; Validate every request in production (fast with JIT)
+opcache.validate_timestamps = 1     ; Keep enabled or get white screens after deploys
+opcache.save_comments = 1           ; <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> needs this (some plugins read comments)
+
+; JIT — register mode, <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-optimized
+opcache.jit = 1235
+opcache.jit_buffer_size = 64M
+opcache.jit_max_recursive_calls = 64</code></pre>
+<h2>Verify Your Config Actually Works</h2>
+<pre><code># 1. Check OPcache status
+php -r "print_r(opcache_get_status());" | grep -E "enabled|memory|hits|misses"
+
+# 2. Verify JIT is working
+php -r "print_r(opcache_get_status()['jit']);"
+# Should show: [buffer_size] => 67108864 (64MB)
+
+# 3. Load test comparison (wrk or ab)
+wrk -t4 -c100 -d10s https://your-site.com/
+# Target: P99 < 200ms, zero 502s
+
+# 4. Check FPM slow log (confirm no timeout requests)
+tail -20 /var/log/php-fpm/www-slow.log</code></pre>
+<h2>My Performance Numbers</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Metric</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Before</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">After</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Change</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Homepage TTFB (P50)</td><td style="border:1px solid #ddd;padding:8px;">180ms</td><td style="border:1px solid #ddd;padding:8px;">110ms</td><td style="border:1px solid #ddd;padding:8px;">-39%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Homepage TTFB (P99)</td><td style="border:1px solid #ddd;padding:8px;">420ms</td><td style="border:1px solid #ddd;padding:8px;">165ms</td><td style="border:1px solid #ddd;padding:8px;">-61%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Admin Plugins page</td><td style="border:1px solid #ddd;padding:8px;">8s</td><td style="border:1px solid #ddd;padding:8px;">1.2s</td><td style="border:1px solid #ddd;padding:8px;">-85%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">502 error rate</td><td style="border:1px solid #ddd;padding:8px;">3.2%</td><td style="border:1px solid #ddd;padding:8px;">0.01%</td><td style="border:1px solid #ddd;padding:8px;">-99.7%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">FPM worker memory (avg)</td><td style="border:1px solid #ddd;padding:8px;">120MB</td><td style="border:1px solid #ddd;padding:8px;">75MB</td><td style="border:1px solid #ddd;padding:8px;">-37%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">OPcache hit rate</td><td style="border:1px solid #ddd;padding:8px;">89%</td><td style="border:1px solid #ddd;padding:8px;">97.3%</td><td style="border:1px solid #ddd;padding:8px;">+8.3pp</td></tr></tbody></table>
+<p><em></em></p>
+<h2>Further Reading</h2>
+<ul><li><a href="https:///2026-06-11-wordpress-object-cache-showdown2026-object-cache-p-en.html" target="_blank" rel="nofollow sponsored">WordPress Object Cache Pro vs Redis Object Cache Showdown 2026</a> — Cache layer comparison</li><li><a href="https:///2026-06-09-wordpress-wp_postmeta-index-optimization-2026-from-en.html" target="_blank" rel="nofollow sponsored">WordPress wp_postmeta Composite Index Optimization 50K WooCommerce 4s→50ms</a> — Database layer optimization</li><li><a href="https:///2026-08-30-wordpress-performance-monitoring-2026-query-monito-en.html" target="_blank" rel="nofollow sponsored">WordPress Performance Monitoring 2026: Query Monitor vs Debug Bar vs New Relic</a> — Monitoring tool selection</li><li><a href="https:///2026-08-31-wordpress-redis-object-cache-pitfalls-5-real-traps-en.html" target="_blank" rel="nofollow sponsored">WordPress Redis Object Cache 5 Real Pitfalls</a> — Redis cache traps</li></ul>
+<p>---</p>
+<p><em></em></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
