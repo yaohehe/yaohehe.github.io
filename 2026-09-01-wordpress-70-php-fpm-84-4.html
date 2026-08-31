@@ -71,13 +71,13 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>PHP-FPM 8.4 + OPcache + JIT 生产调优全复盘</h1>
   <div class="post-tags">
-    <span class="tag">WordPress</span><span class="tag">PHP-FPM</span><span class="tag">OPcache</span><span class="tag">JIT</span><span class="tag">性能优化</span><span class="tag">WordPress 7.0</span>
+    <span class="tag">WordPress</span><span class="tag"><a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM</span><span class="tag">OPcache</span><span class="tag">JIT</span><span class="tag">性能优化</span><span class="tag">WordPress 7.0</span>
   </div>
   <div class="content">
     <h2>凌晨 2 点，502 炸了</h2>
 <p>凌晨 2 点 17 分，手机疯狂震动。UptimeRobot 报警：<code>HTTP 502 Bad Gateway</code>，连续 7 个检测点全部挂掉。我 ssh 上去的第一反应是 Redis 又炸了——毕竟上周刚踩过一次 Redis Object Cache 的坑（详见上一篇）。结果 <code>systemctl status redis</code> 一看，Redis 跑得好好的，内存占用才 230MB。</p>
-<p>反倒是 nginx error.log 里刷了一屏幕的 <code>upstream prematurely closed connection while reading response header</code>。这条报错指向一个我之前一直忽略的东西：PHP-FPM。</p>
-<p>当时我的站点架构是 nginx 1.25 + PHP-FPM 8.4 + MySQL 8.0 + Redis 7，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 跑在一台 4 核 8GB 的 VPS 上。平时 QPS 大概 50-80，首页 TTFB 稳定在 180ms 左右。那天凌晨，Googlebot 突然来了一波密集爬取（可能是提交了新的 sitemap），QPS 飙到 300+，PHP-FPM 直接被打死了。</p>
+<p>反倒是 nginx error.log 里刷了一屏幕的 <code>upstream prematurely closed connection while reading response header</code>。这条报错指向一个我之前一直忽略的东西：<a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM。</p>
+<p>当时我的站点架构是 nginx 1.25 + <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM 8.4 + MySQL 8.0 + Redis 7，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 跑在一台 4 核 8GB 的 VPS 上。平时 QPS 大概 50-80，首页 TTFB 稳定在 180ms 左右。那天凌晨，Googlebot 突然来了一波密集爬取（可能是提交了新的 sitemap），QPS 飙到 300+，<a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM 直接被打死了。</p>
 <h2>第一个坑：pm.max_children 耗尽，FPM 池子被淹</h2>
 <p>我之前的 FPM 配置是从某个"<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 最佳实践"博客抄来的：</p>
 <pre><code>[www]
@@ -87,7 +87,7 @@ pm.start_servers = 2
 pm.min_spare_servers = 1
 pm.max_spare_servers = 3</code></pre>
 <p><code>pm.max_children = 5</code>。5 个 worker 进程。当时我看到这个配置的时候还觉得"够了，我又不是大站"。</p>
-<p>现实给了我一巴掌。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的首页渲染，开 OPcache 的情况下单个 PHP-FPM worker 大约占 60-80MB 内存。如果关了 OPcache（后面会讲为什么我一度关掉了），内存直接飙到 120-150MB。5 个 worker 就是 300-750MB。听着不多，但问题是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 REST API 调用（Block Editor 预览、Heartbeat API、WP-Cron 触发）每一个都会占用一个 worker。加上 WooCommerce 的 AJAX 请求（加入购物车、库存检查），5 个 worker 秒光。</p>
+<p>现实给了我一巴掌。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的首页渲染，开 OPcache 的情况下单个 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM worker 大约占 60-80MB 内存。如果关了 OPcache（后面会讲为什么我一度关掉了），内存直接飙到 120-150MB。5 个 worker 就是 300-750MB。听着不多，但问题是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 REST API 调用（Block Editor 预览、Heartbeat API、WP-Cron 触发）每一个都会占用一个 worker。加上 WooCommerce 的 AJAX 请求（加入购物车、库存检查），5 个 worker 秒光。</p>
 <p><code>pm.max_children</code> 耗尽后的症状很隐蔽：nginx 不会立刻报 502，而是开始排队。FPM 的 <code>request_terminate_timeout</code> 默认是 0（永不超时），所以请求会一直卡着，直到 nginx 的 <code>proxy_read_timeout</code>（默认 60s）到期才返回 502。也就是说，用户看到的 502 其实是 60 秒前就已经死了。</p>
 <p>我的排查流程：</p>
 <pre><code># 查看 FPM 当前连接状态
@@ -111,12 +111,12 @@ pm.process_idle_timeout = 10s  ; 空闲 10 秒就回收
 pm.max_requests = 500   ; 每个 worker 处理 500 个请求后重启（防内存泄漏）</code></pre>
 <p><code>pm = ondemand</code> 比 <code>dynamic</code> 更适合"突发流量"场景——平时几乎不占内存，流量来了再拉起 worker。代价是第一个请求的冷启动延迟（大概 20-50ms），但对 SEO 来说这点延迟远比 502 强。</p>
 <h2>第二个坑：OPcache 缓存失效，部署后白屏</h2>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 改了 Block Editor 的渲染逻辑，很多 PHP 类在运行时才加载。我有一次部署新版本后，用户反馈"白屏"——后台登录页正常，但前端任何页面都是空白。</p>
-<p>查日志发现是 <code>PHP Fatal error: Class 'WP_Block_Bindings_Registry' not found</code>。但这个类明明在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的核心代码里。问题出在 OPcache。</p>
-<p>OPcache 的工作原理是把编译后的 PHP opcode 缓存到共享内存中。当你更新了 PHP 文件（比如 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心升级），OPcache 不一定知道。它的 <code>revalidate_freq</code> 默认是 2 秒，但 <code>enable_file_override = 0</code> 的情况下，它会认为"文件 inode 没变就不重新编译"。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>wp-admin/includes/update-core.php</code> 在升级时是先解压到临时目录再 rename 过来的，inode 变了但 OPcache 可能已经缓存了旧的 opcode。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 改了 Block Editor 的渲染逻辑，很多 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> 类在运行时才加载。我有一次部署新版本后，用户反馈"白屏"——后台登录页正常，但前端任何页面都是空白。</p>
+<p>查日志发现是 <code><a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> Fatal error: Class 'WP_Block_Bindings_Registry' not found</code>。但这个类明明在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的核心代码里。问题出在 OPcache。</p>
+<p>OPcache 的工作原理是把编译后的 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> opcode 缓存到共享内存中。当你更新了 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> 文件（比如 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心升级），OPcache 不一定知道。它的 <code>revalidate_freq</code> 默认是 2 秒，但 <code>enable_file_override = 0</code> 的情况下，它会认为"文件 inode 没变就不重新编译"。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>wp-admin/includes/update-core.php</code> 在升级时是先解压到临时目录再 rename 过来的，inode 变了但 OPcache 可能已经缓存了旧的 opcode。</p>
 <p>更恶心的是 <code>opcache.consistency_checks</code>（默认 1，开启校验）在生产环境通常被关掉以提升性能。关掉后，OPcache 就完全信任缓存，不会校验文件是否被修改。</p>
 <p>我试了网上 90% 的文章教你做的方案：</p>
-<pre><code># 方案一：重启 PHP-FPM（有效，但杀鸡用牛刀）
+<pre><code># 方案一：重启 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM（有效，但杀鸡用牛刀）
 systemctl restart php-fpm
 
 # 方案二：调用 opcache_reset()（有效，但要小心）
@@ -127,7 +127,7 @@ systemctl restart php-fpm
 <pre><code># deploy.sh 中加入
 # 方案三：用 opcache_reset 的同时配合 FPM 优雅重载
 kill -USR2 $(cat /run/php-fpm/www.pid)</code></pre>
-<p><code>kill -USR2</code> 是 PHP-FPM 的"优雅重载"信号：它会拉起一个新的 FPM master 进程，新的请求走新进程（新 OPcache），旧进程继续处理完当前请求后退出。零停机，零白屏。</p>
+<p><code>kill -USR2</code> 是 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM 的"优雅重载"信号：它会拉起一个新的 FPM master 进程，新的请求走新进程（新 OPcache），旧进程继续处理完当前请求后退出。零停机，零白屏。</p>
 <p>但注意：<code>kill -USR2</code> 在 <code>ondemand</code> 模式下有时不生效（因为没有持久的 master 进程）。我的解决方案是改回 <code>dynamic</code> 模式并设 <code>pm.start_servers = 2</code>：</p>
 <pre><code>pm = dynamic
 pm.max_children = 40
@@ -137,7 +137,7 @@ pm.max_spare_servers = 5
 pm.max_requests = 500</code></pre>
 <p>这样 <code>kill -USR2</code> 就稳定生效了。</p>
 <h2>第三个坑：JIT buffer 溢出，性能反而下降</h2>
-<p>PHP 8.0 引入了 JIT 编译器，8.4 版本的 JIT 已经相当成熟。网上几乎所有"PHP 8.x 性能优化"文章都会教你开启 JIT：</p>
+<p><a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> 8.0 引入了 JIT 编译器，8.4 版本的 JIT 已经相当成熟。网上几乎所有"<a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> 8.x 性能优化"文章都会教你开启 JIT：</p>
 <pre><code>opcache.jit_buffer_size = 256M
 opcache.jit = 1255</code></pre>
 <p>我也照做了。结果呢？<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后台打开"插件"页面要 8 秒，之前不开 JIT 只要 2 秒。</p>
@@ -171,8 +171,8 @@ if [ "$active" -gt "$threshold" ]; then
     echo "WARNING: FPM active processes ($active) exceeds 80% of max_children ($max)"
 fi</code></pre>
 <h2>我的最终配置清单</h2>
-<p>把上面四个坑修完后，我的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 PHP-FPM 配置长这样：</p>
-<pre><code>; /etc/php-fpm.d/www.conf — <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + PHP 8.4 生产配置
+<p>把上面四个坑修完后，我的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a>-FPM 配置长这样：</p>
+<pre><code>; /etc/php-fpm.d/www.conf — <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + <a href="/2026-09-01-wordpress-70-php-fpm-84-4.html" class="internal-link">PHP</a> 8.4 生产配置
 [www]
 user = nginx
 group = nginx
