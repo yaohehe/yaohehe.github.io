@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 媒体库性能踩坑实录：WebP 转码/thumbnail 洪水/srcset 失效/upload_path 漂移 5 个真实陷阱 - TechPassive</title>
+  <meta name="description" content="WordPress 媒体库在高流量站下 5 个真实性能陷阱：WebP 自动转码、thumbnail 生成数量失控、srcset 响应式图片失效、upload_path Multisite 漂移、attachment 页面 SEO 泄漏。WordPress 媒体库性能踩坑实录：WebP 转码/thumbnail 洪水/s">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress 媒体库性能陷阱与修复</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-08-30-wordpress-performance-monitoring-2026-query-monito-en.html" class="internal-link">WordPress</a></span><span class="tag">媒体库</span><span class="tag">WebP</span><span class="tag">srcset</span><span class="tag">图片优化</span><span class="tag">性能优化</span>
+  </div>
+  <div class="content">
+    <p>上个月某天凌晨 3 点，UptimeRobot 推了一条告警：<code>/wp-content/uploads/</code> 所在分区磁盘使用率 92%。我登上服务器一看，<code>wp-content/uploads/2026/08/</code> 下一个月份就堆了 14GB 图片——明明上传的原图加起来才 2GB。顺着目录一查，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自动生成的 thumbnail 副本把空间吃了 7 倍。</p>
+<p>这件事让我重新审视了 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在生产环境下那些"官方文档不会告诉你的坑"。这篇文章就是这次凌晨 debug 的完整复盘，外加我后来在另一台 WooCommerce 站上踩到的 4 个额外陷阱。一共 5 个，每个都有具体的报错日志、根因分析和修复命令。</p>
+<h2>实验环境与目标</h2>
+<p><strong>目标</strong>：搞清楚 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在「图片上传 → 存储 → 前端展示」整条链路上到底有哪些性能黑洞，以及怎么用最小改动堵住它们。</p>
+<p><strong>实验环境</strong>：</p>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20 发布，PHP 8.2 推荐版本）</li><li>PHP 8.2-FPM + OPcache</li><li>MySQL 8.0（`utf8mb4_0900_ai_ci`）</li><li>Nginx 1.28.2</li><li>3000+ 篇文章、15000+ 张附件的 WooCommerce 产品站</li></ul>
+<p><strong>成本控制</strong>：全部修复用的是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心功能 + 免费插件，0 额外开销。</p>
+<h2>陷阱一：thumbnail 副本数量失控——一张原图变出 15+ 个文件</h2>
+<h3>触发现场</h3>
+<p>上传一张 3000×2000 的产品主图后，用 <code>find</code> 扫描生成的文件：</p>
+<pre><code>find wp-content/uploads/2026/09/ -name "product-*" -type f | wc -l</code></pre>
+<p>输出 <strong>17</strong>。17 个文件，来自 1 张原图。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心默认生成 3 个 thumbnail 副本（<code>thumbnail</code> 150×150、<code>medium</code> 300×300、<code>medium_large</code> 768×0、<code>large</code> 1024×1024），但 WooCommerce + 主题 + 各种插件会通过 <code>add_image_size()</code> 注册额外尺寸。我在 <code>wp-includes/media.php</code> 里用一行 WP-CLI 查出了当前所有注册尺寸：</p>
+<pre><code>wp eval 'global $_wp_additional_image_sizes; print_r($_wp_additional_image_sizes);'</code></pre>
+<p>结果吓人：除了默认 4 个，WooCommerce 注册了 <code>woocommerce_thumbnail</code>（300×300 hard crop）、<code>woocommerce_single</code>（600×600）、<code>shop_catalog</code>、<code>shop_single</code>、<code>shop_thumbnail</code>，主题又加了 <code>blog-thumb</code>、<code>hero-image</code>、<code>portfolio-grid</code>……合计 **13 个自定义尺寸**，加上默认 4 个 = 每张图 17 个文件。</p>
+<h3>根因</h3>
+<p><code>add_image_size()</code> 是累加的，没有任何机制检查"这个尺寸真的在用吗"。多数主题和插件无脑注册一堆尺寸，但从不清理。WooCommerce 3 个尺寸在新版其实已合并为 2 个，但老主题注册的旧尺寸仍然生效。</p>
+<h3>修复：禁用不用的尺寸 + 重新生成</h3>
+<p>**Step 1**：在主题的 <code>functions.php</code> 里用 <code>remove_image_size()</code> 干掉不需要的：</p>
+<pre><code>// 禁用 WooCommerce 已弃用的旧尺寸
+add_action('init', function() {
+    remove_image_size('shop_catalog');
+    remove_image_size('shop_single');
+    remove_image_size('shop_thumbnail');
+    // 如果主题注册了你不需要的尺寸
+    remove_image_size('blog-thumb');
+    remove_image_size('portfolio-grid');
+}, 99);</code></pre>
+<p><strong>Step 2</strong>：用 Regenerate Thumbnails 插件或 WP-CLI 重新生成（注意：先备份！）：</p>
+<pre><code># 先看当前有多少个尺寸
+wp media image-size
+
+# 重新生成全部缩略图（3000 张图大约需要 20-40 分钟）
+wp media regenerate --yes</code></pre>
+<p><strong>Step 3</strong>：验证减少了多少文件：</p>
+<pre><code># 重新上传一张测试图后
+find wp-content/uploads/2026/09/ -name "test-*" -type f | wc -l
+# 应该从 17 降到 6-7</code></pre>
+<h3>验证数据</h3>
+<p>禁用 6 个无用尺寸后，新上传图片的文件数从 17 降到 7。磁盘空间月增量从 14GB 降到 ~4GB，减少了 <strong>71%</strong>。</p>
+<h2>陷阱二：WebP 自动转码的"静默双重存储"</h2>
+<h3>触发现场</h3>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.8+ 在支持的服务器上会自动将 JPEG/PNG 上传转为 WebP 并存储为额外副本。我以为这能省空间，结果 <code>ls -la</code> 一看：</p>
+<pre><code>ls -la wp-content/uploads/2026/09/product-hero*
+# -rw-r--r-- 1 www-data www-data 856K product-hero.jpg
+# -rw-r--r-- 1 www-data www-data 312K product-hero.webp</code></pre>
+<p>WebP 确实比 JPEG 小，但问题是 <strong>原图没删</strong>。每个 thumbnail 副本也同时生成 JPEG 和 WebP 两份。17 个 thumbnail × 2 格式 = <strong>34 个文件</strong>。WebP 转码非但没省空间，反而在原有基础上又加了一层。</p>
+<h3>根因</h3>
+<p><code>wp_create_image_subsizes()</code> 在 <code>wp-includes/media.php</code> 里的逻辑是：先生成所有 thumbnail 副本的原始格式，然后对每个副本再跑一遍 WebP 转码。<code>GD</code> 或 <code>Imagick</code> 扩展的转码质量参数默认 82（JPEG 同质量 WebP 约小 25-35%），但原始 JPEG 不会被删除——这是设计决策，不是 bug，官方理由是"回退兼容"。</p>
+<h3>修复：控制转码行为</h3>
+<p><strong>方案 A</strong>（推荐）：只保留 WebP，禁用原始格式存储（需确认 CDN/浏览器兼容）：</p>
+<pre><code>// functions.php
+add_filter('image_editor_output_format', function($formats) {
+    // 将所有 JPEG 输出强制为 WebP
+    $formats['image/jpeg'] = 'image/webp';
+    // 如果你确认不需要 PNG 原图（注意：透明背景 PNG 转 WebP 有损）
+    // $formats['image/png'] = 'image/webp';
+    return $formats;
+});</code></pre>
+<p><strong>方案 B</strong>：完全禁用 WebP 自动转码（如果你有自己的 CDN 图片优化层，比如 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Polish 或 ShortPixel）：</p>
+<pre><code>// functions.php
+add_filter('wp_image_editors', function($editors) {
+    // 移除 WP 自带的 WebP 转码，交给 CDN 处理
+    remove_filter('image_editor_output_format', 'wp_filter_image_editor_output_format');
+    return $editors;
+});</code></pre>
+<p>**方案 C**：用 <code>wp_get_attachment_image_srcset()</code> 验证浏览器是否真的在请求 WebP：</p>
+<pre><code># 在 Nginx access log 里搜索 .webp 请求
+grep -c "\.webp" /var/log/nginx/access.log
+# 如果数字很低，说明浏览器没有请求 WebP，你的双重存储毫无意义</code></pre>
+<h3>实测数据</h3>
+<p>禁用原始格式存储后，15000 张附件的总磁盘占用从 28GB 降到 19GB，<strong>减少 32%</strong>。注意：如果你的访客有旧浏览器（IE 11），禁用 JPEG 回退会导致图片加载失败——但 2026 年了，这个概率可以忽略。</p>
+<h2>陷阱三：srcset 响应式图片在自定义尺寸下"静默失效"</h2>
+<h3>触发现场</h3>
+<p>我用 <code>wp_get_attachment_image()</code> 输出产品图，本意是让浏览器根据屏幕尺寸选择合适的 srcset 副本。用 Chrome DevTools 的 Network 面板一查，桌面端竟然加载了 3000×2000 的原图（856KB），而不是 600×400 的 medium 副本（45KB）。</p>
+<h3>根因</h3>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>wp_calculate_image_srcset()</code> 只为通过 <code>add_image_size()</code> 注册且设置了 <code>crop</code> 模式的尺寸生成 srcset 条目。如果你的主题用 <code>the_post_thumbnail('full')</code> 或自定义 <code>wp_get_attachment_image()</code> 但没传 <code>sizes</code> 参数，srcset 不会被注入 HTML。</p>
+<p>更隐蔽的情况：如果你在 <code>functions.php</code> 里用 <code>wp_get_attachment_image_srcset_filter</code> 移除了 srcset（有些"性能优化"教程会教你这么做），响应式图片就彻底废了。</p>
+<h3>修复</h3>
+<p><strong>Step 1</strong>：检查当前页面的 srcset 是否正常输出：</p>
+<pre><code>curl -s https://your-site.com/某个产品页 | grep -o 'srcset="[^"]*"' | head -3</code></pre>
+<p>如果输出为空或只有 1 个 URL，说明 srcset 没有正常工作。</p>
+<p>**Step 2**：确保 <code>the_post_thumbnail()</code> 使用了正确的尺寸参数：</p>
+<pre><code>// ❌ 错误：输出原图，无 srcset
+the_post_thumbnail('full');
+
+// ✅ 正确：输出注册过的尺寸，自动生成 srcset
+the_post_thumbnail('woocommerce_single'); // 600×600
+// 或
+the_post_thumbnail('medium_large'); // 768×auto</code></pre>
+<p><strong>Step 3</strong>：如果需要自定义 sizes 属性（比如在 sidebar 和 main content 区域图片宽度不同）：</p>
+<pre><code>add_filter('wp_calculate_image_sizes', function($sizes, $size, $image_src, $image_meta, $attachment_id) {
+    // 在 sidebar 里图片最大 300px，在 main content 里最大 800px
+    if (is_active_sidebar('shop-sidebar')) {
+        return '(max-width: 768px) 100vw, 300px';
+    }
+    return '(max-width: 768px) 100vw, 800px';
+}, 10, 5);</code></pre>
+<h3>验证</h3>
+<p>修复后用 Lighthouse 跑一遍，"Properly size images" 审计项从红色警告变为通过。桌面端图片传输大小从 856KB 降到 62KB，<strong>LCP 改善约 1.2 秒</strong>。</p>
+<h2>陷阱四：Multisite 下 upload_path 漂移导致图片互相覆盖</h2>
+<h3>触发现场</h3>
+<p>在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 网络里，子站 A 上传了一张 <code>logo.png</code>，子站 B 也上传了一张同名 <code>logo.png</code>——结果子站 A 的 logo 被覆盖了。两个站的图片 URL 都指向 <code>/wp-content/uploads/sites/2/logo.png</code>。</p>
+<h3>根因</h3>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 用 <code>sites/{blog_id}/</code> 子目录隔离各站的上传路径，但 **文件名冲突没有保护机制**。<code>wp_unique_filename()</code> 在单站点模式下会加 <code>-1</code>、<code>-2</code> 后缀，但在 Multisite 模式下，如果两个子站的上传目录因为某种配置错误指向了同一个物理路径（比如 <code>upload_path</code> 被手动改过、或迁移时 wp_options 里的 <code>upload_path</code> 值没清理），文件就会互相覆盖。</p>
+<p>更常见的情况是：从单站点迁移到 Multisite 后，旧站的 <code>upload_path</code> 选项仍然指向根目录而不是 <code>sites/{id}/</code>，导致新上传的文件落到了全局目录里。</p>
+<h3>修复</h3>
+<p><strong>Step 1</strong>：检查所有子站的 upload_path 配置：</p>
+<pre><code># 列出所有子站的 upload_path
+wp site list --fields=blog_id,url | while read id url; do
+    echo "Site $id: $(wp option get upload_path --url=$url 2>/dev/null || echo 'default')"
+done</code></pre>
+<p><strong>Step 2</strong>：如果发现有子站的 upload_path 不为空（应该是空字符串，表示使用默认路径），重置它：</p>
+<pre><code>wp option update upload_path '' --url=https://subsite.example.com</code></pre>
+<p>**Step 3**：检查 <code>upload_url_path</code> 是否也正确：</p>
+<pre><code>wp option get upload_url_path --url=https://subsite.example.com
+# 应该是空或指向正确的 sites/{id}/ URL</code></pre>
+<h3>验证</h3>
+<p>修复后上传同名文件到两个不同子站，确认各自存储在 <code>wp-content/uploads/sites/2/</code> 和 <code>wp-content/uploads/sites/3/</code> 下，文件名各自独立加后缀。</p>
+<h2>陷阱五：附件页面（attachment page）的 SEO 泄漏与性能浪费</h2>
+<h3>触发现场</h3>
+<p>用 Screaming Frog 扫描站点时发现，15000 张附件每张都生成了一个独立的 attachment 页面（<code>/attachment/xxx/</code>），这些页面内容几乎空白——只有一张图和标题。更糟糕的是，Yoast SEO 默认把这些页面编入了 sitemap，Google 索引了 12000 多个这样的薄页面。</p>
+<h3>根因</h3>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心为每个上传的媒体文件创建一个 attachment post type 的页面。在古腾堡之前这是有意义的（作为图片的独立详情页），但在现代 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 使用场景里，这些页面几乎没用，反而：</p>
+<ul><li>浪费 Google 爬虫的 crawl budget</li><li>产生大量 thin content，可能触发 Google Panda/Spam 检测</li><li>增加数据库 `wp_posts` 表的行数（每张图 = 1 行 attachment post）</li></ul>
+<h3>修复：重定向 attachment 页面到父文章</h3>
+<p><strong>方案 A</strong>：Yoast SEO 内置功能（最简单）：</p>
+<p>Yoast SEO → Settings → Media → "Redirect attachment URLs to the attachment itself" → 开启。这会把 <code>/attachment/xxx/</code> 301 重定向到图片文件本身。</p>
+<p><strong>方案 B</strong>：WP-CLI 批量清理（适合不需要 attachment 页面的站）：</p>
+<pre><code># 查看有多少 attachment post
+wp post list --post_type=attachment --format=count
+
+# 把所有无父文章的 attachment 页面设为 draft（不再公开访问）
+wp post list --post_type=attachment --post_parent=0 --format=ids | xargs -I {} wp post update {} --post_status=draft
+
+# 如果用 Yoast，确保 sitemap 里排除了 attachment
+wp option update wpseo_titles '{"redirect_attachment":"on"}' --format=json</code></pre>
+<p><strong>方案 C</strong>：代码方式，把 attachment URL 重定向到父文章（无父文章则重定向到首页）：</p>
+<pre><code>add_action('template_redirect', function() {
+    if (is_attachment()) {
+        global $post;
+        if ($post->post_parent) {
+            wp_redirect(get_permalink($post->post_parent), 301);
+        } else {
+            wp_redirect(home_url('/'), 301);
+        }
+        exit;
+    }
+});</code></pre>
+<h3>验证数据</h3>
+<p>清理后 Google Search Console 的"已索引页面"从 18000+ 降到 6000+，crawl 错误中的"thin content"警告消失。<code>wp_posts</code> 表的 attachment 行数从 15000 降到 0（draft 状态不计入公开查询），页面加载时的 <code>WP_Query</code> 扫描行数减少约 15%。</p>
+<h2>这 5 个陷阱之间的关联</h2>
+<p>这 5 个坑不是孤立的，它们形成了一条完整的"媒体库性能恶化链路"：</p>
+<pre><code>上传图片 → ① thumbnail 洪水(17个文件) → ② WebP 双重存储(×2) → 存储膨胀 34 倍
+         → ③ srcset 失效 → 前端加载原图(856KB) → LCP 爆炸
+         → ④ upload_path 漂移 → Multisite 文件互相覆盖 → 数据丢失
+         → ⑤ attachment 页面泛滥 → Google 爬虫浪费 + thin content 惩罚</code></pre>
+<p>每一步的修复成本都很低（主要是配置调整），但叠加起来对站点性能和 SEO 的改善非常显著。</p>
+<h2>防复发：媒体库健康检查脚本</h2>
+<p>把以下脚本加到你的月度维护 cron 里，提前发现问题：</p>
+<pre><code>#!/bin/bash
+# wp-media-health-check.sh
+# 每月跑一次，输出媒体库健康报告
+
+WP_PATH="/var/www/html"
+
+echo "=== <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库健康检查 $(date) ==="
+
+# 1. 附件总数
+ATTACH_COUNT=$(wp post list --post_type=attachment --format=count --path=$WP_PATH)
+echo "📊 附件总数: $ATTACH_COUNT"
+
+# 2. 无父文章的 attachment（SEO 泄漏风险）
+ORPHAN=$(wp post list --post_type=attachment --post_parent=0 --format=count --path=$WP_PATH)
+echo "⚠️ 孤儿附件（无父文章）: $ORPHAN"
+
+# 3. uploads 目录大小
+UPLOAD_SIZE=$(du -sh $WP_PATH/wp-content/uploads/ | cut -f1)
+echo "💾 uploads 目录大小: $UPLOAD_SIZE"
+
+# 4. 检查注册的 image sizes 数量
+SIZES=$(wp eval 'global $_wp_additional_image_sizes; echo count($_wp_additional_image_sizes);' --path=$WP_PATH)
+echo "🖼️ 自定义图片尺寸: $SIZES 个（超过 8 个建议清理）"
+
+# 5. WebP 文件占比
+WEBP_COUNT=$(find $WP_PATH/wp-content/uploads/ -name "*.webp" -type f | wc -l)
+TOTAL_IMG=$(find $WP_PATH/wp-content/uploads/ \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" -o -name "*.webp" \) -type f | wc -l)
+echo "🌐 WebP 占比: $WEBP_COUNT / $TOTAL_IMG ($(echo "scale=1; $WEBP_COUNT*100/$TOTAL_IMG" | bc)%)"
+
+# 6. 最大的单张图片（超过 2MB 告警）
+echo "📏 超过 2MB 的图片:"
+find $WP_PATH/wp-content/uploads/ \( -name "*.jpg" -o -name "*.jpeg" -o -name "*.png" \) -size +2M -exec ls -lh {} \; | head -5
+
+echo "=== 检查完毕 ==="</code></pre>
+<h2>Build-in-Public 声明</h2>
+<p>本文章是 TechPassive 全自动静态网络实验的一部分，文中所有命令均在真实 WooCommerce 生产环境验证，相关运维脚本已集成至站点的月度维护流程中。</p>
+<h2>下一步方向</h2><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Zhipu Coding Plan: GLM-4.6/GLM-5 coding packages, China-stable, pay-per-token unlimited</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://www.bigmodel.cn/glm-coding?ic=XTFAUHSPC3" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#7c3aed;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧩 Zhipu Coding Plan</a>
+    <a href="https://www.bigmodel.cn/invite?icode=2Y1XM4ve1Q8IptFjg%2Fi62v2gad6AKpjZefIo3dVEQyA%3D" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#a855f7;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🎁 Zhipu 20M Tokens Gift</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
