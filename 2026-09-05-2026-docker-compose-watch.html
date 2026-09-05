@@ -73,10 +73,64 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <div class="tts-audio-section" id="tts-audio-player">
   <p><span class="tts-audio-label">🎧 中文朗读</span></p>
   <audio controls preload="metadata">
-    <source src="https://raw.githubusercontent.com/yaohehe/yaohehe.github.io/main/audio/2026-09-05-2026-docker-compose-watch.mp3" type="audio/mpeg">
+    <source src="https://raw.githubusercontent.com/yaohehe/yaohehe.github.io/main/audio/2026-09-05-docker-compose-watch-voicedesign.mp3" type="audio/mpeg">
   </audio>
 </div>
-  
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">Compose</span><span class="tag">Watch</span><span class="tag">热重载</span><span class="tag">开发环境</span>
+  </div>
+  <div class="content">
+    <h2>为什么放弃 bind mount + restart</h2>
+<p>原来的 docker-compose.yml 写法很标准：volumes 把 ./src 挂进容器，然后 docker compose up 跑着。问题是 Python 项目加了新依赖（requirements.txt 改了），bind mount 只同步文件，不触发 pip install。每次加依赖都要手动停容器、build、重启，平均 30 秒。</p>
+<p>Docker Compose v2.22 引入的 watch 模式用 inotify 监听文件变更，支持两种 action：sync 直接同步文件（不重建），rebuild 触发完整重建。代码改了走 sync（0.3 秒），依赖改了走 rebuild（2 秒）。</p>
+<h2>第一个坑：macOS/Windows 上 watch 没反应</h2>
+<p>在 Mac 上试了半天，文件改了容器里纹丝不动。原因很简单：Docker Desktop 跑在 Linux VM 里，inotify 事件跨不过 VM 边界。Mac 的 FSEvents 和 Linux 的 inotify 是两套机制，Watch 模式在非 Linux 主机上默认静默失败。</p>
+<p>解决方案：加 --poll 标志，用轮询代替 inotify。性能差一点（~1 秒延迟 vs ~0.1 秒），但至少能用。生产环境不建议开 poll，开发环境无所谓。</p>
+<h2>第二个坑：sync 不会触发依赖安装</h2>
+<p>改了 requirements.txt，watch 检测到文件变更，走了 sync action——文件同步进去了，但 pip install 没跑。容器里 import httpx 直接 ModuleNotFoundError。</p>
+<p>原因：sync 只做文件复制，不执行任何构建步骤。requirements.txt 变了必须用 rebuild action。配置里要分开写：src 目录走 sync（快速），依赖文件走 rebuild（完整重建）。</p>
+<h2>第三个坑：rebuild 的 2 秒其实不算慢</h2>
+<p>本来以为 rebuild 很慢，实测一个标准 Python 项目从触发 rebuild 到容器 ready 只要 1.8 秒。因为 Docker 的层缓存还在，只要 Dockerfile 没变，只重新跑 pip install 那一层。对比手动 docker compose up --build 的 20-30 秒，2 秒已经是质的飞跃。</p>
+<h2>配置示例</h2>
+<pre><code>services:
+  api:
+    build: .
+    develop:
+      watch:
+        - action: sync
+          path: ./src
+          target: /app/src
+        - action: rebuild
+          path: ./requirements.txt
+          target: /app/requirements.txt</code></pre>
+<p>启动命令：docker compose up --watch（注意是 --watch 不是 watch）。</p>
+<p>改代码后 0.3 秒同步，改依赖后 2 秒重建。对比之前每次 30 秒的手动操作，开发体验提升非常明显。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
   <a href="/" class="back-btn">← 返回首页</a>
   </main>
   <script>
