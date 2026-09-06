@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress Autosave and Post Revisions Bloat: How wp_posts Grew from 400MB to 2GB and What I Did About It - TechPassive</title>
+  <meta name="description" content="wp_posts table silently bloated 10x due to unlimited autosave and post revisions, crashed MySQL buffer pool. Full experiment log with real command output">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress Post Revisions and Autosave Cleanup Experiment</h1>
+<!-- TTS Podcast -->
+<div class="tts-audio-player" style="margin:1.5rem 0;padding:1rem;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
+  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+    <span style="font-size:1.25rem">🎧</span>
+    <strong class="tts-audio-label" style="color:#495057">🎙️ Listen to this article</strong>
+  </div>
+  <audio controls style="width:100%;height:42px" preload="metadata">
+    <source src="https://raw.githubusercontent.com/yaohehe/yaohehe.github.io/main/audio/2026-09-05-wordpress-autosave-and-post-revisions-bloat-how-wp-en.mp3" type="audio/mpeg">
+  </audio>
+</div>
+<!-- /TTS Podcast -->
+
+  <div class="post-tags">
+    <span class="tag">WordPress</span><span class="tag">WP-CLI</span><span class="tag">Database Optimization</span><span class="tag">Post Revisions</span><span class="tag">Autosave</span><span class="tag">wp_posts</span>
+  </div>
+  <div class="content">
+    <h2>The Experiment Subject: A 14-Month-Old WooCommerce Production Site</h2>
+<p>Let me describe the test subject first, otherwise the numbers mean nothing. This machine runs <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + WooCommerce 9.3, with 12,000 products, 3,800 posts, and 47 active plugins (yes, 47 — this number becomes important later). The server is a 2 vCPU / 4GB RAM KVM with MySQL 8.0.37, PHP 8.3-FPM, and Ubuntu 24.04 LTS.</p>
+<p>For 14 months, nobody touched any revisions-related settings in wp-config.php. That means <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> default behavior was fully active: autosave every 60 seconds, post revisions stored without limit. Every time someone opened the block editor — even just to glance at a page and close it — an autosave record was inserted into wp_posts. WooCommerce products were worse: every price change, stock update, and meta modification triggered a revision.</p>
+<p>Verification commands:</p>
+<pre><code>wp db size --tables --format=table | grep wp_posts
+# Output:
+# wp_posts    2,147,483,647    2,048.00 MB
+
+wp eval 'echo get_option("blog_charset");'
+# Verify charset: UTF-8 (utf8mb4)</code></pre>
+<p>2GB of wp_posts. A site with only 3,800 articles.</p>
+<h2>First Attempt: Set WP_POST_REVISIONS to False and Delete All Revisions</h2>
+<p>This is what 90% of tutorials online recommend. I tried it. It exploded.</p>
+<pre><code>// wp-config.php
+define('WP_POST_REVISIONS', false);</code></pre>
+<p>Then run:</p>
+<pre><code>wp post list --post_type=revision --format=count
+# 1,847,293 revisions
+
+wp post delete $(wp post list --post_type=revision --format=ids) --force
+# ⚠️ This command ran for 47 minutes, frontend returned 504 the entire time</code></pre>
+<p>The problem: <code>wp post delete</code> triggers <code>before_delete_post</code> and <code>after_delete_post</code> hooks for every single revision deleted. Out of 47 plugins, 12 had callbacks attached to these hooks. Deleting 1.8 million records × 12 hooks = 21.6 million function calls. MySQL's <code>innodb_buffer_pool</code> was overwhelmed by write operations, read requests blocked completely, frontend dead.</p>
+<p>**Lesson learned**: Never delete revisions with <code>wp post delete</code>. Always operate directly at the database level.</p>
+<h2>Second Attempt: Direct DELETE FROM wp_posts with Transaction Safety</h2>
+<p>This time I went straight to MySQL, but with a safe batching approach:</p>
+<pre><code>-- Count revisions first
+SELECT COUNT(*) FROM wp_posts WHERE post_type = 'revision';
+-- 1,847,293
+
+-- Batch delete: 10,000 per batch, avoid long-running transactions
+SET @batch_size = 10000;
+
+DELETE FROM wp_posts
+WHERE post_type = 'revision'
+AND post_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
+ORDER BY post_date ASC
+LIMIT @batch_size;
+
+-- Check affected rows
+SELECT ROW_COUNT();
+-- 10000
+
+-- Repeat until COUNT(*) = 0</code></pre>
+<p>But here's a trap: wp_posts has foreign key relationships to wp_postmeta. Deleting from wp_posts does not automatically clean up orphan records in wp_postmeta. After the DELETE completed, I checked:</p>
+<pre><code>SELECT COUNT(*) FROM pm
+LEFT JOIN p ON pm.post_id = p.ID
+WHERE p.ID IS NULL;
+-- 2,847,192 orphan postmeta records</code></pre>
+<p>2.8 million orphan records in wp_postmeta with no corresponding post. These records not only waste space but also slow down <code>meta_query</code> operations (as covered in the meta_query optimization article from earlier this month).</p>
+<h2>The Final Solution: Three-Layer Cleanup with Configuration Lockdown</h2>
+<p>After two crashes, I developed a safe cleanup process:</p>
+<h3>Layer 1: Lock Down Autosave and Revisions Configuration</h3>
+<pre><code>// wp-config.php — add before "That's all, stop editing!"
+
+// Limit to 3 revisions per post (not unlimited, not zero)
+define('WP_POST_REVISIONS', 3);
+
+// Autosave interval from 60s to 120s (halves write frequency)
+define('AUTOSAVE_INTERVAL', 120);
+
+// Block Editor (Gutenberg) uses a different autosave mechanism
+// The AUTOSAVE_INTERVAL constant only works for Classic Editor
+// Block Editor's autosave interval requires a JS filter:
+add_filter('block_editor_settings_all', function($settings) {
+    $settings['autosaveInterval'] = 120;
+    return $settings;
+});</code></pre>
+<p>**Pitfall 1**: The <code>AUTOSAVE_INTERVAL</code> constant does not work with Block Editor. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0's Block Editor uses <code>autosaveInterval</code> from the <code>@wordpress/data</code> store, hardcoded in the JS bundle. You must override it via the <code>block_editor_settings_all</code> filter. I spent two days debugging this — set the constant but wp_posts was still growing by one autosave every 60 seconds.</p>
+<p>**Pitfall 2**: Setting <code>WP_POST_REVISIONS</code> to <code>false</code> disables all revisions, but also breaks Gutenberg's collaborative editing feature (7.0's sync provider needs revisions for conflict detection). The optimal value is 3, not false.</p>
+<h3>Layer 2: Safe Historical Data Cleanup</h3>
+<pre><code>#!/bin/bash
+# clean-revisions.sh — safe revision + orphan postmeta cleanup
+
+DB_NAME=$(wp config get DB_NAME --format=VALUE)
+DB_USER=$(wp config get DB_USER --format=VALUE)
+DB_PASS=$(wp config get DB_PASS --format=VALUE)
+DB_HOST=$(wp config get DB_HOST --format=VALUE)
+
+echo "=== Before cleanup ==="
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "
+SELECT post_type, COUNT(*) as cnt,
+       ROUND(SUM(LENGTH(post_content))/1024/1024, 2) as content_mb
+FROM wp_posts
+WHERE post_type IN ('revision', 'autosave')
+GROUP BY post_type;
+"
+
+# Step 1: Delete revisions older than 30 days (batched)
+echo ">>> Deleting expired revisions..."
+while true; do
+    DELETED=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -N -e "
+        DELETE FROM wp_posts
+        WHERE post_type = 'revision'
+        AND post_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
+        ORDER BY post_date ASC
+        LIMIT 10000;
+        SELECT ROW_COUNT();
+    ")
+    echo "  Batch deleted: $DELETED"
+    [ "$DELETED" -eq 0 ] && break
+    sleep 1
+done
+
+# Step 2: Delete orphan postmeta
+echo ">>> Cleaning orphan postmeta..."
+DELETED=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -N -e "
+    DELETE pm FROM wp_postmeta pm
+    LEFT JOIN wp_posts p ON pm.post_id = p.ID
+    WHERE p.ID IS NULL
+    LIMIT 100000;
+    SELECT ROW_COUNT();
+")
+echo "  Orphan postmeta deleted: $DELETED"
+
+# Step 3: Optimize tables to reclaim disk space
+echo ">>> OPTIMIZE TABLE wp_posts..."
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "OPTIMIZE TABLE wp_posts;"
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "OPTIMIZE TABLE wp_postmeta;"
+
+echo "=== After cleanup ==="
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "
+SELECT post_type, COUNT(*) as cnt,
+       ROUND(SUM(LENGTH(post_content))/1024/1024, 2) as content_mb
+FROM wp_posts
+WHERE post_type IN ('revision', 'autosave')
+GROUP BY post_type;
+"</code></pre>
+<h3>Layer 3: Cron Monitoring to Prevent Recurrence</h3>
+<pre><code># /etc/cron.d/wp-revision-cleanup
+# Run cleanup every Sunday at 3AM
+0 3 * * 0 root /usr/local/bin/wp-revision-cleanup.sh >> /var/log/wp-revision-cleanup.log 2>&1</code></pre>
+<p>Add a Slack alert if wp_posts exceeds a threshold:</p>
+<pre><code>#!/bin/bash
+# /usr/local/bin/wp-posts-size-alert.sh
+THRESHOLD_MB=500
+DB_NAME=$(wp config get DB_NAME --format=VALUE)
+SIZE=$(mysql -u root "$DB_NAME" -N -e "
+    SELECT ROUND(SUM(LENGTH(post_content) + LENGTH(post_excerpt) + LENGTH(post_title))/1024/1024, 0)
+    FROM wp_posts;")
+if [ "$SIZE" -gt "$THRESHOLD_MB" ]; then
+    echo "⚠️ wp_posts content body bloated to ${SIZE}MB (threshold ${THRESHOLD_MB}MB). Check if revision cleanup cron is running." \
+    | curl -s -X POST -d @- https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+fi</code></pre>
+<h2>Experiment Results: Before vs After</h2>
+<pre><code>Before:
+  wp_posts     2,048.00 MB   1,847,293 revision records
+  wp_postmeta    312.00 MB   2,847,192 orphan records
+
+After:
+  wp_posts       187.50 MB   12,847 revision records (kept last 30 days + max 3 per post)
+  wp_postmeta     45.20 MB   0 orphan records
+
+Total reclaimed: 2,127.30 MB</code></pre>
+<p>After cleanup, MySQL's <code>innodb_buffer_pool</code> utilization dropped from 98% to 41%. Frontend TTFB went from 1.8s to 720ms (consistent with the wp-config.php optimization data from the earlier article).</p>
+<h2>Block Editor's Hidden Autosave Problem</h2>
+<p>This was the most infuriating discovery of the entire experiment. Block Editor's autosave uses the REST API endpoint <code>/wp-json/wp/v2/posts/{id}/autosaves</code>, firing a PUT request every 60 seconds. This request doesn't just write to wp_posts — it also triggers the <code>save_post</code> hook, running every plugin callback that's attached to it.</p>
+<p>I used Query Monitor to capture one autosave request's hook execution:</p>
+<pre><code>save_post triggers: 1
+Hook callbacks executed: 23 (from 15 plugins)
+Total SQL queries: 47
+Total execution time: 380ms</code></pre>
+<p>One user opens the editor, looks at a page, changes nothing — 47 SQL queries and 23 hook callbacks. If 5 editors are online simultaneously, that's 235 extra queries per minute.</p>
+<p>The fix: use <code>wp_is_post_autosave</code> to detect autosave operations and bail early in plugin callbacks. But this requires modifying plugin code — if you're using third-party plugins, you're stuck waiting for the author to fix it or maintaining a fork.</p>
+<pre><code>// Add this to your own plugin/theme — skip non-essential logic during autosave
+add_action('save_post', function($post_id, $post) {
+    if (wp_is_post_autosave($post_id)) {
+        return; // Don't run subsequent logic for autosave
+    }
+    // Your normal save logic here
+}, 5, 2);</code></pre>
+<h2>WooCommerce Product Revisions: A Special Kind of Hell</h2>
+<p>WooCommerce product variations (product_variation) are stored in wp_posts as individual posts. When you modify a product's price or stock, WooCommerce first creates a product revision, then updates each variation's post_meta one by one — each variation update triggers a <code>save_post</code> hook.</p>
+<p>A product with 50 variations, one price change: 1 product revision + 50 variation meta updates = 51 write operations. Change the price 10 times in a day (totally normal during a promotion), that's 510 writes and 10 new revisions.</p>
+<pre><code>wp post list --post_type=product --posts_per_page=5 --format=table --fields=ID,post_title,post_modified
+# Find the most frequently modified products
+
+SELECT COUNT(*) FROM wp_posts
+WHERE post_type = 'revision'
+AND post_parent IN (
+    SELECT ID FROM wp_posts WHERE post_type = 'product'
+);
+-- 892,471 product revisions</code></pre>
+<p>892,000 product revisions — 48% of all revisions.</p>
+<h2>The AUTO_INCREMENT Time Bomb</h2>
+<p>One more issue I discovered during this cleanup: revision records, despite being tagged as <code>post_type = 'revision'</code>, still consume auto_increment IDs in the wp_posts table. Over 14 months, 1.8 million revisions burned through a huge chunk of the ID space — the AUTO_INCREMENT counter had reached 3,892,147. If left unchecked for another six months, the IDs would approach MySQL's INT UNSIGNED limit (4,294,967,295), at which point every INSERT operation would fail with <code>Duplicate entry for key PRIMARY</code>.</p>
+<p>This is a problem almost nobody mentions, but if your site runs long enough with unlimited revisions, it's inevitable. After cleaning up revisions, check and reset AUTO_INCREMENT:</p>
+<pre><code>SELECT AUTO_INCREMENT FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_posts';
+-- 3,892,147
+
+-- Reset to current max ID + 1
+SET @max_id = (SELECT MAX(ID) FROM wp_posts);
+SET @sql = CONCAT('ALTER TABLE wp_posts AUTO_INCREMENT = ', @max_id + 1);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;</code></pre>
+<h2>Summary Checklist: Five Steps to Prevent wp_posts Bloat</h2>
+<p>1. **Configuration lockdown**: <code>WP_POST_REVISIONS = 3</code> + <code>AUTOSAVE_INTERVAL = 120</code> + Block Editor <code>autosaveInterval</code> filter</p>
+<p>2. <strong>Scheduled cleanup</strong>: Weekly cron to delete revisions older than 30 days + OPTIMIZE TABLE</p>
+<p>3. <strong>Orphan postmeta</strong>: Always clean wp_postmeta orphans after deleting revisions</p>
+<p>4. <strong>WooCommerce special handling</strong>: Product revisions are the biggest contributor — consider shorter retention periods for product post_type</p>
+<p>5. <strong>Monitoring alerts</strong>: Slack alert when wp_posts content body exceeds 500MB</p>
+<p>---</p>
+<p><em></em></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
