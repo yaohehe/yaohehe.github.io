@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress SQL 慢查询修复实战：Performance Schema + sys schema + pt-query-digest 定位 wp_posts/wp_postmeta 的 10 个真实瓶颈 - TechPassive</title>
+  <meta name="description" content="用三把“慢查询尺子”定位 WordPress 数据库热点，围绕 wp_posts、wp_postmeta、wp_options 和 comments 抓出 10 个真实 SQL 瓶颈与最小修复集。WordPress SQL 慢查询修复实战：Performance Schema + sys schema + pt-que">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress SQL 慢查询：从 performance_schema 到 wp_posts 的 10 个真实瓶颈</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-06-wordpress-sql-performance-schema-sys-schema-pt-que.html" class="internal-link">WordPress</a> 慢查询</span><span class="tag">Performance Schema</span><span class="tag">sys schema</span><span class="tag">pt-query-digest</span><span class="tag">wp_posts</span><span class="tag">wp_postmeta</span><span class="tag">wp_options</span>
+  </div>
+  <div class="content">
+    <h2>我用来抓瓶颈的“三把尺子”：Performance Schema、sys schema、pt-query-digest</h2>
+<p>先说结论：如果你只看 Query Monitor 的“总查询数”，你大概率会错过真正的慢点。查询数量高不一定致命，<strong>执行时间长、锁等待重、临时表溢出</strong>才是把站点拖垮的主因。因此我会同时用三层证据交叉验证：</p>
+<ul><li>**Performance Schema**：看 `events_statements_summary_by_digest` 里的累计延迟、平均延迟、扫描行数和临时表落盘情况；</li><li>**sys schema**：用 `sys.statement_analysis`、`sys.statements_with_full_table_scans`、`sys.statements_with_sorting` 快速捞高危 SQL；</li><li>**pt-query-digest**：在慢查询日志或 general log 上做聚合，找出“出现次数多 × 单次执行时间长”的真正元凶。</li></ul>
+<p>一个很关键的点是：<strong>不要只盯单次执行时间</strong>。如果一条 SQL 每次只跑 12ms，但每分钟被触发 2000 次，它依然可能把数据库打穿。反过来，一个看起来吓人的 1.8s 查询，如果每天只执行 10 次，优先级反而未必最高。所以我通常会按 <strong>总延迟贡献</strong> 排序，而不是只看最大单次时间。</p>
+<h3>我最常用的三条“热查询收割机”</h3>
+<p>如果你想直接上手，我建议先把下面三条命令跑一遍。它们未必优雅，但在真实站点上非常能打：</p>
+<pre><code>SELECT DIGEST_TEXT,
+       COUNT_STAR,
+       ROUND(SUM_TIMER_WAIT/1e12, 3) AS total_sec,
+       ROUND(AVG_TIMER_WAIT/1e12, 4) AS avg_sec,
+       SUM_ROWS_EXAMINED,
+       SUM_ROWS_SENT,
+       SUM_CREATED_TMP_TABLES,
+       SUM_CREATED_TMP_DISK_TABLES
+FROM performance_schema.events_statements_summary_by_digest
+ORDER BY SUM_TIMER_WAIT DESC
+LIMIT 20;</code></pre>
+<pre><code>SELECT * FROM sys.statements_with_full_table_scans
+ORDER BY no_index_used_count DESC
+LIMIT 20;</code></pre>
+<pre><code>pt-query-digest /var/log/mysql/mysql-slow.log</code></pre>
+<p>这三样东西放在一起看，你很快就能发现一个现实：<strong><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的“数据库慢”，大多数时候就是那么几类 SQL 在反复打你。</strong></p>
+<h2>我在 wp_posts、wp_postmeta、wp_options、comments 上反复抓到的 10 个慢查询模式</h2>
+<p>下面这些不是教科书理论，而是我在真实站点里反复遇到的模式。你可能会觉得很多“常识”，但常识和真正被你定位到，是两件事。</p>
+<h3>1) `wp_posts.post_type + post_status` 被 SELECT * 拖成大结果集扫描</h3>
+<p>这个模式特别常见：主题或插件写了一个“看起来没问题”的查询，但把 <code>SELECT *</code> 用在了 <code>wp_posts</code> 上。问题是 <code>wp_posts</code> 里有 <code>post_content</code>、<code>post_excerpt</code> 这些大文本字段，一旦查询只为了拿标题和链接，却把整行都拽出来，就很容易在并发下造成不必要的 IO 和临时表膨胀。Performance Schema 里典型表现是 <code>SUM_ROWS_EXAMINED</code> 远大于 <code>SUM_ROWS_SENT</code>，说明扫了很多行、吐出来很少数据。</p>
+<p>**最小修复**：只取你真正需要的列。如果业务只需要标题和 ID，就别用 <code>SELECT *</code>；只要 <code>ID, post_title, post_name, post_status</code>。很多时候这不是索引问题，而是**投影列太胖**。</p>
+<h3>2) `wp_posts.guid` 被函数或模糊匹配破坏索引</h3>
+<p>我见过一些插件或同步脚本，会对 <code>guid</code> 做 <code>LIKE '%xxx%'</code>，甚至套在函数里做匹配。<code>guid</code> 本身在默认表结构里并不是一个适合高频搜索的字段，但更麻烦的是，这类写法几乎都会导致索引失效。你在 <code>sys.statements_with_full_table_scans</code> 里会看到 <code>no_index_used_count</code> 持续增长，说明查询优化器直接走了全表扫描。</p>
+<p>**最小修复**：凡是按业务标识去查文章的场景，尽量落到主键 <code>ID</code> 或有索引的业务字段上；不要拿 <code>guid</code> 当业务主键做模糊搜索。如果确实需要检索内容标识，优先考虑在应用层维护一个稳定映射表，而不是用 <code>LIKE</code> 去硬扫。</p>
+<h3>3) `wp_postmeta` 的 `meta_key + meta_value` 查询把 `meta_query` 变成大表放大器</h3>
+<p>这是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 里最经典的慢查询温床之一。<code>wp_postmeta</code> 是一个典型的 EAV 结构，天然就容易放大扫描量。很多 <code>meta_query</code> 最后会退化成：</p>
+<ul><li>先在 `wp_postmeta` 里扫出一批 `post_id`</li><li>再回表到 `wp_posts` 做关联</li><li>多条件时还可能出现临时表排序、去重、`JOIN` 膨胀</li></ul>
+<p>在 Performance Schema 的 <code>DIGEST_TEXT</code> 里，你经常会看到 <code>postmeta</code> 被多次引用，或者出现 <code>temporary tables created</code> 很高的统计值。这通常说明查询结构本身已经很吃资源了。</p>
+<p>**最小修复**：尽量把高频过滤条件放到 <code>wp_posts</code> 的既有字段上；能用 <code>post_status</code>、<code>post_type</code>、<code>post_date</code>、<code>post_author</code> 解决的问题，就别先跳进 <code>postmeta</code>。<code>postmeta</code> 更适合存低频属性，不适合作为前台高并发过滤的主战场。</p>
+<h3>4) `meta_value` 上的范围条件或排序，本质上是在挑战 EAV 的极限</h3>
+<p>有些需求会让人手痒，比如“按某个自定义字段排序”“按某个 meta_value 做区间筛选”。从 MySQL 角度看，这类写法之所以危险，是因为 <code>meta_value</code> 通常是 <code>longtext</code>，而且业务含义不统一：有的行存数字，有的行存字符串，有的行存序列化数组。你让优化器去给这种字段做稳定排序或范围扫描，它当然会很吃力。</p>
+<p><strong>最小修复</strong>：如果一个业务字段要频繁排序或筛选，就把它提升到真正合适的结构里，比如：</p>
+<ul><li>固定属性：放进 `wp_posts` 的合适字段或专用列</li><li>高频检索属性：考虑专用表或搜索层</li><li>只做相等匹配：再谨慎评估是否放 `postmeta`</li></ul>
+<p>不要让 <code>meta_value</code> 承担它不适合承担的工作。</p>
+<h3>5) `meta_compare` / 多层 `meta_query` 的 OR 分支，把选择性打碎</h3>
+<p><code>meta_query</code> 看起来很“<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 原生”，但它背后的 SQL 展开并不总是漂亮。尤其是当你写了多个 <code>OR</code> 分支、嵌套条件、<code>NOT EXISTS</code>、<code>compare => 'LIKE'</code> 时，最终 SQL 经常会变得很复杂。复杂本身不是原罪，问题是当这些条件把索引选择性打碎后，优化器可能宁可走全表扫描或大范围回表。</p>
+<p><strong>最小修复</strong>：面对复杂筛选，先问自己一个问题：这个筛选是在“展示层”解决，还是必须在数据库层一次性解决？很多时候，分两步执行会更稳定——先用高选择性条件收窄候选集，再在小集合上做精细过滤。</p>
+<h3>6) `wp_options` 的 autoload 大查询，是每次请求都在替别人背锅</h3>
+<p><code>wp_options</code> 的问题其实很直白：当 <code>autoload = 'yes'</code> 里堆了太多“其实不该每次加载”的数据，启动阶段就会变重。但更深一层的慢查询问题，是有些插件会反复查 <code>wp_options</code>，而且查询条件写得不够精准。Performance Schema 里一个很明显的表现，是 <code>wp_options</code> 相关摘要出现次数极高，总延迟虽然不一定最夸张，却因为执行频次太高而变成“慢性失血”。</p>
+<p><strong>最小修复</strong>：先把“谁在 autoload”搞清楚，再把“谁在每次请求都反复查”拆出来。前者是存储问题，后者是调用问题。真正危险的往往是两者叠加：一个不该 autoload 的大值，被一个高频请求反复读取。</p>
+<h3>7) `option_value` 被序列化结构撑大后，反序列化成本转嫁给 PHP 层</h3>
+<p>这条严格说不完全是 SQL 慢查询，但它和数据库压力高度相关。很多时候 <code>wp_options</code> 的单行体积被序列化数据撑大后，不仅读取时 IO 更重，回到 PHP 层还要做反序列化，进一步拖慢请求。你在 <code>sys.statement_analysis</code> 里可能看到单条 <code>SELECT</code> 本身不算特别慢，但结合应用层 CPU、内存和响应时间看，整体延迟会明显变高。</p>
+<p>**最小修复**：凡是“结构很大、但每次请求只需要其中一两个字段”的数据，都不该整块塞进 <code>wp_options</code>。能拆开就拆开，能缓存就缓存，能按需加载就按需加载。</p>
+<h3>8) `comments` 表的未审核评论堆积，让后台查询被无效数据污染</h3>
+<p>这点很多站长会忽略。<code>wp_comments</code> 在站点评论多、垃圾评论多、未审核评论多的时候，也会成为慢查询源。尤其是后台评论列表页，如果插件或主题写了不够精确的条件，就容易在大量“无用评论”上做扫描和排序。Performance Schema 里你会看到涉及 <code>comments</code> 的查询出现 <code>sorting</code>、<code>temporary table</code> 等特征。</p>
+<p><strong>最小修复</strong>：把无效评论当成“数据库债务”去处理，而不是只要求前台不显示。大量待审、垃圾、回收站评论长期堆积，一样会影响后台查询选择性。</p>
+<h3>9) `_wp_old_posts` / 旧数据清理脚本反噬主表，把后台拖进慢查询</h3>
+<p>我见过一些自动清理旧修订、旧草稿、旧附件的定时任务，表面上是“优化数据库”，实际上因为 SQL 写得不严谨，反而在业务高峰期把 <code>wp_posts</code> 拉进大面积扫描。你在慢查询日志里会看到这类任务频繁使用范围条件、排序，甚至触发临时表落盘。</p>
+<p><strong>最小修复</strong>：清理任务必须“小批量、带索引条件、避开高峰期”。任何一次性清理大量旧数据的操作，都不适合在白天高峰期跑。</p>
+<h3>10) `JOIN` 没有选择性过滤，后台报表类查询直接炸掉临时表</h3>
+<p>后台报表、导出、统计页面是慢查询的另一个重灾区。很多报表 SQL 会同时 <code>JOIN</code> <code>wp_posts</code>、<code>wp_postmeta</code>、<code>wp_comments</code>，再加排序、分组、聚合。如果最外层缺少强过滤条件，这些查询很容易在内存临时表不够时落盘，导致响应时间突然飙升。你在 Performance Schema 里通常会看到 <code>SUM_CREATED_TMP_DISK_TABLES</code> 明显升高，这就是很典型的信号。</p>
+<p><strong>最小修复</strong>：报表类功能必须从“业务时间范围 + 业务主表条件”开始，而不是先把所有表拉出来再筛。先缩小结果集，再做关联，这是最基本的顺序。</p>
+<h2>我怎么用 `sys schema` + `pt-query-digest` 把这 10 类模式确认下来</h2>
+<p>光靠看代码，你很容易猜错。所以我更倾向于先让数据说话。实操上我会这么做：</p>
+<p>1. 先确认 Performance Schema 是否启用，再看相关 <code>events_statements*</code> 是否有足够样本；</p>
+<p>2. 用 <code>sys.statement_analysis</code> 看“总延迟贡献最大”的 SQL；</p>
+<p>3. 用 <code>sys.statements_with_full_table_scans</code> 看“无索引使用”最频繁的 SQL；</p>
+<p>4. 用 <code>sys.statements_with_sorting</code> 看哪些查询最爱排序；</p>
+<p>5. 最后用 <code>pt-query-digest</code> 对慢日志做聚合，确认是否真的是高频 SQL 在反复消耗资源。</p>
+<p>这样你就能把“疑似慢查询”升级为“可复现的慢查询证据”。比如你可能会得到这样一个结论：</p>
+<p>> 某条 <code>wp_postmeta</code> 相关 SQL 平均 18ms，但每小时执行 12 万次，总延迟占比 34%，且 <code>no_index_used_count</code> 持续增长。</p>
+<p>这种结论就非常有行动力了。</p>
+<h2>关于修复的现实判断：不是每条 SQL 都该你去硬改</h2>
+<p>最后我想补一句很现实的话：<strong>不是每条慢 SQL 都该在数据库层硬改</strong>。有些查询来自插件，你去改核心表结构会非常危险；有些查询来自报表功能，正确做法是把它们异步化或预计算；还有些查询本质上是业务设计问题，不解决业务逻辑只调索引，收益很有限。</p>
+<p>所以我会把修复分成三类：</p>
+<ul><li>**应用层优先**：改查询写法、减少投影列、优化业务筛选顺序；</li><li>**存储层辅助**：优化 autoload、清理无效数据、控制大文本增长；</li><li>**架构层兜底**：对象缓存、报表异步化、搜索层卸载数据库压力。</li></ul>
+<p>这也意味着，你在做“<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 慢查询修复”时，不能只看 SQL 本身，还要看这条 SQL 被谁调用、被调多少次、在什么业务场景下触发。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
