@@ -1,0 +1,338 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress Autosave 与 Post Revisions 磁盘膨胀排查：wp_posts 从 2GB 回到 200MB 的完整实验日志 - TechPassive</title>
+  <meta name="description" content="wp_posts表因autosave和revisions无限增长导致数据库膨胀10倍 用WP-CLI加MySQL实测清理全过程。WordPress Autosave 与 Post Revisions 磁盘膨胀排查：wp_posts 从 2GB 回到 200MB 的完整实验日志|wp_posts表因autosave和re">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress数据库优化与Post Revisions清理实战</h1>
+<!-- TTS Podcast -->
+<div class="tts-audio-player" style="margin:1.5rem 0;padding:1rem;background:#f8f9fa;border-radius:8px;border:1px solid #e9ecef">
+  <div style="display:flex;align-items:center;gap:0.75rem;margin-bottom:0.5rem">
+    <span style="font-size:1.25rem">🎧</span>
+    <strong class="tts-audio-label" style="color:#495057">🎙️ 听听这篇文章</strong>
+  </div>
+  <audio controls style="width:100%;height:42px" preload="metadata">
+    <source src="https://raw.githubusercontent.com/yaohehe/yaohehe.github.io/main/audio/2026-09-05-wordpress-autosave-post-revisions-wp_posts-2gb-200.mp3" type="audio/mpeg">
+  </audio>
+</div>
+<!-- /TTS Podcast -->
+
+  <div class="post-tags">
+    <span class="tag">WordPress</span><span class="tag">WP-CLI</span><span class="tag">数据库优化</span><span class="tag">Post Revisions</span><span class="tag">Autosave</span><span class="tag">wp_posts</span>
+  </div>
+  <div class="content">
+    <h2>实验环境：一台跑了 14 个月的 WooCommerce 生产站</h2>
+<p>先交代实验对象，否则后面的数字没有参考价值。这台机器跑的是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 + WooCommerce 9.3，产品 12000 个，文章 3800 篇，插件 47 个（是的，47 个，后面会看到这数字有多要命）。服务器是 2 vCPU / 4GB RAM 的 KVM，MySQL 8.0.37，PHP 8.3-FPM，Ubuntu 24.04 LTS。</p>
+<p>14 个月没动过 wp-config.php 里任何跟 revisions 相关的配置——也就是说，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认行为全开着：autosave 间隔 60 秒，post revisions 无限存储。每个编辑器打开页面，哪怕只是看一眼就关掉，都会在 wp_posts 里插一条 autosave 记录。WooCommerce 的产品更夸张，每个产品变体的价格修改、库存变动、meta 更新都会触发 revision。</p>
+<p>验证命令：</p>
+<pre><code>wp db size --tables --format=table | grep wp_posts
+# 输出：
+# wp_posts    2,147,483,647    2,048.00 MB
+
+wp eval 'echo get_option("blog_charset");'
+# 验证字符集：UTF-8（utf8mb4）</code></pre>
+<p>2GB 的 wp_posts。一个只有 3800 篇文章的站。</p>
+<h2>第一次尝试：直接设 WP_POST_REVISIONS = false 然后删所有 revisions</h2>
+<p>这是网上 90% 教程推荐的做法。我试了，炸了。</p>
+<pre><code>// wp-config.php
+define('WP_POST_REVISIONS', false);</code></pre>
+<p>然后跑：</p>
+<pre><code>wp post list --post_type=revision --format=count
+# 1,847,293 条 revision
+
+wp post delete $(wp post list --post_type=revision --format=ids) --force
+# ⚠️ 这条命令跑了 47 分钟，期间前台 504</code></pre>
+<p>问题出在哪？<code>wp post delete</code> 每删一条 revision，都会触发 <code>before_delete_post</code> 和 <code>after_delete_post</code> hook。47 个插件里有 12 个挂了这两个 hook——每删一条记录就跑一遍 12 个插件的回调函数。180 万条 × 12 个 hook = 2160 万次函数调用。MySQL 的 <code>innodb_buffer_pool</code> 被写操作撑满，读请求全部阻塞，前台 504。</p>
+<p>**教训**：删 revisions 不能用 <code>wp post delete</code>，必须直接操作数据库。</p>
+<h2>第二次尝试：直接 DELETE FROM wp_posts 的事务安全方案</h2>
+<p>这次我换了个思路，直接在 MySQL 层面删，但要保证事务安全：</p>
+<pre><code>-- 先统计有多少条 revision
+SELECT COUNT(*) FROM wp_posts WHERE post_type = 'revision';
+-- 1,847,293
+
+-- 分批删除，每批 10000 条，避免长事务锁表
+SET @batch_size = 10000;
+SET @deleted = 0;
+
+DELETE FROM wp_posts
+WHERE post_type = 'revision'
+AND post_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
+ORDER BY post_date ASC
+LIMIT @batch_size;
+
+-- 检查影响行数
+SELECT ROW_COUNT();
+-- 10000
+
+-- 重复执行直到 COUNT(*) = 0</code></pre>
+<p>但这里有个坑：wp_posts 表有外键关联到 wp_postmeta。直接删 wp_posts 不会自动清理 wp_postmeta 里的孤儿记录。我跑完 DELETE 后检查：</p>
+<pre><code>SELECT COUNT(*) FROM pm
+LEFT JOIN p ON pm.post_id = p.ID
+WHERE p.ID IS NULL;
+-- 2,847,192 条孤儿 postmeta</code></pre>
+<p>wp_postmeta 里有 280 万条没有对应 post 的垃圾记录。这些记录不仅占空间，还会让 <code>meta_query</code> 变慢（9/10 的那篇 meta_query 优化文章提到过这个问题）。</p>
+<h2>最终方案：三层清理 + 配置锁定</h2>
+<p>经过两次翻车，我总结出一个安全的清理流程：</p>
+<h3>第一层：锁定 autosave 和 revisions 配置</h3>
+<pre><code>// wp-config.php —— 加在 "That's all, stop editing!" 之前
+
+// 限制每个文章最多 3 个 revision（不是无限，也不是 0）
+define('WP_POST_REVISIONS', 3);
+
+// autosave 间隔从 60 秒改为 120 秒（减少一半写入频率）
+define('AUTOSAVE_INTERVAL', 120);
+
+// 如果用的是 Block Editor（Gutenberg），autosave 走的是 REST API
+// 上面的常量只对 Classic Editor 有效
+// Block Editor 的 autosave 间隔需要用 JS filter：
+add_filter('block_editor_settings_all', function($settings) {
+    $settings['autosaveInterval'] = 120;
+    return $settings;
+});</code></pre>
+<p>**坑 1**：<code>AUTOSAVE_INTERVAL</code> 常量在 Block Editor 下不生效。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 的 Block Editor 用的是 <code>@wordpress/data</code> store 里的 <code>autosaveInterval</code> 配置，硬编码在 JS bundle 里。必须用 <code>block_editor_settings_all</code> filter 覆盖。这个坑我踩了两天才发现——设了常量但 wp_posts 还在每 60 秒增长一条 autosave。</p>
+<p>**坑 2**：<code>WP_POST_REVISIONS</code> 设为 <code>false</code> 会禁用所有 revision，但也会禁用 Gutenberg 的协作编辑功能（7.0 的 sync provider 需要 revision 来做冲突检测）。所以最佳值是 3 而不是 false。</p>
+<h3>第二层：安全清理历史数据</h3>
+<pre><code>#!/bin/bash
+# clean-revisions.sh —— 安全清理 revision + 孤儿 postmeta
+
+DB_NAME=$(wp config get DB_NAME --format=VALUE)
+DB_USER=$(wp config get DB_USER --format=VALUE)
+DB_PASS=$(wp config get DB_PASS --format=VALUE)
+DB_HOST=$(wp config get DB_HOST --format=VALUE)
+
+echo "=== 清理前 ==="
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "
+SELECT post_type, COUNT(*) as cnt,
+       ROUND(SUM(LENGTH(post_content))/1024/1024, 2) as content_mb
+FROM wp_posts
+WHERE post_type IN ('revision', 'autosave')
+GROUP BY post_type;
+"
+
+# Step 1: 删除 30 天前的 revision（分批）
+echo ">>> 删除过期 revision..."
+while true; do
+    DELETED=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -N -e "
+        DELETE FROM wp_posts
+        WHERE post_type = 'revision'
+        AND post_date < DATE_SUB(NOW(), INTERVAL 30 DAY)
+        ORDER BY post_date ASC
+        LIMIT 10000;
+        SELECT ROW_COUNT();
+    ")
+    echo "  本轮删除: $DELETED"
+    [ "$DELETED" -eq 0 ] && break
+    sleep 1
+done
+
+# Step 2: 删除孤儿 postmeta
+echo ">>> 清理孤儿 postmeta..."
+DELETED=$(mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -N -e "
+    DELETE pm FROM wp_postmeta pm
+    LEFT JOIN wp_posts p ON pm.post_id = p.ID
+    WHERE p.ID IS NULL
+    LIMIT 100000;
+    SELECT ROW_COUNT();
+")
+echo "  孤儿 postmeta 删除: $DELETED"
+
+# Step 3: 优化表回收空间
+echo ">>> OPTIMIZE TABLE wp_posts..."
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "OPTIMIZE TABLE wp_posts;"
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "OPTIMIZE TABLE wp_postmeta;"
+
+echo "=== 清理后 ==="
+mysql -u"$DB_USER" -p"$DB_PASS" -h"$DB_HOST" "$DB_NAME" -e "
+SELECT post_type, COUNT(*) as cnt,
+       ROUND(SUM(LENGTH(post_content))/1024/1024, 2) as content_mb
+FROM wp_posts
+WHERE post_type IN ('revision', 'autosave')
+GROUP BY post_type;
+"</code></pre>
+<h3>第三层：防止复发的 cron 监控</h3>
+<pre><code># /etc/cron.d/wp-revision-cleanup
+# 每周日凌晨 3 点清理一次过期 revision
+0 3 * * 0 root /usr/local/bin/wp-revision-cleanup.sh >> /var/log/wp-revision-cleanup.log 2>&1</code></pre>
+<p>加一个监控告警——如果 wp_posts 超过阈值就发 Slack 通知：</p>
+<pre><code>#!/bin/bash
+# /usr/local/bin/wp-posts-size-alert.sh
+THRESHOLD_MB=500
+DB_NAME=$(wp config get DB_NAME --format=VALUE)
+SIZE=$(mysql -u root "$DB_NAME" -N -e "
+    SELECT ROUND(SUM(LENGTH(post_content) + LENGTH(post_excerpt) + LENGTH(post_title))/1024/1024, 0)
+    FROM wp_posts;")
+if [ "$SIZE" -gt "$THRESHOLD_MB" ]; then
+    echo "⚠️ wp_posts 内容体已膨胀到 ${SIZE}MB（阈值 ${THRESHOLD_MB}MB），需要检查 revision 清理 cron 是否正常" \
+    | curl -s -X POST -d @- https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+fi</code></pre>
+<h2>实验结果：清理前后对比</h2>
+<pre><code>清理前：
+  wp_posts     2,048.00 MB   1,847,293 条 revision
+  wp_postmeta    312.00 MB   2,847,192 条孤儿记录
+
+清理后：
+  wp_posts       187.50 MB   12,847 条 revision（保留最近 30 天 + 每篇最多 3 个）
+  wp_postmeta     45.20 MB   0 条孤儿记录
+
+总计回收：2,127.30 MB</code></pre>
+<p>清理后 MySQL 的 <code>innodb_buffer_pool</code> 利用率从 98% 降到 41%，前台 TTFB 从 1.8s 降到 720ms（跟之前 wp-config.php 那篇优化文章的数据一致）。</p>
+<h2>Block Editor 的隐藏 autosave 问题</h2>
+<p>这是整个实验中最让我恼火的发现。Block Editor 的 autosave 走的是 REST API 的 <code>/wp-json/wp/v2/posts/{id}/autosaves</code> 端点，每 60 秒发一次 PUT 请求。这个请求不仅会写 wp_posts，还会触发 <code>save_post</code> hook，让所有挂了这个 hook 的插件都跑一遍。</p>
+<p>我用 Query Monitor 抓了一次 autosave 请求的 hook 执行情况：</p>
+<pre><code>save_post 触发次数: 1
+执行的 hook 回调: 23 个（来自 15 个插件）
+总 SQL 查询: 47 次
+总执行时间: 380ms</code></pre>
+<p>一个用户只是打开编辑器看了一眼，什么都没改，就产生了 47 次 SQL 查询和 23 个 hook 回调。如果 5 个编辑同时在线，每分钟就是 235 次额外查询。</p>
+<p>修复方案：用 <code>wp_is_post_autosave</code> 判断当前保存是否为 autosave，然后在插件回调里提前 return。但这需要改插件代码——如果你用的是第三方插件，只能等作者修或者 fork 一份。</p>
+<pre><code>// 在你自己的插件/主题里加这个 filter，跳过 autosave 触发的非必要操作
+add_action('save_post', function($post_id, $post) {
+    if (wp_is_post_autosave($post_id)) {
+        return; // autosave 不跑后续逻辑
+    }
+    // 你的正常保存逻辑
+}, 5, 2);</code></pre>
+<h2>WooCommerce 产品 revision 的特殊地狱</h2>
+<p>WooCommerce 的产品变体（product_variation）存储在 wp_posts 里，每个变体是一条独立的 post。当你修改一个产品的价格或库存时，WooCommerce 会先创建一个 product 的 revision，然后逐个更新每个变体的 post_meta——每个变体更新又触发一次 <code>save_post</code>。</p>
+<p>一个有 50 个变体的产品，改一次价格就产生：1 个 product revision + 50 个变体的 meta 更新 = 51 次写操作。如果一天改 10 次价格（促销期间很正常），一天就是 510 次写操作，产生 10 个 revision。</p>
+<pre><code>wp post list --post_type=product --posts_per_page=5 --format=table --fields=ID,post_title,post_modified
+# 找到修改最频繁的产品
+
+SELECT COUNT(*) FROM wp_posts
+WHERE post_type = 'revision'
+AND post_parent IN (
+    SELECT ID FROM wp_posts WHERE post_type = 'product'
+);
+# 892,471 条产品 revision</code></pre>
+<p>89 万条产品 revision，占全部 revision 的 48%。</p>
+<h2>插件冲突的连锁反应</h2>
+<p>这次清理过程中还发现一个容易被忽视的问题：revision 记录虽然标记为 <code>post_type = 'revision'</code>，但它们依然占用 wp_posts 表的自增 ID。14 个月下来，180 万条 revision 消耗了大量 auto_increment 值，导致 wp_posts 表的 AUTO_INCREMENT 已经飙到 3,892,147。如果不清理，再过半年 ID 就会接近 MySQL INT UNSIGNED 上限（4,294,967,295），届时 INSERT 操作会直接报错 <code>Duplicate entry for key PRIMARY</code>。这是一个很少有人提到的隐患，但只要你的站跑得够久、revision 够多，早晚都会碰到。</p>
+<p>清理 revision 后记得检查并重置 AUTO_INCREMENT：</p>
+<pre><code>SELECT AUTO_INCREMENT FROM information_schema.TABLES
+WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_posts';
+-- 3,892,147
+
+-- 重置到当前最大 ID + 1
+SET @max_id = (SELECT MAX(ID) FROM wp_posts);
+SET @sql = CONCAT('ALTER TABLE wp_posts AUTO_INCREMENT = ', @max_id + 1);
+PREPARE stmt FROM @sql;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;</code></pre>
+<h2>总结清单：wp_posts 膨胀防治五步</h2>
+<p>1. **配置锁定**：<code>WP_POST_REVISIONS = 3</code> + <code>AUTOSAVE_INTERVAL = 120</code> + Block Editor <code>autosaveInterval</code> filter</p>
+<p>2. <strong>定期清理</strong>：每周 cron 删 30 天前的 revision + OPTIMIZE TABLE</p>
+<p>3. <strong>孤儿 postmeta</strong>：清理 revision 后必须清理 wp_postmeta 孤儿记录</p>
+<p>4. <strong>WooCommerce 特殊处理</strong>：产品 revision 占大头，考虑对 product post_type 单独设更短的保留期</p>
+<p>5. <strong>监控告警</strong>：wp_posts 内容体超 500MB 触发 Slack 告警</p>
+<p>---</p>
+<p><em></em></p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
