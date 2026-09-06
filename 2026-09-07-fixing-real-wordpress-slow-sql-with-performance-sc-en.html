@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Fixing real WordPress slow SQL with Performance Schema, sys schema, and pt-query-digest on wp_posts and wp_postmeta - TechPassive</title>
+  <meta name="description" content="Use three complementary slow-query tools to locate real bottlenecks in wp_posts, wp_postmeta, wp_options, and comments, then apply the smallest safe fix set">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Real WordPress Slow SQL From wp_posts and wp_postmeta</h1>
+  <div class="post-tags">
+    <span class="tag">Performance Schema</span><span class="tag">sys schema</span><span class="tag">pt-query-digest</span><span class="tag"><a href="/2026-06-09-wordpress-wp_postmeta-index-optimization-2026-from-en.html" class="internal-link">WordPress</a> database bottleneck</span><span class="tag">wp_options autoload slow query</span><span class="tag">meta_query full table scan</span><span class="tag"><a href="/2026-06-09-wordpress-wp_postmeta-index-optimization-2026-from-en.html" class="internal-link">WordPress</a> troubleshooting</span>
+  </div>
+  <div class="content">
+    <h2>The three measuring tools I actually trust: Performance Schema, sys schema, and pt-query-digest</h2>
+<p>Query Monitor is useful, but it will not show you the full story. The three tools I reach for first answer slightly different questions:</p>
+<ul><li>**Performance Schema** shows which statement digests consumed the most total time, how many rows were examined, and whether temporary tables were created.</li><li>**sys schema** turns that raw data into more actionable views such as `sys.statement_analysis`, `sys.statements_with_full_table_scans`, and `sys.statements_with_sorting`.</li><li>**pt-query-digest** aggregates slow logs or general logs so you can see whether a query is expensive because it is slow once, or because it is moderately slow and executed thousands of times.</li></ul>
+<p>That distinction matters a lot in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>. A single expensive admin query may be painful, but a mid-latency query repeated on every frontend request can be even worse.</p>
+<h3>The three queries I start with on most sites</h3>
+<p>If I only have time for a quick pass, I usually start with something like this:</p>
+<pre><code>SELECT DIGEST_TEXT,
+       COUNT_STAR,
+       ROUND(SUM_TIMER_WAIT/1e12, 3) AS total_sec,
+       ROUND(AVG_TIMER_WAIT/1e12, 4) AS avg_sec,
+       SUM_ROWS_EXAMINED,
+       SUM_ROWS_SENT,
+       SUM_CREATED_TMP_TABLES,
+       SUM_CREATED_TMP_DISK_TABLES
+FROM performance_schema.events_statements_summary_by_digest
+ORDER BY SUM_TIMER_WAIT DESC
+LIMIT 20;</code></pre>
+<p>Then I supplement it with:</p>
+<pre><code>SELECT * FROM sys.statements_with_full_table_scans
+ORDER BY no_index_used_count DESC
+LIMIT 20;</code></pre>
+<p>And finally I run:</p>
+<pre><code>pt-query-digest /var/log/mysql/mysql-slow.log</code></pre>
+<p>The point is not to collect pretty metrics. The point is to identify the specific <strong>query patterns</strong> that waste the most cumulative time.</p>
+<h2>The 10 slow-query patterns I keep finding in wp_posts, wp_postmeta, wp_options, and comments</h2>
+<p>These are the patterns I see repeatedly in real <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> sites. Some look obvious in hindsight, but that does not matter. What matters is whether you can prove them in production.</p>
+<h3>1) Fat projections from `wp_posts` when only a few columns are needed</h3>
+<p>A surprisingly common problem is that themes and plugins fetch full rows from <code>wp_posts</code> when they only need titles, IDs, or slugs. Because <code>post_content</code> and <code>post_excerpt</code> can be large, this makes queries heavier than they need to be. In Performance Schema you will often see <code>SUM_ROWS_EXAMINED</code> far exceeding <code>SUM_ROWS_SENT</code>, which is a hint that the query is doing more work than the result justifies.</p>
+<p><strong>Smallest fix</strong>: project only the columns you need. If the page only needs IDs and titles, do not select the entire row.</p>
+<h3>2) `wp_posts.guid` queries used like business identifiers</h3>
+<p>Some sync tools, importers, or custom lookups reach for <code>guid</code> as if it were a business key. That often leads to wildcards, function wrapping, or substring matches. Once that happens, index usefulness drops fast. In <code>sys.statements_with_full_table_scans</code>, you may see the query repeatedly appearing with <code>no_index_used_count</code> increasing.</p>
+<p>**Smallest fix**: avoid using <code>guid</code> as a primary lookup key for high-frequency operations. If you need a stable external identifier, maintain a proper mapping structure on top of the primary key.</p>
+<h3>3) `wp_postmeta` becoming a giant amplifier inside `meta_query`</h3>
+<p>The EAV nature of <code>wp_postmeta</code> makes it a natural slow-query amplifier. Many <code>meta_query</code> implementations first scan <code>wp_postmeta</code> for matching rows, then join back to <code>wp_posts</code>, and sometimes repeat that step for each condition. When this happens, the final plan can become surprisingly heavy even for modest result sets.</p>
+<p>**Smallest fix**: when possible, filter on attributes already represented in <code>wp_posts</code>. The <code>postmeta</code> table is fine for low-frequency metadata, but it is a poor place to run high-concurrency primary filters.</p>
+<h3>4) Range conditions or sorting on `meta_value`</h3>
+<p>This is where performance tends to fall off a cliff. <code>meta_value</code> is commonly <code>longtext</code>, and its stored meaning is inconsistent across rows. Sorting it numerically, comparing it as a date, or scanning it as a range can be extremely expensive. The database often cannot use the column efficiently, and the application gets a strangely expensive query that looks innocent in the ORM layer.</p>
+<p>**Smallest fix**: if a field is frequently sorted or filtered, promote it out of <code>meta_value</code> and into a structure that matches its real access pattern.</p>
+<h3>5) Complex `meta_query` trees shattering selectivity</h3>
+<p>Multiple <code>OR</code> branches, nested conditions, and loose <code>LIKE</code> comparisons in <code>meta_query</code> can produce very complex SQL. Complexity alone is not the issue; the issue is that the optimizer may stop using selective access paths once the predicate tree becomes noisy. This is one of the reasons a plugin can be “technically correct” yet still perform badly.</p>
+<p><strong>Smallest fix</strong>: reduce predicate noise by narrowing candidate rows early. Apply the most selective filters first, and keep the expensive meta conditions for a smaller candidate set.</p>
+<h3>6) Autoloaded `wp_options` queries punishing every request</h3>
+<p><code>wp_options</code> problems are sometimes framed purely as storage bloat, but they are also execution-frequency problems. When too many options are loaded on every request, and some of those options are queried or read repeatedly, the cumulative cost grows quickly. In <code>sys.statement_analysis</code>, the pattern often looks modest per execution but devastating in aggregate.</p>
+<p><strong>Smallest fix</strong>: separate the autoload inventory problem from the query-frequency problem. Find what should not be autoloaded, and also find what is being queried far more often than it should be.</p>
+<h3>7) Serialized option payloads increasing both IO and PHP-side cost</h3>
+<p>Large serialized option values are not just a storage issue. They also make SQL reads heavier and push more work into PHP through deserialization. The database may not look catastrophically slow for one statement, but the end-to-end request latency still rises because the application keeps processing bloated structures.</p>
+<p><strong>Smallest fix</strong>: do not store large composite structures in a single option when most requests only need one piece of the data.</p>
+<h3>8) Comment tables getting polluted by unmoderated and spam rows</h3>
+<p>On sites with heavy comment volume, <code>wp_comments</code> can become a real source of slow admin queries. Moderation queues, spam queues, and trashed comments all accumulate. Once that happens, backend comment listing queries can spend too much time scanning and sorting rows that the site should have cleaned up long ago.</p>
+<p><strong>Smallest fix</strong>: treat stale and junk comments as operational debt. Clear them regularly instead of assuming they are harmless because the frontend does not display them.</p>
+<h3>9) Cleanup jobs that end up punishing the very tables they were supposed to optimize</h3>
+<p>Old revisions, auto-drafts, expired transients, orphaned meta rows—these are legitimate cleanup targets. But if the cleanup query itself is poorly indexed or runs during peak traffic, it can hurt production performance. I have seen maintenance routines that cause more slow queries than they remove.</p>
+<p><strong>Smallest fix</strong>: batch cleanup work, index it carefully, and run it off-peak. Large sweeping deletes against busy tables are dangerous.</p>
+<h3>10) Report and export joins without a tight leading filter</h3>
+<p>Backend dashboards, export tools, and reporting queries are frequent slow-query offenders. They often join <code>wp_posts</code>, <code>wp_postmeta</code>, and <code>wp_comments</code> together, then add sorting and aggregation. Without a strong leading filter on time range or primary entity, these queries can spill into disk-backed temporary tables.</p>
+<p><strong>Smallest fix</strong>: reports should always start with a narrow business filter. Join first, filter later is usually the wrong order in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> reporting code.</p>
+<h2>How I turn suspicion into proof</h2>
+<p>Guessing is cheap. Proof is what changes behavior. My usual workflow is:</p>
+<p>1. Confirm that Performance Schema is enabled and that statement digest collection has enough sample time.</p>
+<p>2. Check <code>sys.statement_analysis</code> for cumulative time consumers.</p>
+<p>3. Check <code>sys.statements_with_full_table_scans</code> for repeated index misses.</p>
+<p>4. Check <code>sys.statements_with_sorting</code> for expensive ordering paths.</p>
+<p>5. Use <code>pt-query-digest</code> to validate whether the same pattern keeps appearing in slow logs.</p>
+<p>That combination usually gives me a defensible conclusion, such as:</p>
+<p>> A <code>wp_postmeta</code>-heavy statement averages 14ms, runs 90k times per hour, contributes 31% of total delay, and shows increasing full-scan counts.</p>
+<p>That is the kind of evidence that actually drives fixes.</p>
+<h2>Not every slow query should be solved at the database layer</h2>
+<p>One important reality check: <strong>not every SQL problem deserves a SQL-only fix</strong>. Some queries come from plugins you should replace. Some queries belong in async jobs. Some queries exist because the business design forces the wrong access path. In practice, I usually bucket fixes into three layers:</p>
+<ul><li>**Application layer**: rewrite the query, reduce projected columns, reorder filters.</li><li>**Storage layer**: clean autoload pressure, remove dead data, reduce oversized payloads.</li><li>**Architecture layer**: use object caching, offload reports to async workers, or push heavy filtering into a better search backend.</li></ul>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> database performance is rarely only about the database. It is usually about who calls the query, how often they call it, and whether the business logic forces the database to do work it should not be doing alone.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=ZKGgINVqISq1s0tajhFbWRzB6PYR34T5" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
