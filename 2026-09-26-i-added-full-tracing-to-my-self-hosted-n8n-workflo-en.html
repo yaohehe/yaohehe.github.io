@@ -71,44 +71,44 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>Self-Hosted n8n + Langfuse Setup: Make Every LLM Call Traceable</h1>
   <div class="post-tags">
-    <span class="tag">n8n</span><span class="tag">Langfuse</span><span class="tag">observability</span><span class="tag">self-hosted</span><span class="tag">Docker</span>
+    <span class="tag"><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a></span><span class="tag">Langfuse</span><span class="tag">observability</span><span class="tag">self-hosted</span><span class="tag">Docker</span>
   </div>
   <div class="content">
-    <p>My n8n instance runs self-hosted, with three content automation workflows on it. Last month they started misbehaving: triggered at 6 AM every day, sometimes finishing in 40 seconds, sometimes taking 3 minutes, and occasionally failing silently - the workflow showed green, but no article was ever produced downstream.</p>
-<p>It took me a full weekend to nail down the cause. The root problem was not n8n itself - it was that <strong>I had zero observability</strong>: I had no idea which step was slow, which LLM call was retrying, or where the tokens were actually being burned.</p>
-<p>This article is my full record of wiring Langfuse into self-hosted n8n. Every command and config comes from an environment I actually got working. There are no affiliate links or sponsored content here.</p>
-<h2>Why n8n's Default Logging Is Not Enough</h2>
-<p>n8n's built-in execution records tell you whether a workflow succeeded or failed overall, but when you call an LLM, the information left behind is extremely thin:</p>
+    <p>My <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> instance runs self-hosted, with three content automation workflows on it. Last month they started misbehaving: triggered at 6 AM every day, sometimes finishing in 40 seconds, sometimes taking 3 minutes, and occasionally failing silently - the workflow showed green, but no article was ever produced downstream.</p>
+<p>It took me a full weekend to nail down the cause. The root problem was not <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> itself - it was that <strong>I had zero observability</strong>: I had no idea which step was slow, which LLM call was retrying, or where the tokens were actually being burned.</p>
+<p>This article is my full record of wiring Langfuse into self-hosted <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>. Every command and config comes from an environment I actually got working. There are no affiliate links or sponsored content here.</p>
+<h2>Why <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s Default Logging Is Not Enough</h2>
+<p><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s built-in execution records tell you whether a workflow succeeded or failed overall, but when you call an LLM, the information left behind is extremely thin:</p>
 <ul><li>You see "AI Agent node took 87 seconds" but not whether that 87 seconds was **one slow call** or **five retries**</li><li>You cannot see the actual prompt, so you cannot review "why this output went off the rails"</li><li>Token usage is a black box until the monthly bill arrives and shocks you</li></ul>
 <p>My first approach was to add a Code node after each HTTP node to manually print status codes. The problem with that hack is obvious: <strong>it pollutes the workflow structure, and every prompt change forces a matching logging change</strong>.</p>
 <p>What I needed was a side-channel: see the input, output, latency, and tokens of every LLM call without touching business logic.</p>
 <h2>Prerequisites and Architecture Choice</h2>
 <p>Three things to confirm before starting:</p>
-<p><strong>1. How n8n is deployed</strong></p>
-<p>Mine is Docker Compose. If you use n8n Cloud, the self-hosting steps below do not apply, but the Langfuse config keys are the same.</p>
+<p><strong>1. How <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> is deployed</strong></p>
+<p>Mine is Docker Compose. If you use <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> Cloud, the self-hosting steps below do not apply, but the Langfuse config keys are the same.</p>
 <p><strong>2. Where Langfuse runs</strong></p>
-<p>Langfuse has Cloud and self-hosted options. I chose self-hosted from the start because my prompts contain content strategy I do not want to send off-box. Self-hosted spins up with the official Docker Compose.</p>
+<p>Langfuse has Cloud and self-hosted options. I chose self-hosted from the start because my prompts contain content strategy I do not want to send off-box. <a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Self</a>-hosted spins up with the official Docker Compose.</p>
 <p><strong>3. Network connectivity</strong></p>
-<p>This is the most overlooked part. The n8n container must be able to reach Langfuse's address. If you, like me, put both on the same machine, Docker networking handles it - just do not use <code>localhost</code>, because **localhost inside a container points to the container itself**.</p>
-<h2>Step 1: Spin Up a Self-Hosted Langfuse</h2>
+<p>This is the most overlooked part. The <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> container must be able to reach Langfuse's address. If you, like me, put both on the same machine, Docker networking handles it - just do not use <code>localhost</code>, because **localhost inside a container points to the container itself**.</p>
+<h2>Step 1: Spin Up a <a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Self</a>-Hosted Langfuse</h2>
 <p>Langfuse's official repo provides a Docker Compose setup. I pulled the official compose file and started it on a 2C4G box:</p>
 <pre><code>git clone https://github.com/langfuse/langfuse.git
 cd langfuse
 docker compose up -d</code></pre>
-<p>It listens on port 3000 by default. <strong>One gotcha</strong>: if your n8n also uses 3000, change the port mapping first. In my environment n8n uses 5678, so there was no conflict.</p>
+<p>It listens on port 3000 by default. <strong>One gotcha</strong>: if your <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> also uses 3000, change the port mapping first. In my environment <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> uses 5678, so there was no conflict.</p>
 <p>Once it is up, open the Langfuse web UI, create an organization and a project, then generate a pair of API keys in project settings: <code>Public Key</code> and <code>Secret Key</code>. **These are shown only once - save them first.**</p>
-<h2>Step 2: Connect n8n to Langfuse</h2>
+<h2>Step 2: Connect <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> to Langfuse</h2>
 <p>I hit my first real gotcha here. Conclusion first, then the story.</p>
 <p><strong>Error 1: connection refused (ECONNREFUSED)</strong></p>
-<p>The first time I configured it, I set <code>LANGFUSE_HOST=http://localhost:3000</code> in n8n's environment variables, and the workflow immediately errored:</p>
+<p>The first time I configured it, I set <code>LANGFUSE_HOST=http://localhost:3000</code> in <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s environment variables, and the workflow immediately errored:</p>
 <pre><code>Error: connect ECONNREFUSED 127.0.0.1:3000</code></pre>
-<p>The reason is straightforward: n8n runs inside a Docker container, and <code>localhost</code> inside the container is the container itself, not the host. **The fix** is to use the host's name on the Docker network. If you orchestrate both services with docker-compose, use the service name directly:</p>
+<p>The reason is straightforward: <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> runs inside a Docker container, and <code>localhost</code> inside the container is the container itself, not the host. **The fix** is to use the host's name on the Docker network. If you orchestrate both services with docker-compose, use the service name directly:</p>
 <pre><code>LANGFUSE_HOST=http://langfuse-server:3000</code></pre>
-<p>Because my Langfuse runs as its own independent compose stack, I added the n8n container to the same Docker network and addressed Langfuse by container name and port. After restarting the n8n container, the connection worked immediately.</p>
-<p><strong>Error 2: n8n's AI nodes produce no trace</strong></p>
+<p>Because my Langfuse runs as its own independent compose stack, I added the <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> container to the same Docker network and addressed Langfuse by container name and port. After restarting the <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> container, the connection worked immediately.</p>
+<p><strong>Error 2: <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s AI nodes produce no trace</strong></p>
 <p>Once connected, I expected to see data in Langfuse - but it was <strong>completely empty</strong>. The workflow clearly ran, yet Langfuse had nothing.</p>
-<p>After digging in: <strong>n8n's Langfuse integration requires tracing through the corresponding node or explicit configuration, not a global switch</strong>. Setting environment variables alone is not enough to make all AI calls report automatically. The n8n community has dedicated threads on this (source: community.n8n.io, "Capturing n8n flows with observability" and "Deep n8n observability with OpenTelemetry").</p>
-<p>My path was to use n8n's Langfuse-specific node/integration and explicitly attach the LLM calls I wanted traced. Langfuse's official docs have a dedicated page on the n8n node (source: langfuse.com/docs/prompt-management/features/n8n-node); after configuring per it, traces appeared immediately. There is also a third-party package <code>n8n-nodes-openai-langfuse</code> in the community (source: github.com/rorubyy/n8n-nodes-openai-langfuse), but given maintenance activity, I ultimately chose the official path.</p>
+<p>After digging in: <strong><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s Langfuse integration requires tracing through the corresponding node or explicit configuration, not a global switch</strong>. Setting environment variables alone is not enough to make all AI calls report automatically. The <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> community has dedicated threads on this (source: community.<a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>.io, "Capturing <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> flows with observability" and "Deep <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> observability with OpenTelemetry").</p>
+<p>My path was to use <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>'s Langfuse-specific node/integration and explicitly attach the LLM calls I wanted traced. Langfuse's official docs have a dedicated page on the <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> node (source: langfuse.com/docs/prompt-management/features/<a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>-node); after configuring per it, traces appeared immediately. There is also a third-party package <code><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>-nodes-openai-langfuse</code> in the community (source: github.com/rorubyy/<a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a>-nodes-openai-langfuse), but given maintenance activity, I ultimately chose the official path.</p>
 <h2>Step 3: Read the Traces and Find the Real Bottleneck</h2>
 <p>Once wired up, I "saw" the workflow for the first time. Three findings directly solved my original problem:</p>
 <p><strong>Finding 1: the slow part was not the LLM - it was retries</strong></p>
@@ -116,7 +116,7 @@ docker compose up -d</code></pre>
 <p><strong>Finding 2: token usage is highly concentrated</strong></p>
 <p>Sorting by tokens, I saw that one of the three workflows accounted for <strong>over 70% of token usage</strong>, yet its output quality was no better than the others. <strong>I cut a third of the redundant context from that workflow's prompt, and monthly usage dropped noticeably.</strong></p>
 <p><strong>Finding 3: silent failures now leave a trail</strong></p>
-<p>Those "green but no output" executions now show the LLM returning an empty string in the trace. This is not an n8n bug - it is the model returning an empty response under certain inputs. <strong>Knowing this, I added an empty-value check branch to the workflow, and the problem has not reappeared.</strong></p>
+<p>Those "green but no output" executions now show the LLM returning an empty string in the trace. This is not an <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">n8n</a> bug - it is the model returning an empty response under certain inputs. <strong>Knowing this, I added an empty-value check branch to the workflow, and the problem has not reappeared.</strong></p>
 <h2>A Checklist You Can Follow Directly</h2>
 <p>I turned this integration experience into a checklist:</p>
 <ul><li>**Do not use localhost to reach cross-container services**; use the Docker service or container name</li><li>**API keys are shown only once**; store them immediately in secret management, never commit them in the compose file</li><li>**Environment variables are not automatic tracing**; you must explicitly attach the Langfuse node in the workflow</li><li>**Langfuse itself needs persistence**; the default compose uses an in-container database that loses data on restart - mount a volume in production</li><li>**Look at retry count before single-call latency**; many "slow" cases are just retries piling up</li></ul>
