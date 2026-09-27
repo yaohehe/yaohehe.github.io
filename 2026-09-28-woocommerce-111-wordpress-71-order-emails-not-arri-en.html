@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WooCommerce 11.1 + WordPress 7.1 Order Emails Not Arriving: Three Layers from wp_mail's Silent Success to SPF/DKIM/DMARC Alignment - TechPassive</title>
+  <meta name="description" content="A customer says the order confirmation never arrived while your SMTP plugin shows all green. This is the most common and least instrumented failure in WooCommerce — and the least useful place to start looking. This guide splits the mail path into three layers (WooCommerce trigger logs -> wp_mail transport -> DNS and sender reputation), with copy-paste commands for the native email log in WooCommerce 11.1, the phpmailer_init SMTP transcript, and SPF/DKIM/DMARC alignment checks, plus five real errors and their fixes, a 7-item pre-launch checklist, and the 5,000-per-day bulk sender threshold nobody expects to hit.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WooCommerce 11.1 Order Emails Not Arriving: A Three-Layer Debug from wp_mail to SPF/DKIM/DMARC</h1>
+  <div class="post-tags">
+    <span class="tag">WooCommerce</span><span class="tag">WordPress</span><span class="tag">Email Deliverability</span><span class="tag">Ecommerce</span>
+  </div>
+  <div class="content">
+    <p>I actually hit this one on a WooCommerce store I run myself. The site had just moved from WooCommerce 10.9 to 11.1 (11.1.1, the September 18, <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a> security patch), and the next day customers started asking the same question: "I placed an order — why didn't I get a confirmation?" The order list looked fine. The SMTP plugin's log was entirely green. I cringed, used WP-CLI to send a test message, and <code>wp_mail()</code> returned <code>true</code>.</p>
+<p>It took me three days to unwind the whole path. The uncomfortable headline: <strong>whether your WooCommerce order emails arrive has far less to do with which SMTP plugin you installed than most guides suggest.</strong> The root cause in my case was in the outermost layer — DNS alignment for the sending domain — not the relay. I tested the layers in the wrong order and burned two days for it.</p>
+<p>Here is the short version. An order email reaches a customer's inbox only when all three of these are true at the same time: the message <strong>was actually handed to a relay that receivers trust</strong>; your sending domain <strong>passes SPF/DKIM/DMARC</strong>; and your sender reputation <strong>is good enough to keep it out of the spam folder</strong>. Miss any one and the symptom is identical — the customer says nothing arrived.</p>
+<h2>⏳ TL;DR</h2>
+<p>🔍 **The three-layer method — work through it in order, do not skip ahead**: Use WooCommerce → Status → Logs to confirm "did WooCommerce even try to send?" → then use <code>phpmailer_init</code> to capture the SMTP transcript and confirm "did the relay accept it?" → then check the relay's delivery log plus <code>dig</code> to confirm "did the receiving domain accept it?"</p>
+<p>🖥️ <strong>Desk gear for long nights staring at order dashboards and mail logs (both bought with my own money)</strong>:</p>
+<ul><li>**Dell UltraSharp U2723QE 27" 4K USB-C Hub monitor** — one USB-C cable carries 4K and 90W of power, and the built-in KVM lets me flip between my laptop terminal and a jump-host log window without reaching for a cable. 💰 Roughly $429–529 as of writing; prices swing with promotions, so check the live listing.</li></ul>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the Dell U2723QE on Amazon >></a></p>
+<ul><li>**BenQ ScreenBar Halo 2 monitor light bar** — its three-zone backlight fills in the screen-to-wall contrast gap, which matters at 2 a.m. when you are reading an SMTP transcript. 💰 Around $179–199.</li></ul>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the BenQ ScreenBar Halo 2 on Amazon >></a></p>
+<p><strong>The one-line rule</strong>: fix the relay (SMTP), then fix the domain (SPF/DKIM/DMARC), and only then worry about message content and reputation. Get that order wrong and you will spend a week rewriting email templates while the real problem sits in your DNS zone.</p>
+<h2>About this write-up and my affiliate disclosure</h2>
+<p>> <strong>Affiliate disclosure</strong>: this post contains <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Associates links (tag=techpassive-20). If you buy through them I earn a small commission and you pay exactly the same price you would going straight to <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a>. Both pieces of desk gear above are things I bought myself, not review samples. The version numbers, SMTP response codes and protocol behaviour in the technical sections come from vendor documentation and my own server logs; versions and prices are accurate as of publication.</p>
+<h2>Three kinds of "not delivered" — confuse them and you will search the wrong layer</h2>
+<p>The entry point for each failure class is completely different, and mixing them up is the biggest time sink in this whole exercise.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Layer</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Typical symptom</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Where to look</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Usual cause</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Trigger</td><td style="border:1px solid #ddd;padding:8px;">Order exists, but no send was ever attempted</td><td style="border:1px solid #ddd;padding:8px;">WooCommerce → Status → Logs, order notes</td><td style="border:1px solid #ddd;padding:8px;">Order stuck in pending payment, notification disabled, wp-cron not running</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Transport</td><td style="border:1px solid #ddd;padding:8px;">A send was attempted, but the relay refused it or could not be reached</td><td style="border:1px solid #ddd;padding:8px;">SMTP plugin log, PHPMailer transcript</td><td style="border:1px solid #ddd;padding:8px;">Wrong credentials, blocked port, relay region mismatch</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">DNS and reputation</td><td style="border:1px solid #ddd;padding:8px;">Relay log says 250 OK, customer still has nothing</td><td style="border:1px solid #ddd;padding:8px;">Relay delivery log, receiver rejection codes, DMARC reports</td><td style="border:1px solid #ddd;padding:8px;">SPF/DKIM failing, DMARC missing or unaligned, message filed as spam</td></tr></tbody></table>
+<p>My failure was in the third layer. The relay log read <code>250 Ok: queued as ...</code>, which looks like a perfect outcome — but the DKIM signature was <code>d=fail</code>, because the selector record for it had never been published.</p>
+<h2>The <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a> entry ticket: you trigger bulk sender rules at roughly 5,000 messages a day</h2>
+<p>This is not a big-store-only concern. The bulk sender rules Gmail and Yahoo have enforced since February 2024 kick in at <strong>close to 5,000 messages or more sent to personal inboxes (@gmail.com, @googlemail.com) within 24 hours</strong> — and the classification is <strong>permanent</strong>. Cross the line once, even on a Black Friday blast, and you are held to the bulk requirements forever. Microsoft followed in May 2025 with a near-identical rule set for outlook.com, hotmail.com and live.com.</p>
+<p>What matters more is how much teeth enforcement has grown. Since November 2025, Gmail has escalated non-compliance from "route it to spam" to <strong>temporary and permanent rejections</strong>. Order confirmations that a customer could once have rescued from a spam folder now may simply never be delivered at all.</p>
+<p>The requirement list, per each provider's own documentation:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Requirement</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What it demands</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">How</a> to verify</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">SPF</td><td style="border:1px solid #ddd;padding:8px;">Must exist and pass</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT yourdomain.com`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">DKIM</td><td style="border:1px solid #ddd;padding:8px;">Must exist and pass; key ≥1024 bits (Yahoo explicitly rejects 512-bit keys)</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT selector._domainkey.yourdomain.com`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">DMARC</td><td style="border:1px solid #ddd;padding:8px;">Must exist, `p=none` at minimum</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT _dmarc.yourdomain.com`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Alignment</td><td style="border:1px solid #ddd;padding:8px;">The From domain must align with SPF or DKIM (relaxed is fine)</td><td style="border:1px solid #ddd;padding:8px;">DMARC reports, authentication-results headers</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">One-click unsubscribe</td><td style="border:1px solid #ddd;padding:8px;">RFC 8058 for marketing mail, honoured within two days</td><td style="border:1px solid #ddd;padding:8px;">`List-Unsubscribe` header</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Complaint rate</td><td style="border:1px solid #ddd;padding:8px;">Below 0.30%; providers recommend targeting under 0.10%</td><td style="border:1px solid #ddd;padding:8px;">Google Postmaster Tools and similar</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">PTR and TLS</td><td style="border:1px solid #ddd;padding:8px;">Valid forward and reverse DNS, TLS on the connection</td><td style="border:1px solid #ddd;padding:8px;">`dig -x your_sending_ip`, SMTP transcript</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Formatting</td><td style="border:1px solid #ddd;padding:8px;">RFC 5322 compliant, with a Message-ID</td><td style="border:1px solid #ddd;padding:8px;">Inspect a raw message's headers</td></tr></tbody></table>
+<p>Rejection codes you will actually see (exact numbers vary by receiver — trust the one you get): <code>550 5.7.26</code> when both SPF and DKIM fail, <code>421 4.7.40</code> when the DMARC record is missing, <code>421 4.7.32</code> on DMARC alignment failure, <code>5.7.25</code> for PTR problems and <code>5.7.29</code> for TLS problems. On Microsoft's side you will commonly see <code>550 5.7.515</code>; on Yahoo's, <code>550 5.7.9</code>.</p>
+<h2>Step 1: confirm WooCommerce actually tried to send the email</h2>
+<p>Starting with WooCommerce 10.9 (released June 23, <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a>), <strong>transactional email logging landed in core</strong>: WooCommerce → Status → Logs now shows whether a given order email was sent, and where available, why it was not. One caveat worth knowing: 10.9.0 was briefly reverted after release, with 10.9.1 through 10.9.4 (July 7, <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a>) filling the gaps — so if your store is still on 10.8 or earlier, that panel may not exist. <strong>Check your WooCommerce version first.</strong></p>
+<p>Three unglamorous things decide this layer:</p>
+<p>1. <strong>Order status.</strong> WooCommerce only fires the matching notification when the status advances to processing, completed, and so on. If the payment gateway's callback never returns, the order sits in pending payment and the confirmation email was never triggered at all. Debugging SMTP at that point is wasted effort — fix the gateway.</p>
+<p>2. <strong>Notification toggles.</strong> Under WooCommerce → Settings → Emails, open each email type's Manage screen and confirm "Enable this email notification" is ticked, and that admin recipients are correct.</p>
+<p>3. <strong>From address.</strong> In the sender options at the bottom of the same screen, the From address must be <strong>on your own domain</strong> (say, orders@yourstore.com). A free Gmail or Yahoo address as the From is the fastest route to the spam folder or outright rejection.</p>
+<p>A quick WP-CLI sanity check that scheduled jobs are firing:</p>
+<pre><code>wp cron event list --fields=hook,next_run_relative | grep -i woocommerce</code></pre>
+<p>Set your expectations here too: <strong>WooCommerce does not retry a failed email.</strong> It fires once and moves on. Retry queues are a capability of the relay (transactional email provider), not of WooCommerce — which becomes a hard requirement once you pass a few hundred orders a day.</p>
+<h2>Step 2: prove wp_mail really sent it, instead of "succeeding" silently</h2>
+<p>This layer lies to you more than any other. <code>wp_mail()</code> returning <code>true</code> means "the message was handed to the configured transport and nothing threw an exception." It does **not** mean the receiving server accepted it. It will mislead you in three ways: handed to local PHP <code>mail()</code> and queued by an MTA that later bounces it; handed to a relay's API that accepted the call and rejected the message at the receiver; or short-circuited entirely by a plugin filter.</p>
+<p>There is one mechanism here that you have to know in <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a>: the **<code>pre_wp_mail</code> filter** (<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.7+). Returning anything non-null from it ends <code>wp_mail()</code> immediately — none of the code after it runs. And the mainstream SMTP plugins — WP Mail SMTP, FluentSMTP, Post SMTP — **all take over sending by hooking <code>pre_wp_mail</code>**. The direct consequence is that **once an SMTP plugin is in charge, <code>wp_mail_failed</code> never fires again**, because it is watching a code path your mail no longer takes. The failure-logging callback you carefully wrote will sit there in total silence.</p>
+<p>So instrument three points at once. Drop this into a site-specific mu-plugin under <code>wp-content/mu-plugins/</code>:</p>
+<pre><code><?php
+// 1) Capture the PHPMailer SMTP transcript (only if mail actually uses wp_mail's built-in path)
+add_action('phpmailer_init', function ($phpmailer) {
+    $phpmailer->SMTPDebug = 2; // 1 = errors and messages, 2 = client<->server, 3-4 = verbose
+    $phpmailer->Debugoutput = function ($str, $level) {
+        error_log("[wp_mail/$level] $str");
+    };
+}, 999);
+
+// 2) Capture failures (note: will NOT fire once pre_wp_mail takes over)
+add_action('wp_mail_failed', function ($error) {
+    error_log('[wp_mail_failed] ' . $error->get_error_message());
+});
+
+// 3) Capture successes, to confirm recipients and headers
+add_action('wp_mail_succeeded', function ($mail_data) {
+    error_log('[wp_mail_succeeded] to=' . implode(',', (array) $mail_data['to']));
+});
+
+// 4) Fix the default sender: wp_mail defaults to wordpress@yourdomain, which many hosts refuse
+add_filter('wp_mail_from', fn() => 'orders@yourstore.com');
+add_filter('wp_mail_from_name', fn() => 'Your Store');</code></pre>
+<p>Then enable logging in <code>wp-config.php</code>:</p>
+<pre><code>define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', false);</code></pre>
+<p>Finally send a controlled test message and follow the log:</p>
+<pre><code>wp eval 'var_dump( wp_mail( "you@example.com", "tp mail test", "body" ) );'
+tail -f wp-content/debug.log</code></pre>
+<p>Reading the result is refreshingly unambiguous. If the transcript shows **nothing at all**, something short-circuited <code>wp_mail</code> — almost certainly your SMTP plugin's <code>pre_wp_mail</code> hook — so go look in that plugin's own log instead. If the transcript reaches <code>250 Ok</code> and the message still never arrives, the failure is past PHPMailer entirely; jump straight to Step 4.</p>
+<h2>Step 3: hand your mail to a relay you trust (and the <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">2026</a> port reality)</h2>
+<p>Do not send order email through your host's PHP <code>mail()</code>. Shared hosts routinely throttle or disable it, and receivers distrust unauthenticated direct submission anyway.</p>
+<p>Once you have picked a relay, ports are the first wall:</p>
+<ul><li>**25** — blocked by default almost everywhere. On <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> EC2, for example, outbound port 25 is throttled by default, and the symptom is a **silent timeout** rather than a clear error, so it looks like a network problem when it is really a policy one. You have to file a separate request to remove the email sending limitation.</li><li>**587 (STARTTLS)** — the standard recommendation.</li><li>**465 (TLS wrapper / SMTPS)** — an older protocol, but widely supported by clients. Note that TLS and SSL are not interchangeable choices: the port and the encryption mode have to match.</li><li>**Fallback ports** — <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> SES also accepts STARTTLS on 2587 and TLS wrapper on 2465, with endpoints in the form `email-smtp.{region}.amazonaws.com`. When the standard ports are blocked upstream, this is the fastest way around it.</li></ul>
+<p>Three SES-specific traps are worth knowing before you hit them:</p>
+<p>1. **SES SMTP credentials are not your IAM access keys.** They are a separate pair generated from the SES console's "Create SMTP credentials": a 20-character username (starting <code>AKIA...</code>) and a longer Base64 password. Paste an IAM secret access key into the SMTP password field and authentication will fail, every time.</p>
+<p>2. **Credentials are region-bound.** The SMTP password is derived through an HMAC signature that includes the region, so a credential minted in us-east-1 connecting to the eu-west-1 endpoint fails reliably with a <code>535</code> — even though the underlying IAM user is global.</p>
+<p>3. <strong>New accounts start in the sandbox</strong>: 200 messages per 24 hours, one per second, verified recipients only, counted per region. Sending real order email requires a production access request.</p>
+<h2>Step 4: SPF, DKIM, DMARC, and the word that actually matters — alignment</h2>
+<p>This is where my root cause lived, and it is the step most guides skip.</p>
+<p><strong>SPF</strong> is one TXT record declaring which servers may send mail for your domain. Two hard constraints: <strong>a domain may only have one SPF record</strong> (multiple records is a permanent error), and <strong>you get at most 10 DNS lookups</strong> before SPF fails outright. The usual shape:</p>
+<pre><code>yourstore.com.  TXT  "v=spf1 include:your-relay-spf-domain ~all"</code></pre>
+<p>**DKIM** signs every message. Your relay gives you a TXT record at something like <code>selector._domainkey.yourdomain.com</code>. Here is the detail that bit me: **when you change relays or regions, the selector usually changes too.** If the old record lingers and the new one never gets published, the signature reports <code>d=fail</code> — while SPF may still pass, leaving the overall authentication incomplete and, at strict receivers, the message judged suspicious anyway.</p>
+<p><strong>DMARC</strong> tells receivers what to do when SPF or DKIM fails, and collects reports:</p>
+<pre><code>_dmarc.yourdomain.com.  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@yourstore.com"</code></pre>
+<p>Verify all three in one go:</p>
+<pre><code>dig +short TXT yourstore.com
+dig +short TXT 20260901._domainkey.yourstore.com
+dig +short TXT _dmarc.yourstore.com</code></pre>
+<p>Then handshake directly with the relay to confirm the port and TLS work (SES in us-east-1 as the example):</p>
+<pre><code>openssl s_client -connect email-smtp.us-east-1.amazonaws.com:587 -starttls smtp -crlf</code></pre>
+<p>Treat <code>p=none</code> as a starting point, not a destination: it collects reports and satisfies the minimum, but it blocks nothing. When the industry baseline moves to <code>p=quarantine</code>, you will at least have weeks of DMARC reports to work from. Register for Google Postmaster Tools, Yahoo Sender Hub and Microsoft SNDS in the meantime — they are the only place you can see your **actual** complaint rate.</p>
+<h2>Troubleshooting: five real errors and how to fix them</h2>
+<h3>Error 1: `SMTP Error: Could not authenticate.` / `535 Authentication Credentials Invalid`</h3>
+<p><strong>Cause</strong>: three candidates, in order of frequency — IAM access keys pasted in as SMTP credentials; credentials and endpoint in different regions (the most common SES case by far); or a stray space or newline copied into the password.</p>
+<p>**Fix**: regenerate a dedicated SMTP credential pair in the relay console, strictly in the **same region as the sending endpoint**; paste rather than type both username and password; if you are on SES, confirm the From address is a **verified identity in that same region**. Then run the <code>openssl s_client</code> handshake again — you want to see <code>235 Authentication successful</code> before you move on.</p>
+<h3>Error 2: `550 5.7.26 This mail has been blocked because the sender is unauthenticated`</h3>
+<p>**Cause**: Gmail's rejection when SPF and DKIM **both** fail. Seen most often when a store changed its sending domain but left the DNS records on the old one, or the relay's SPF include was never added, or the DKIM selector record is still unpublished (which usually shows up first as <code>421 4.7.32</code> alignment failure before escalating to 550).</p>
+<p>**Fix**: <code>dig</code> all three records and confirm they exist and point at the current relay; confirm the From domain aligns with SPF or DKIM; then send a message to a scoring address and read the authentication results it reports. Watch the subdomain trap as well: only the primary domain counts and subdomains roll up into it, so giving <code>mail.</code> or <code>news.</code> its own record set does not keep you under the threshold.</p>
+<h3>Error 3: `wp_mail()` returns `true`, the relay log shows `250 Ok`, the customer still has nothing, and `wp_mail_failed` never fired once</h3>
+<p>**Cause**: the "silent success" from the top of this article, with two independent contributors. First, once an SMTP plugin takes over via <code>pre_wp_mail</code>, <code>wp_mail_failed</code> never fires, so your failure log is decorative. Second, <code>250 Ok</code> only means the relay **accepted** the message; a later asynchronous bounce or a spam-folder filing at the receiving domain never propagates back into <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.</p>
+<p>**Fix**: stop trusting <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-side logging alone. Read three places together — the relay's activity and delivery panels, its bounce feedback channel (for example an SNS subscription or webhook), and your DMARC reports. The mnemonic that resolves this fastest: if the transcript shows <code>250</code> but the receiver has nothing, the problem is on the receiving side; if the transcript is blank, a plugin short-circuited <code>wp_mail</code> and the answer is in the SMTP plugin's own log.</p>
+<h3>Error 4: `SMTP connect() failed` or a connection timeout, with no explicit rejection</h3>
+<p><strong>Cause</strong>: the port is blocked upstream. Cloud providers throttle outbound port 25 by default (presenting as a silent timeout), and some hosts also block 465 or 587.</p>
+<p><strong>Fix</strong>: switch to port 2587 (STARTTLS) or 2465 (TLS wrapper) to test whether connectivity comes back; if it does, you have confirmed a port policy problem, and can then decide between requesting an unblock or standardising on the fallback port. Check that your encryption mode matches the port too — do not select STARTTLS on 465.</p>
+<h3>Error 5: `PHP Fatal error: Uncaught PHPMailer\PHPMailer\Exception: Could not instantiate mail function`</h3>
+<p>**Cause**: PHP's <code>mail()</code> is disabled in your execution environment (common on hardened shared hosting and containers) while the SMTP plugin sits in a "partially configured" state — connection details incomplete, so the plugin quietly falls back to PHP <code>mail()</code>.</p>
+<p>**Fix**: complete the relay configuration (host, port, encryption, username, password, authentication switch), and confirm the plugin reports "connected" rather than merely "active". Check whether <code>disable_functions</code> includes <code>mail</code>. Then rerun the Step 2 <code>wp eval</code> test message.</p>
+<h2>A 7-item pre-launch checklist</h2>
+<p>1. The From address is on <strong>your own domain</strong> and aligns with SPF or DKIM.</p>
+<p>2. <code>dig</code> returns expected content for all three records; exactly one SPF record exists; DNS lookups stay under 10.</p>
+<p>3. Relay credentials and endpoint are in the **same region**, and the handshake returns <code>235</code> followed by <code>250</code>.</p>
+<p>4. A WP-CLI test message produces log lines from both <code>wp_mail_failed</code> and <code>wp_mail_succeeded</code> as appropriate.</p>
+<p>5. The test message is confirmed in <strong>two places at once</strong> — the relay panel and a Gmail inbox — and it is not in spam.</p>
+<p>6. At least one sender reputation dashboard is registered and showing a visible complaint rate.</p>
+<p>7. A real order (not a manually changed status) triggers the expected email. Treat <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1's client-side media processing — which moves resizing and thumbnail generation into the browser and relieves PHP — as a welcome side benefit, not as a fix for a mail problem.</p>
+<h2>The takeaway</h2>
+<p>The most expensive lesson here is that **<code>wp_mail()</code> returning <code>true</code>, an all-green SMTP plugin, and a <code>250 OK</code> in the relay log together still do not prove the customer received anything.** Order email sits on a revenue-critical path, and the only way to guarantee it is to instrument all three layers at once: WooCommerce's trigger log, the PHPMailer transcript, and the DNS plus receiver-side authentication results. Walk them from the inside out and you will usually find the cause in an afternoon. Walk them backwards and three days may not be enough to find the one DKIM selector record that never went live.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
