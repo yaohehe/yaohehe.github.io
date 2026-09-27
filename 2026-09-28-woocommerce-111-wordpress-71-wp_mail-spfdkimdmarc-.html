@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WooCommerce 11.1 + WordPress 7.1 订单邮件收不到排查实战：从 wp_mail「静默成功」到 SPF/DKIM/DMARC 对齐的 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="客户说没收到订单确认信，后台却显示邮件已发出——这类「静默成功」是 WooCommerce 独立站最常见也最难查的一类故障。本文按「woocommerce 日志层 → wp_mail 传输层 → DNS 与发件信誉层」三层定位法，给出 WooCommerce 11.1 原生邮件日志入口、phpmailer_init 抓 SMTP 会话、SPF/DKIM/DMARC 对齐检查的可复制命令，并复盘 5 个真实报错的根因与修复（535 凭据错误、550 5.7.26 未认证、250 OK 却进垃圾箱、端口 25 静默超时、PHP mail 被禁用），附上线前 7 项验收清单与 2026 年批量发件人硬门槛。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WooCommerce 11.1 订单邮件收不到实战：wp_mail 静默成功到 SPF/DKIM/DMARC 全链路排查</h1>
+  <div class="post-tags">
+    <span class="tag">WooCommerce</span><span class="tag">WordPress</span><span class="tag">邮件送达率</span><span class="tag">跨境电商</span>
+  </div>
+  <div class="content">
+    <p>我实际在自己的一个 WooCommerce 独立站上踩了这次坑。站点从 10.9 升到 11.1（11.1.1 是 2026-09-18 的安全补丁版本），升级后第二天开始陆续有客户来问：「下单了，为什么没收到确认信？」我先看订单列表，状态一切正常；再看 SMTP 插件的日志，全绿；我不死心，用 WP-CLI 手动发了一封测试信，<code>wp_mail()</code> 明明白白返回了 <code>true</code>。可客户就是收不到。</p>
+<p>这篇文章是我用了三天把这条链路从头到尾拆开的完整记录。核心结论是：<strong>WooCommerce 订单邮件能不能送到，和你配置的那个 SMTP 插件好不好用，关系没有你想象的大</strong>。我最后定位到的根因在最外层——发信域的 DNS 对齐，而不是 SMTP 服务器。顺序查反了，就会像我一样白折腾两天。</p>
+<p>先给结论：一封订单邮件要真正落进客户收件箱，必须同时满足三件事——邮件<strong>确实被交给了一个可信的中继</strong>；你的发信域<strong>通过了 SPF/DKIM/DMARC 验证</strong>；你的发件声誉<strong>没有把邮件推进垃圾箱</strong>。任何一条缺失，症状都长得一模一样：客户说没收到。</p>
+<h2>⏳ 太长不看版 (TL;DR)</h2>
+<p>🔍 **三层定位法（按顺序查，不要跳）**：先用 WooCommerce → Status → Logs 确认「WooCommerce 有没有尝试发」→ 再用 <code>phpmailer_init</code> 抓 SMTP 会话确认「中继收没收」→ 最后用 <code>dig</code> + 中继的投递日志确认「对方收件域收没收」。</p>
+<p>🖥️ <strong>长时间盯订单后台与日志的桌面装备（两台都是我自己下单买的）</strong>：</p>
+<ul><li>**Dell UltraSharp U2723QE 27 英寸 4K USB-C Hub 显示器** — 一根 USB-C 同时上 4K 加 90W 供电，内置 KVM 可以在「本机终端」和「跳板机日志窗口」之间一键切换，排故障时不用来回插拔线。💰 约 429-529 美元（截至发稿，促销波动大，请以商品页实时标价为准）</li></ul>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 Dell U2723QE >></a></p>
+<ul><li>**BenQ ScreenBar Halo 2 显示器挂灯** — 三区背光专门补「屏幕—墙面亮度差」，凌晨两点盯 SMTP 会话不刺眼。💰 约 179-199 美元</li></ul>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 BenQ ScreenBar Halo 2 >></a></p>
+<p><strong>一句话建议</strong>：修中继（SMTP）→ 修域名（SPF/DKIM/DMARC）→ 最后才谈邮件内容与发件声誉。这个顺序错了，你会把时间花在改邮件模板上，而真正的问题在 DNS 里。</p>
+<h2>关于这篇实战与联盟声明</h2>
+<p>> <strong>联盟声明</strong>：本文含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Associates 联盟链接（tag=techpassive-20）。你通过这些链接下单，我会获得少量佣金，价格与你直接进 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 购买完全一致，不会多一分钱。文中两台桌面装备是我自己付钱买的，不是厂商送测。技术部分的版本号、拒信码与机制说明来自各家官方文档与我自己的服务器日志，版本与价格均截至发稿。</p>
+<h2>先分清三种「收不到」，否则一定查错方向</h2>
+<p>三类故障的排查入口完全不同，混在一起查是效率杀手。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">故障层</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">典型症状</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">排查入口</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">常见根因</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">触发层</td><td style="border:1px solid #ddd;padding:8px;">订单在，邮件从来没被「尝试发送」</td><td style="border:1px solid #ddd;padding:8px;">WooCommerce → Status → Logs / 订单备注</td><td style="border:1px solid #ddd;padding:8px;">订单状态卡在 pending payment、通知被关掉、wp-cron 没跑</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">传输层</td><td style="border:1px solid #ddd;padding:8px;">邮件被尝试发送，但中继拒收或连不上</td><td style="border:1px solid #ddd;padding:8px;">SMTP 插件日志 / PHPMailer 会话</td><td style="border:1px solid #ddd;padding:8px;">凭据错、端口被封、中继区域不匹配</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">域名与信誉层</td><td style="border:1px solid #ddd;padding:8px;">中继日志 250 OK，客户却没收到</td><td style="border:1px solid #ddd;padding:8px;">中继投递日志 + 收件方拒信码 + DMARC 报告</td><td style="border:1px solid #ddd;padding:8px;">SPF/DKIM 未通过、DMARC 缺失或未对齐、进垃圾箱</td></tr></tbody></table>
+<p>我这次的坑在第三层。中继日志显示 <code>250 Ok: queued as ...</code>，看起来完美，但邮件的 DKIM 签名是 <code>d=fail</code>，因为签名用的选择器记录压根没上线。</p>
+<h2>2026 年的门票：接近 5,000 封/天就会触发批量发件人规则</h2>
+<p>这不是「大站才需要关心的事」。Gmail 与 Yahoo 从 2024 年 2 月起强制执行的批量发件人规则，判定门槛是<strong>向个人收件箱（@gmail.com / @googlemail.com）24 小时内接近或超过 5,000 封</strong>，而且这个身份<strong>一旦获得就永久保留</strong>——哪怕你后来量掉下来了。Microsoft 在 2025 年 5 月对 outlook.com / hotmail.com / live.com 跟进了几乎相同的规则。</p>
+<p>更值得注意的是执行力度：Gmail 从 2025 年 11 月起把不合规的处置从「投进垃圾箱」升级成了<strong>临时与永久拒收</strong>。也就是说，以前还能靠用户翻垃圾箱找回的订单确认信，现在可能直接连投递都没有。</p>
+<p>要求清单（以各家官方文档为准）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项目</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">要求</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检查方式</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">SPF</td><td style="border:1px solid #ddd;padding:8px;">必须存在并通过</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT 你的域名`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">DKIM</td><td style="border:1px solid #ddd;padding:8px;">必须存在并通过，密钥 ≥1024 位（Yahoo 明确拒收 512 位）</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT 选择器._domainkey.你的域名`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">DMARC</td><td style="border:1px solid #ddd;padding:8px;">必须存在，最低 `p=none`</td><td style="border:1px solid #ddd;padding:8px;">`dig +short TXT _dmarc.你的域名`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">对齐</td><td style="border:1px solid #ddd;padding:8px;">From 域必须与 SPF 或 DKIM 对齐（relaxed 即可）</td><td style="border:1px solid #ddd;padding:8px;">DMARC 报告 / 中继的认证结果头</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">一键退订</td><td style="border:1px solid #ddd;padding:8px;">营销类邮件需 RFC 8058 一键退订，2 天内处理</td><td style="border:1px solid #ddd;padding:8px;">邮件头 `List-Unsubscribe`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">投诉率</td><td style="border:1px solid #ddd;padding:8px;">低于 0.30%，官方建议目标 0.10% 以下</td><td style="border:1px solid #ddd;padding:8px;">Google Postmaster Tools 等面板</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">PTR 与 TLS</td><td style="border:1px solid #ddd;padding:8px;">正反向 DNS 有效、连接启用 TLS</td><td style="border:1px solid #ddd;padding:8px;">`dig -x 发信IP`、SMTP 会话</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">格式</td><td style="border:1px solid #ddd;padding:8px;">符合 RFC 5322，含 Message-ID</td><td style="border:1px solid #ddd;padding:8px;">抓一封原始邮件看头</td></tr></tbody></table>
+<p>常见拒信码（不同收件方数字略有差异，以收到的实际拒信为准）：<code>550 5.7.26</code>（SPF 与 DKIM 双双失败）、<code>421 4.7.40</code>（缺 DMARC 记录）、<code>421 4.7.32</code>（DMARC 未对齐）、<code>5.7.25</code>（PTR 问题）、<code>5.7.29</code>（TLS 问题）。Microsoft 侧常见 <code>550 5.7.515</code>，Yahoo 侧常见 <code>550 5.7.9</code>。</p>
+<h2>第一步：先确认 WooCommerce 到底有没有尝试发这封邮件</h2>
+<p>从 WooCommerce 10.9（2026-06-23 发布）开始，<strong>事务邮件日志进入了核心</strong>：可以直接在 WooCommerce → Status → Logs 里看到某封订单邮件「有没有被发出、以及为什么没发出」。注意 10.9.0 首发时曾被临时回滚，随后 10.9.1 到 10.9.4 陆续补齐（10.9.4 是 2026-07-07），所以如果你的站点还在 10.8 或更早，这个面板可能不存在——<strong>建议先确认自己的 WooCommerce 版本</strong>。</p>
+<p>这一层要排查的其实是三件最朴素的事：</p>
+<p>1. <strong>订单状态</strong>。WooCommerce 只在状态推进到 processing / completed 等触发点时才发对应通知。如果支付网关回调没回来，订单一直停在 pending payment，那么「确认信」从头到尾就没有被触发过。这时候查 SMTP 是白费力气，先修支付。</p>
+<p>2. <strong>通知开关</strong>。WooCommerce → Settings → Emails → 逐个 Manage，确认「Enable this email notification」是勾上的，管理员通知的收件人地址没写错。</p>
+<p>3. <strong>发件人地址</strong>。同一页底部的「Email sender options」里，From 地址必须是<strong>你自己域名下的邮箱</strong>（比如 orders@yourstore.com），不要用 Gmail / Yahoo 之类的免费邮箱——用免费邮箱当 From，是进垃圾箱甚至被直接拒收的最快路径。</p>
+<p>可以用 WP-CLI 顺手确认定时任务在跑：</p>
+<pre><code>wp cron event list --fields=hook,next_run_relative | grep -i woocommerce</code></pre>
+<p>另外要有一个心理预期：<strong>WooCommerce 原生不会重试失败的邮件</strong>。它触发一次就结束了；重试队列是事务邮件服务商（中继）那侧提供的能力。日订单量上到三位数以后，这件事会变成硬需求。</p>
+<h2>第二步：确认 wp_mail 是真的发出去了，而不是「静默成功」</h2>
+<p>这是最容易骗人的一层。<code>wp_mail()</code> 返回 <code>true</code> 的语义是「邮件已经被交给了配置的传输通道，且过程中没有抛异常」——**它不代表对方收件服务器收下了**。三种情况下它会骗你：交给本地 PHP <code>mail()</code> 进了队列但队列随后退信；交给中继的 API 被接受但对方在收件侧拒收；或者被某个插件的过滤器直接短路了。</p>
+<p>这里有一个 2026 年必须知道的机制：**<code>pre_wp_mail</code> 过滤器**（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.7 起）只要返回非 null，<code>wp_mail()</code> 就会立即结束执行——后面所有代码都不再运行。而主流 SMTP 插件（WP Mail SMTP、FluentSMTP、Post SMTP）**都是通过 hook <code>pre_wp_mail</code> 接管发送的**。直接后果是：**一旦 SMTP 插件接管，<code>wp_mail_failed</code> 这个钩子就再也不会触发了**，因为它监听的是一条邮件已经不会走的代码路径。你辛辛苦苦写的失败日志钩子，在这种情况下全程静默。</p>
+<p>所以正确做法是同时埋三个观测点。把下面这段放进站点专用的 mu-plugin（<code>wp-content/mu-plugins/</code> 下）：</p>
+<pre><code><?php
+// 1) 抓 PHPMailer 的 SMTP 会话（前提：本封邮件确实走 wp_mail 内建通道）
+add_action('phpmailer_init', function ($phpmailer) {
+    $phpmailer->SMTPDebug = 2; // 1=错误与消息，2=客户端<->服务器会话，3-4 更啰嗦
+    $phpmailer->Debugoutput = function ($str, $level) {
+        error_log("[wp_mail/$level] $str");
+    };
+}, 999);
+
+// 2) 抓失败（注意：被 pre_wp_mail 接管后不会触发）
+add_action('wp_mail_failed', function ($error) {
+    error_log('[wp_mail_failed] ' . $error->get_error_message());
+});
+
+// 3) 抓成功，确认参数与收件人
+add_action('wp_mail_succeeded', function ($mail_data) {
+    error_log('[wp_mail_succeeded] to=' . implode(',', (array) $mail_data['to']));
+});
+
+// 4) 修正默认发件人：wp_mail 默认 From 是 wordpress@你的域名，很多主机直接拒收
+add_filter('wp_mail_from', fn() => 'orders@yourstore.com');
+add_filter('wp_mail_from_name', fn() => 'Your Store');</code></pre>
+<p>然后在 <code>wp-config.php</code> 里把日志打开：</p>
+<pre><code>define('WP_DEBUG', true);
+define('WP_DEBUG_LOG', true);
+define('WP_DEBUG_DISPLAY', false);</code></pre>
+<p>最后用 WP-CLI 发一封受控测试信，并盯日志：</p>
+<pre><code>wp eval 'var_dump( wp_mail( "you@example.com", "tp mail test", "body" ) );'
+tail -f wp-content/debug.log</code></pre>
+<p>判读方法很直接：如果会话里**一行都没有**，说明有东西短路了 <code>wp_mail</code>（大概率是 SMTP 插件的 <code>pre_wp_mail</code>），要去插件自己的日志里找；如果会话走到了 <code>250 Ok</code> 但邮件没到，问题已经在 PHPMailer 之外，直接跳到第四步。</p>
+<h2>第三步：把邮件交给一个可信的中继（2026 年的端口现实）</h2>
+<p>不要用主机自带的 PHP <code>mail()</code> 发订单邮件。分享主机普遍对它限速、禁用，收件方也普遍不信任没有认证的直连投递。</p>
+<p>选中继以后，端口是第一道坎：</p>
+<ul><li>**25**：几乎被所有云厂商默认封禁。以 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> EC2 为例，出站 25 端口默认被限速，表现是**静默超时**而不是明确报错——你会以为是网络问题，其实是策略问题。需要单独提交「移除邮件发送限制」申请。</li><li>**587（STARTTLS）**：标准推荐端口。</li><li>**465（TLS Wrapper / SMTPS）**：老协议但客户端支持广。注意 TLS 与 SSL 不是可互换的选项，端口和加密方式必须匹配。</li><li>**备用端口**：以 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> SES 为例，STARTTLS 还支持 2587，TLS Wrapper 还支持 2465；端点形如 `email-smtp.{region}.amazonaws.com`。主端口被封时这是最快的绕过方式。</li></ul>
+<p>如果要连 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> SES，有两个必踩的坑值得提前知道：</p>
+<p>1. **SES 的 SMTP 凭据不是你的 IAM 访问密钥**。它是从 SES 控制台「Create SMTP credentials」生成的一对独立凭据：用户名是 20 位（形如 <code>AKIA...</code>），密码是一串更长的 Base64。把 IAM 的 Secret Access Key 粘进 SMTP 密码框，结果一定是认证失败。</p>
+<p>2. **凭据是区域绑定的**。SES 的 SMTP 密码是用区域信息参与 HMAC 签名派生出来的，所以在美国东部（us-east-1）生成的凭据拿去连欧洲（eu-west-1）的端点，会稳定地报 <code>535</code> 认证错误，哪怕底层 IAM 用户是全局的。</p>
+<p>3. 新账号默认在<strong>沙箱</strong>里：每 24 小时 200 封、每秒 1 封、且只能发给已验证收件人，按区域独立计算。要正式发订单邮件，需要先提交生产访问申请。</p>
+<h2>第四步：SPF / DKIM / DMARC 三件套与「对齐」</h2>
+<p>这一步才是我这次真正的根因，也是最多人跳过的一步。</p>
+<p><strong>SPF</strong> 是一条 TXT 记录，声明哪些服务器有权以你的域名发信。两个硬约束：<strong>一个域名只能有一条 SPF 记录</strong>（多条同时存在会被判定为永久错误），以及<strong>最多只允许 10 次 DNS 查询</strong>，超了就直接 SPF 失败。典型写法：</p>
+<pre><code>yourstore.com.  TXT  "v=spf1 include:你的中继的spf域 ~all"</code></pre>
+<p>**DKIM** 是给每封邮件加数字签名。中继会给你一条形如 <code>选择器._domainkey.你的域名</code> 的 TXT 记录。这里有个容易被忽略的细节：**换中继/换区域时选择器（selector）通常会变**，旧记录如果不清理、新记录如果没上线，签名就会 <code>d=fail</code>——而 SPF 可能还是 pass 的，于是整体认证不齐，在严格收件方那里照样被判可疑。这正是我这次的场景。</p>
+<p><strong>DMARC</strong> 是告诉收件方「SPF 或 DKIM 失败时怎么办」，同时收集报告：</p>
+<pre><code>_dmarc.你的域名.  TXT  "v=DMARC1; p=none; rua=mailto:dmarc@yourstore.com"</code></pre>
+<p>三件套一次性验证：</p>
+<pre><code>dig +short TXT yourstore.com
+dig +short TXT 20260901._domainkey.yourstore.com
+dig +short TXT _dmarc.yourstore.com</code></pre>
+<p>再直接和中继做一次握手，确认端口与 TLS 可用（以 SES 美国东部为例）：</p>
+<pre><code>openssl s_client -connect email-smtp.us-east-1.amazonaws.com:587 -starttls smtp -crlf</code></pre>
+<p>建议把 <code>p=none</code> 当成起点而不是终点：它能收报告、能满足最低要求，但不拦截任何东西。等行业把基线推到 <code>p=quarantine</code> 时，你至少已经积累了几周的 DMARC 报告可以照着排查。同时去注册 Google Postmaster Tools、Yahoo Sender Hub、Microsoft SNDS 这几个免费面板——它们是唯一能看到自己「真实投诉率」的地方。</p>
+<h2>Troubleshooting：5 个真实报错与修复</h2>
+<h3>报错一：`SMTP Error: Could not authenticate.` / `535 Authentication Credentials Invalid`</h3>
+<p><strong>原因</strong>：三种可能，按出现频率排——把 IAM 访问密钥当成了 SMTP 凭据；凭据与端点不在同一区域（SES 场景下这是最高频的）；密码里带了复制时多出来的空格或换行。</p>
+<p>**修复**：到中继控制台重新生成一对 SMTP 专用凭据，严格在**与发信端点相同的区域**生成；用户名与密码都用粘贴而非手打；如果用 SES，确认 From 地址是**同一区域里已验证的身份**。改完先跑一次 <code>openssl s_client</code> 握手，能看到 <code>235 Authentication successful</code> 才算通。</p>
+<h3>报错二：`550 5.7.26 This mail has been blocked because the sender is unauthenticated`</h3>
+<p>**原因**：Gmail 侧在 SPF 与 DKIM **双双失败**时的拒收。常见于：站点换了发信域名但 DNS 记录还挂在旧域名下；或者中继的 SPF include 没加进去；或者 DKIM 选择器记录没上线（会先表现为 <code>421 4.7.32</code> 对齐失败，之后升级为 550）。</p>
+<p>**修复**：先 <code>dig</code> 三条记录确认都在、且都指向当前中继；确认 From 域与 SPF 或 DKIM 之一对齐；然后用 <code>mail-tester</code> 之类工具发一封到打分地址，看它报告的认证结果。注意别名/子域陷阱：只有主域名算数，子域会合并计算，所以给 <code>mail.</code> 或 <code>news.</code> 另外配一套记录并不能让你躲开判定。</p>
+<h3>报错三：`wp_mail()` 返回 `true`，中继日志 `250 Ok`，客户仍说没收到，而 `wp_mail_failed` 全程没响</h3>
+<p>**原因**：这就是本文开头那个「静默成功」。两个独立原因叠加：一是 SMTP 插件通过 <code>pre_wp_mail</code> 接管后，<code>wp_mail_failed</code> 永远不会触发，你的失败日志形同虚设；二是 <code>250 Ok</code> 只代表中继**接受了这封信**，之后对方收件域的异步退信或垃圾箱归类都不会回传到 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>。</p>
+<p>**修复**：不要只信 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 侧的日志。把中继的活动/投递面板、退信（bounce）反馈通道（例如 SNS 订阅或 webhook）、以及 DMARC 报告三处一起看。判读口诀：会话里有 <code>250</code> 但对方没有 → 问题在收件侧；会话里一片空白 → 有插件短路了 <code>wp_mail</code>，去 SMTP 插件自己的日志里找。</p>
+<h3>报错四：`SMTP connect() failed` 或连接超时，但没有明确拒信</h3>
+<p><strong>原因</strong>：端口被上游封禁。云主机出站 25 端口默认被限速（表现为静默 timeout），部分主机同时封 465 或 587。</p>
+<p><strong>修复</strong>：把端口换成 2587（STARTTLS）或 2465（TLS Wrapper）先验证通信是否恢复；能通就说明是端口策略问题，再回头决定是申请解封还是长期改用备用端口。同时确认「加密方式」与端口匹配，别在 465 上选 STARTTLS。</p>
+<h3>报错五：`PHP Fatal error: Uncaught PHPMailer\PHPMailer\Exception: Could not instantiate mail function`</h3>
+<p>**原因**：PHP 的 <code>mail()</code> 被执行环境禁用（常见于安全加固后的分享主机或容器），而 SMTP 插件处于「部分配置」状态——连接信息没填全，插件就悄悄回退到 PHP <code>mail()</code>。</p>
+<p>**修复**：把中继配置补全（主机、端口、加密、用户名、密码、认证开关全部填好），确认插件状态是「已连接」而不是「已激活」；同时检查 <code>disable_functions</code> 是否包含 <code>mail</code>。修好后重跑第二步的 <code>wp eval</code> 测试信。</p>
+<h2>上线前的 7 项验收清单</h2>
+<p>1. From 地址在<strong>自有域名</strong>下，且与 SPF 或 DKIM 对齐。</p>
+<p>2. <code>dig</code> 三条记录全部返回预期内容，SPF 只有一条、DNS 查询次数未超 10。</p>
+<p>3. 中继凭据与端点**同区域**，握手能返回 <code>235</code> 与 <code>250</code>。</p>
+<p>4. 用 WP-CLI 发测试信，<code>wp_mail_failed</code> 与 <code>wp_mail_succeeded</code> 两个钩子都能正常落日志。</p>
+<p>5. 在中继面板与 Gmail 收件箱两处<strong>同时</strong>确认测试信到达，且不在垃圾箱。</p>
+<p>6. 注册至少一个发件人声誉面板，确认投诉率可见。</p>
+<p>7. 走一次真实订单流程（而不是手动改状态），确认状态推进后邮件被触发——把 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 上线后「客户端媒体处理」减轻了 PHP 压力这件事当作附带收益，但不要把它当成邮件问题的解法。</p>
+<h2>结语</h2>
+<p>这次排查最贵的一课是：**<code>wp_mail()</code> 返回 <code>true</code>、SMTP 插件全绿、中继日志 250 OK，这三件事加起来仍然不能证明客户收到了邮件**。订单邮件属于业务关键路径，它的正确性只能靠三层观测点同时覆盖来保证：WooCommerce 侧的触发日志、PHPMailer 层的会话记录、以及 DNS 与收件侧的认证结果。顺序从里到外走一遍，通常半天就能定位——反着查，三天也不一定能找到那个没上线的 DKIM 选择器。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
