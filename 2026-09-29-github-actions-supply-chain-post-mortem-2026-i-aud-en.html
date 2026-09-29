@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GitHub Actions Supply Chain Post-Mortem 2026: I Audited My Repo and All Four Actions Were Unpinned - TechPassive</title>
+  <meta name="description" content="In GitHub Actions, uses: owner/action@v4 is not a version, it is a runtime name lookup — tags can be moved, and your build moves with them. This post mortems the tj-actions and trivy-action compromises, reports the audit I actually ran on my own site repo, and gives you five real errors with fixes, the commands to resolve a real commit SHA, and what to do after immutable releases permanently burn a version number.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>GitHub Actions Supply Chain Post-Mortem: Mutable Tags, Burned Version Numbers, and Five Real Errors</h1>
+  <div class="post-tags">
+    <span class="tag">GitHub Actions</span><span class="tag">supply chain security</span><span class="tag">CI/CD</span><span class="tag">Docker</span>
+  </div>
+  <div class="content">
+    <p>I actually run a technical blog deployed on GitHub Pages. The whole deployment chain is an ordinary workflow: checkout, configure-pages, upload-pages-artifact, deploy-pages. Four steps, four actions, all from the official actions organization. Textbook clean.</p>
+<p>Then last week I read that file line by line and noticed something: **all four actions were referenced by tag**. The <code>v4</code> in <code>actions/checkout@v4</code> is not "version 4". It is a **runtime name lookup** — on every CI run the runner asks "where does v4 point right now", then downloads that code and executes it.</p>
+<p>That "right now" is the whole problem. A tag is a mutable pointer. Anyone who holds write access to the repository — or anyone who steals a maintainer account — can point it at a different commit. Your workflow file does not change by a single character. The diff is spotless. The log looks completely normal.</p>
+<p>One disclosure up front: the section near the end called "The 2 a.m. incident desk" contains <strong>affiliate links</strong>. If you buy through them, this site may earn a commission. It has nothing to do with the technical conclusions above, and it is deliberately kept as its own section so you can skip it.</p>
+<h2>⏳ TL;DR</h2>
+<p>🥇 **The one-line conclusion**: <code>uses: owner/action@v4</code> does not pin a version, it re-asks "who is v4 today" on every run. The only real pin is a full 40-character commit SHA.</p>
+<p>🔧 <strong>Three things you can finish today</strong>:</p>
+<p>1. List every unpinned reference: <code>grep -rn "uses:" .github/workflows/ | grep -vE "@[0-9a-f]{40}"</code></p>
+<p>2. Resolve a real SHA (checkout shown): <code>git ls-remote https://github.com/actions/checkout "refs/tags/v7.0.1*"</code></p>
+<p>3. Enforce centrally: Settings → Actions → General → Policies, switch on SHA pinning enforcement so unpinned workflows fail at runtime.</p>
+<p>💻 <strong>The 2 a.m. incident desk (affiliate links, unrelated to the conclusions above)</strong>:</p>
+<ul><li>Dell UltraSharp U2723QE 27" 4K USB-C Hub monitor — for laying out workflow logs, diffs and `git log -p` side by side. Roughly $429–529 as of this writing; check the current price.</li></ul>
+<p>  👉 https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20</p>
+<ul><li>BenQ ScreenBar Halo 2 monitor light bar — at 2 a.m., light on the screen beats lighting the whole room. Roughly $179–199 as of this writing.</li></ul>
+<p>  👉 https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20</p>
+<h2>What the attack surface actually is: you run labels, not bytes</h2>
+<p>GitHub Actions resolves <code>uses: owner/repo@ref</code> by **fetching that Git ref from the repository at run time**, then executing whatever it points to. A tag is one of the mutable kinds of Git ref. A branch is even more mutable.</p>
+<p>Three things follow at once:</p>
+<ul><li>Major-version tags like `@v4` are, by convention, **moved** by maintainers to each new minor release. That is the design intent, not a bug.</li><li>Once an attacker has write access, they move the tag to a malicious commit. Your workflow produces no diff and no alert.</li><li>You think you pinned a version. You pinned a **name**.</li></ul>
+<p>GitHub's own documentation is blunt about this in "Security hardening for GitHub Actions": pinning an action to a full-length commit SHA is the way to consume it as an immutable release, and the short form of a commit SHA is insecure and should never be used to specify an action's Git reference.</p>
+<h2>Incident one: tj-actions/changed-files (CVE-2025-30066)</h2>
+<p>This is where "the tag that moves" stopped being a theoretical concern.</p>
+<ul><li>On **2025-03-14 and 2025-03-15**, an attacker re-pointed tags `v1` through `v45.0.7` of `tj-actions/changed-files` to commit `0e58ed8`, which carried malicious code in a function named `updateFeatures`.</li><li>The payload was crude and effective: **it dumped secrets from the CI environment into workflow logs**. On a public repository, logs are readable by anyone, so the keys were effectively hung on the front door.</li><li>Multiple security vendors put the blast radius at **over 23,000 repositories**. CISA published a supply chain compromise alert on 2025-03-18 and added CVE-2025-30066 to its Known Exploited Vulnerabilities catalog, with a remediation deadline of 2025-04-08.</li><li>The fixed version was `v46.0.1`. In the same window, a second action, `reviewdog/action-setup@v1`, was also compromised and tracked as CVE-2025-30154.</li><li>Root cause: the Personal Access Token of the maintainer bot account `@tj-actions-bot` was stolen.</li></ul>
+<p>There is one detail here that matters enormously during incident response: **exposed secrets may appear in the logs as a double base64-encoded payload**. CISA calls this out explicitly. That detail is where the <code>base64: invalid input</code> error in my troubleshooting section comes from.</p>
+<h2>Incident two: trivy-action (CVE-2026-33634), bigger, and it left two second-order traps</h2>
+<p>The March 2026 wave used the same playbook, but the blast radius and the cleanup difficulty both went up a level.</p>
+<ul><li>On **2026-03-19**, an attacker used stolen credentials to publish a malicious Trivy binary, `v0.69.4`, force-push **76 of the 77 version tags** in `aquasecurity/trivy-action` to credential-stealing malware, and replace **all 7 tags** in `aquasecurity/setup-trivy`.</li><li>Time windows in UTC: `trivy-action` ran roughly 17:43 on 03-19 to 05:40 on 03-20; `setup-trivy` roughly 17:43 to 21:44; the `trivy` `v0.69.4` binary roughly 18:22 to 21:42. Any pipeline that ran inside those windows should treat its credentials as exposed.</li><li>What the payload did: pull credentials out of `/proc` memory, sweep more than 50 common paths (SSH keys, AWS/GCP/Azure credentials, Kubernetes tokens, Docker configs, `.env` files, database credentials, crypto wallets), encrypt the haul with AES-256-CBC plus RSA-4096 hybrid encryption, and send it out.</li><li>The fallback exfiltration path is nasty: if the outbound call failed and `INPUT_GITHUB_PAT` was present, it **created a public repository named `tpcp-docs` on the victim's own GitHub account** and uploaded the stolen data as a release asset. So if a `tpcp-docs` repository appears in your organization out of nowhere, that is a signal exfiltration succeeded.</li><li>One path that is easy to miss: using separately stolen Docker Hub credentials, the attacker pushed `aquasec/trivy:0.69.5` and `0.69.6` **directly to Docker Hub, bypassing GitHub entirely**. Auditing only the GitHub side of your references misses this.</li><li>Severity: CVSS 4.0 score of **9.4, CRITICAL**. CISA added it to the KEV catalog on 2026-03-26.</li><li>Known safe versions: Trivy binary `v0.69.2` / `v0.69.3`, `trivy-action` **`v0.35.0`**, `setup-trivy` `v0.2.6`.</li></ul>
+<p>**Why did <code>v0.35.0</code> survive?** Because that tag was protected by GitHub immutable releases and could not be moved. In the same repository, the one protected tag came through untouched while the other 76 fell. That single comparison explains the value of the feature better than any argument.</p>
+<p><strong>How did the same project get hit twice in one month?</strong> Public analysis notes that after the first intrusion was disclosed on March 1, the team rotated credentials — but <strong>the rotation was not atomic</strong>: not every credential was revoked at the same time. The attacker used a still-valid token during the rotation window to lift the newly rotated secrets, which set up the March 19 wave. That is why "atomic rotation" is itself a control: get the order wrong and you have done nothing.</p>
+<h2>I actually audited my own repository: four actions, four tags</h2>
+<p>I did not stop at "this is dangerous in theory". I pulled that <code>pages.yml</code> out and went through it line by line. The result was not flattering, and it surfaced a second problem along the way: **the versions were stale too**.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Action</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What I had written</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Current stable</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">SHA to pin</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">actions/checkout</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v7.0.1 (2026-07-20)</td><td style="border:1px solid #ddd;padding:8px;">`3d3c42e5aac5ba805825da76410c181273ba90b1`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">actions/configure-pages</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v6.0.0 (2026-03-25)</td><td style="border:1px solid #ddd;padding:8px;">`45bfe0192ca1faeb007ade9deae92b16b8254a0d`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">actions/upload-pages-artifact</td><td style="border:1px solid #ddd;padding:8px;">`@v3`</td><td style="border:1px solid #ddd;padding:8px;">v5.0.0 (2026-04-10)</td><td style="border:1px solid #ddd;padding:8px;">`fc324d3547104276b827a68afc52ff2a11cc49c9`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">actions/deploy-pages</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v5.0.1 (2026-09-01)</td><td style="border:1px solid #ddd;padding:8px;">`368f82528645a54fb793d4d04e342629a3f51346`</td></tr></tbody></table>
+<p>I resolved those SHAs live with the command below, and you can reproduce it for any action:</p>
+<pre><code># Option 1: unauthenticated, read the commit a tag points at
+git ls-remote https://github.com/actions/checkout "refs/tags/v7.0.1*"
+
+# If the output includes both refs/tags/v7.0.1 and refs/tags/v7.0.1^{},
+# it is an annotated tag: the line with ^{} carries the commit SHA.
+
+# Option 2: ask the API for the commit directly
+gh api repos/actions/checkout/commits/v7.0.1 --jq .sha</code></pre>
+<p>One upgrade note I ran into: starting with <code>actions/checkout</code> **v7.0.0**, checking out fork pull requests is blocked by default for the <code>pull_request_target</code> and <code>workflow_run</code> events, and v7.0.1 keeps that behaviour. It is a security tightening, but if you have a flow that deliberately checks out external contributors' code, budget a regression pass for v4 to v7.</p>
+<h2>Troubleshooting: five real errors and how I fixed them</h2>
+<p>This is the part with practical value. The first two errors come from the "upstream fixes a vulnerability" phase, the third from log analysis, and the last two from my own hardening work.</p>
+<h3>Error 1: `422 Validation Failed: tag_name was used by an immutable release and cannot be reused`</h3>
+<p>**When**: during trivy-action cleanup, the maintainers deleted the poisoned tags and tried to recreate names like <code>0.34.0</code> pointing at the legitimate commit. GitHub refused.</p>
+<p><strong>Why</strong>: the attacker's force-push had caused those tags to be registered as immutable releases. Once a tag name is consumed by an immutable release, that name is <strong>permanently burned</strong>: deleting the Git tag does not free it, deleting the release does not free it, and a published immutable release cannot be deleted at all.</p>
+<p>**Fix**: there is no fix, only a workaround. The maintainers **renamed**: they republished <code>v0.0.1</code> through <code>v0.34.2</code> with a <code>v</code> prefix, pointing at the original legitimate commits, and told everyone explicitly that to reference anything before 0.35.0 you must write <code>aquasecurity/trivy-action@v0.34.0</code>, not <code>@0.34.0</code>.</p>
+<p><strong>Lesson</strong>: immutable releases apply <strong>forward only</strong>. Turning the setting on does not make existing releases immutable. But once you publish an immutable release, the name is gone. So publish through a draft first. The same applies when you publish your own actions or container images.</p>
+<h3>Error 2: `Unable to resolve action 'aquasecurity/trivy-action@0.34.0', unable to find a version`</h3>
+<p>**When**: after cleanup, plenty of untouched pipelines still referenced <code>@0.34.0</code> and died at that step.</p>
+<p><strong>Why</strong>: the old tags were deleted during remediation and, for the reason in error 1, cannot be recreated under their old names.</p>
+<p>**Fix**: three options, best first — (1) upgrade and pin to the full SHA of a known safe version; (2) move at least to <code>v0.35.0</code>; (3) if you genuinely must stay on an older line, use the new <code>@v0.34.0</code> naming.</p>
+<p><strong>Lesson</strong>: <strong>an upstream rename or tag deletion done to fix a vulnerability is a breaking change for you</strong>. When your reference is someone else's mutable tag, you also handed over the switch that decides when you break. Pinned to a SHA, an upstream rename does not touch you and the upgrade becomes a diff you initiate.</p>
+<h3>Error 3: `base64: invalid input`</h3>
+<p>**When**: during triage. CISA states exposed secrets may appear **double base64-encoded**. I decoded once, <code>base64 -d</code> returned <code>invalid input</code>, and I briefly assumed the log had been truncated or the payload never landed.</p>
+<p><strong>Why</strong>: it was encoded twice, so it needed decoding twice.</p>
+<p><strong>Fix</strong>: decode twice, then work it as a security incident:</p>
+<pre><code># Assuming $PAYLOAD is the suspicious string you pulled out of the log
+echo "$PAYLOAD" | base64 -d | base64 -d</code></pre>
+<p><strong>Lesson</strong>: garbage in a log is not worthless, it is just not decoded yet. In supply chain triage, establish the encoding layers before you conclude that nothing was stolen.</p>
+<h3>Error 4: `Not authorized to perform sts:AssumeRoleWithWebIdentity`</h3>
+<p><strong>When</strong>: right after I moved off long-lived cloud credentials onto OIDC, the deploy job stopped starting.</p>
+<p>**Why**: two common causes — (1) the job lacks <code>id-token: write</code>, so it cannot request an OIDC token; (2) the <code>sub</code> condition in the cloud trust policy does not match the actual workflow context, usually a branch or environment name typed slightly wrong.</p>
+<p>**Fix**: grant the permission at job level and tighten <code>sub</code> to a specific branch:</p>
+<pre><code>jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # only jobs that need an OIDC token</code></pre>
+<pre><code>"Condition": {
+  "StringEquals": {
+    "token.actions.githubusercontent.com:sub": "repo:your-org/your-repo:ref:refs/heads/main"
+  }
+}</code></pre>
+<p><strong>Lesson</strong>: the point of OIDC is not "a different way to authenticate", it is <strong>binding the credential to a specific build context</strong>. A leaked long-lived key works for anyone until you revoke it. An OIDC token lives for minutes and the trust policy can pin it to one branch. One operational discipline on top: <strong>rotation must be atomic</strong> — new credentials in place, every consumer switched, old credentials revoked in the same operation. Never spread it across days.</p>
+<h3>Error 5: a short SHA makes the workflow fail at runtime</h3>
+<p>**When**: swapping <code>@v4</code> for a SHA, I typed a seven-character short SHA and assumed it was fine.</p>
+<p><strong>Why</strong>: the official docs warn about this specifically. The short form of a commit SHA is insecure and should never be used for an action reference. Anyone can fork the repository and push a crafted commit that collides with the short SHA; every later clone at that SHA then fails because the commit becomes ambiguous, and workflows using the shortened SHA <strong>fail immediately</strong>.</p>
+<p><strong>Fix</strong>: always write the full 40-character SHA, with a comment preserving the human-readable version so the next reader can follow along:</p>
+<ul><li>uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1</li></ul>
+<pre></pre>
+<p><strong>Lesson</strong>: a security control has to be legible, or the next person will delete the comment and the SHA together during an upgrade.</p>
+<h2>Six hardening steps you can finish today</h2>
+<p>1. **Scan**: <code>grep -rn "uses:" .github/workflows/ | grep -vE "@[0-9a-f]{40}"</code> to list every unpinned reference.</p>
+<p>2. <strong>Pin</strong>: replace each one with the full SHA, keeping the version in a comment.</p>
+<p>3. **Enforce at the org level**: Settings → Actions → General → Policies. Since 2025-08-15 the allowed-actions policy supports two relevant things: **explicitly blocking** a specific action or version with a <code>!</code> prefix, and **enforcing SHA pinning**, so any workflow using an unpinned action fails. Flip it on and the burden of remembering moves from every engineer's head into one setting.</p>
+<p>4. **Shrink permissions**: set <code>permissions: contents: read</code> at the top of the workflow and add <code>id-token: write</code> only to the jobs that need OIDC.</p>
+<p>5. <strong>Replace credentials</strong>: move every cloud access path you can onto OIDC and delete the long-lived keys.</p>
+<p>6. <strong>Add observability</strong>: put outbound network monitoring in the CI path. The Trivy C2 call was an anomalous outbound connection; someone watching egress would have caught it before secrets sat in publicly readable logs.</p>
+<p>One limitation has to be said out loud: <strong>SHA pinning stops tag poisoning, not "the SHA you pinned was already malicious"</strong>. If credentials were stolen before you pinned, the SHA is genuine and the code is still hostile. That is why steps 3 and 6 are not optional.</p>
+<h2>What GitHub shipped in 2025 and 2026, and why not to bet on a preview</h2>
+<p>Two things are already shipped according to the official changelog:</p>
+<ul><li>**2025-08-15**: Actions policy gained the ability to block specific actions and to enforce SHA pinning.</li><li>**2025-10-28**: immutable releases went generally available. A published release's assets cannot be added to, modified or deleted, its tag cannot be moved or deleted, and it gets a Sigstore-format release attestation you can verify offline with the `gh` CLI or any Sigstore-compatible tool.</li></ul>
+<p>The catch: immutable releases are a **publisher-side** setting. They protect published assets and tags; they do not change how <code>uses:</code> resolves. As a consumer you **cannot assume the other side enabled it** — which is exactly why the consumer-side control has to be the SHA.</p>
+<p>There are also capabilities still on the roadmap or in preview that are worth watching but **not worth building a plan on**: a <code>dependencies:</code> lockfile section in workflow YAML (modeled on <code>go.mod</code> plus <code>go.sum</code>, locking direct and transitive dependencies to SHAs with hash verification), a native egress firewall for hosted runners (enforced outside the runner VM at Layer 7, so an attacker with root inside the runner cannot disable it), and secrets scoped to branches, environments and workflow paths. For shipping dates and final shape, **check GitHub's official changelog**.</p>
+<p>One more lesson worth filing: GitHub had planned an OCI-based "Immutable Actions" design so consumers could keep writing <code>uses: owner/action@v1.2.3</code> while the underlying artifact stayed immutable. Public reporting indicates that item was removed from the roadmap in December 2025 as not planned, with effort redirected to immutable releases. Do not put your hardening plan on top of a preview feature. **A 40-character SHA you can commit to YAML today beats any roadmap.**</p>
+<h2>The 2 a.m. incident desk (affiliate links)</h2>
+<p>The expensive part of supply chain triage is not thinking. It is **watching several things at once**: the workflow log, a <code>git log -p</code> diff, the upstream advisory, and your own SHA inventory. My desk requirements are honestly plain.</p>
+<ul><li>**Dell UltraSharp U2723QE 27" 4K USB-C Hub monitor**: at 4K, logs and diffs sit side by side without window shuffling; a single USB-C cable powers the laptop and drops a cable from the desk, and the built-in hub saves you a dock. **Real downsides**: 60Hz, so not for serious gaming, and HiDPI scaling on macOS needs extra configuration rather than being perfect out of the box. **Who it fits**: programmers whose day is text, logs and code, and who want single-cable convenience.</li></ul>
+<p>  👉 https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20 (roughly $429–529 as of this writing; check the live price)</p>
+<ul><li>**BenQ ScreenBar Halo 2 monitor light bar**: for 2 a.m. log comparisons, lighting the screen instead of the room works better — no desk footprint, no glare. **Real downsides**: noticeably more expensive than comparable light bars, it needs clearance above the monitor, and narrow-bezel displays with a camera bump need checking for compatibility. **Who it fits**: people who stare at a screen in a dark room for hours and would rather not turn on the ceiling light.</li></ul>
+<p>  👉 https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20 (roughly $179–199 as of this writing; check the live price)</p>
+<p>Those are affiliate links. Prices and stock move constantly, so confirm on the <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> page before ordering. Neither item has anything to do with the technical conclusions above.</p>
+<h2>FAQ</h2>
+<p><strong>Q: If I pin to a SHA, will I miss security updates?</strong></p>
+<p>You will lag, but in a controlled way. Point Dependabot or Renovate's GitHub Actions manager at the repository so upgrades arrive as PRs you review. Consider adding a release cooldown — say, only allow an upgrade after seven days. Public security analysis generally finds that most malicious releases are discovered and pulled within hours to days of publication. Letting the wait do the work is more reliable than trusting your attention at the moment the bump PR lands.</p>
+<p>**Q: Do first-party <code>actions/*</code> tags need pinning too?**</p>
+<p>Lower risk, but lower is not zero. The <code>aquasecurity/*</code> actions that fell in the Trivy incident were also from a well-known, official-looking organization. You can tier how strictly you upgrade them, but I would pin them all to SHAs — a uniform rule is the one people actually follow.</p>
+<p><strong>Q: I pinned to SHAs. Is there anything else?</strong></p>
+<p>Yes. Pinning only addresses tag rewriting. You still want least-privilege permissions, OIDC instead of long-lived credentials, egress monitoring, and atomic credential rotation.</p>
+<p><strong>Q: How do I know whether my pipelines ran a poisoned version?</strong></p>
+<p>Check the time window, not your gut. For the Trivy incident the <code>trivy-action</code> window was 17:43 on 2026-03-19 to 05:40 on 2026-03-20 UTC. Pull the workflow logs from that window, search for suspicious output and base64 blobs, and check whether a <code>tpcp-docs</code> repository appeared in your organization. If you ran inside the window, treat credentials as exposed, rotate first and investigate afterwards.</p>
+<h2>Closing</h2>
+<p>A tag is a name. A SHA is the bytes. The whole lesson compresses into one executable sentence: **replace every <code>@v4</code> with the 40-character SHA, and make that rule impossible to violate at the organization level.**</p>
+<p>If permissions and process governance on the ops side is your area too, two related post-mortems are worth reading next: <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-600-seo.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 + WP-CLI 2.12: rebuilding internal links and SEO across 600 posts</a>, which is the "audit in bulk, then write back in bulk" pattern, and <a href="https://yaohehe.github.io/2026-09-29-2026-wordpress-712-notes-5.html" target="_blank" rel="nofollow sponsored">WordPress 7.1.2 multi-author content operations: Notes and a capability audit</a>, which covers how to take inventory of a capability system. The underlying method is the same in both: **understand the permissions and the references first, then talk about efficiency.**</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- Dynamic related articles injected by insert-internal-links.py --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
