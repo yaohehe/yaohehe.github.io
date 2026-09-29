@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2026 GitHub Actions 供应链投毒踩坑复盘：标签被改写之后，我审计出自己 4 个 action 全是未固定引用 - TechPassive</title>
+  <meta name="description" content="GitHub Actions 里写的 @v4 不是版本号，而是一次运行时的名称查询——标签可以被改写，你的构建也会跟着被改写。本文复盘 tj-actions 与 trivy-action 两起真实供应链投毒事件的完整链条，给出我实际在自建站点仓库上跑出的审计结果、5 个真实报错的定位与修法、可复制的 SHA 固定命令，以及不可变发布把版本号「烧掉」之后的补救路径。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>GitHub Actions 供应链踩坑实录：会动的 tag、被烧掉的版本号，与 5 个真实报错的修法</h1>
+  <div class="post-tags">
+    <span class="tag">GitHub Actions</span><span class="tag">供应链安全</span><span class="tag">CI/CD</span><span class="tag">Docker</span>
+  </div>
+  <div class="content">
+    <p>我实际维护一个跑在 GitHub Pages 上的技术博客，部署链是一条再普通不过的 workflow：checkout、configure-pages、upload-pages-artifact、deploy-pages 四步，四个都来自官方 actions 组织。看起来干净得像教科书。</p>
+<p>直到上周我把这个文件逐行读了一遍，才发现一件事：**这四个 action，四个都是用标签引用的**。<code>actions/checkout@v4</code> 里的 <code>v4</code> 不是"版本 4"，而是一次**运行时的名称查询**——每次跑 CI，runner 都会去问一句"现在 v4 指向哪个 commit"，然后拉那份代码来执行。</p>
+<p>问题就出在这个"现在"上。标签是可变指针。拿到仓库写权限的人（或者拿到维护者账号的人）可以把它指向另一个 commit，而你的 workflow 文件一个字符都不会变，diff 一片干净，日志看起来一切正常。</p>
+<p>先把利益关系说清楚：本文末尾有一个「深夜应急响应工位」小节，其中的 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 链接是<strong>联盟链接</strong>；你通过这些链接下单，本站可能获得佣金。它和前面的技术结论完全无关，单独成节、方便你直接跳过。</p>
+<h2>⏳ 太长不看版（TL;DR）</h2>
+<p>🥇 **一句话结论**：<code>uses: owner/action@v4</code> 不是在锁定版本，而是每次运行都重新问一遍"v4 现在是谁"。真正的锁定只有一种写法——40 位完整 commit SHA。</p>
+<p>🔧 <strong>今天就能做完的三件事</strong>：</p>
+<p>1. 扫出所有未固定的引用：<code>grep -rn "uses:" .github/workflows/ | grep -vE "@[0-9a-f]{40}"</code></p>
+<p>2. 取出真实 SHA（以 checkout 为例）：<code>git ls-remote https://github.com/actions/checkout "refs/tags/v7.0.1*"</code></p>
+<p>3. 在组织层强制：Settings → Actions → General → Policies 打开 SHA pinning 强制开关，未固定的 workflow 运行期直接失败。</p>
+<p>💻 <strong>深夜应急响应工位（联盟链接，与本节的结论无关）</strong>：</p>
+<ul><li>Dell UltraSharp U2723QE 27" 4K USB-C Hub 显示器 —— 同时铺开 workflow 日志、diff 与 `git log -p` 的刚需 | 约 $429–529（截至发稿，价格请以实际为准）</li></ul>
+<p>  👉 https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20</p>
+<ul><li>BenQ ScreenBar Halo 2 显示器挂灯 —— 凌晨两点的日志比对，屏幕补光比顶灯管用 | 约 $179–199（截至发稿，价格请以实际为准）</li></ul>
+<p>  👉 https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20</p>
+<h2>攻击面到底是什么：你运行的是标签，不是字节</h2>
+<p>GitHub Actions 解析 <code>uses: owner/repo@ref</code> 的方式是：**在运行那一刻去仓库取这个 Git ref**，再执行它指向的代码。tag 属于 Git ref 里的"可变指针"，分支更是。</p>
+<p>这就意味着三件事同时成立：</p>
+<ul><li>`@v4` 这类主版本标签，按惯例会被维护者**移动**到每个新的小版本，这是它的设计意图，不是漏洞。</li><li>攻击者拿到写权限后，把标签移动到恶意 commit，你的 workflow 不会产生任何 diff，也没有告警。</li><li>你以为在"钉版本"，实际上只是钉了一个**名字**。</li></ul>
+<p>官方文档在 "Security hardening for GitHub Actions" 里把话说得很直：把一个 action 钉到完整 commit SHA，是当前把它当成不可变发布来用的做法；短 SHA 不安全，任何时候都不应该拿来指定 action 的 Git 引用。</p>
+<h2>事件一：tj-actions/changed-files（CVE-2025-30066）</h2>
+<p>这是"会动的标签"头一次以大规模事故的形式进入大众视野。</p>
+<ul><li>**2025-03-14 与 2025-03-15**，攻击者把 `tj-actions/changed-files` 的 `v1` 到 `v45.0.7` 这批标签全部改指到 commit `0e58ed8`，其中夹带了名为 `updateFeatures` 的恶意代码。</li><li>恶意代码的作用很朴素：**把 CI 环境里的 secrets 打到 workflow 日志里**。公开仓库的日志谁都能看，等于把钥匙挂到了门口。</li><li>受影响范围，多家安全厂商的统计口径是 **23,000 余个仓库**；CISA 在 2025-03-18 发布供应链投毒警报，并把 CVE-2025-30066 列入已知被利用漏洞目录（KEV），要求 2025-04-08 前完成整改。</li><li>修复版本是 `v46.0.1`。同一波次里，另一个 action `reviewdog/action-setup@v1` 也中招，编号 CVE-2025-30154。</li><li>溯源结论是：维护者机器人账号 `@tj-actions-bot` 的 Personal Access Token 被窃取。</li></ul>
+<p>这里有一条对排查非常关键的细节：**被泄露的 secrets 可能以双重 base64 编码的形式出现在日志里**。CISA 的通告里专门点了这一条。这也是我后面踩坑录里那条 <code>base64: invalid input</code> 的来源。</p>
+<h2>事件二：trivy-action（CVE-2026-33634）——规模更大，还留了两个二次坑</h2>
+<p>2026 年 3 月这一波，攻击手法完全一样，但破坏力和"善后难度"都上了一个台阶。</p>
+<ul><li>**2026-03-19**，攻击者使用被盗凭据，发布了恶意的 Trivy 二进制 `v0.69.4`，把 `aquasecurity/trivy-action` 的 **77 个版本标签中的 76 个**强制改写为凭据窃取载荷，并替换了 `aquasecurity/setup-trivy` 的**全部 7 个标签**。</li><li>时间窗（UTC）：`trivy-action` 约 03-19 17:43 至 03-20 05:40；`setup-trivy` 约 17:43 至 21:44；`trivy` 二进制 `v0.69.4` 约 18:22 至 21:42。落在这个窗口里跑过的流水线，凭据都应当视为已泄露。</li><li>载荷的行为：从 `/proc` 内存里抽取凭据，扫描 50 多条常见路径（SSH 私钥、AWS/GCP/Azure 凭据、Kubernetes token、Docker 配置、`.env`、数据库凭据、加密钱包），用 AES-256-CBC 加 RSA-4096 的混合方式加密后外传。</li><li>兜底外泄通道很阴：如果外传失败、而环境里又存在 `INPUT_GITHUB_PAT`，它会在受害者自己的 GitHub 账号下**创建一个公开仓库 `tpcp-docs`**，把窃得的数据当 release 资产传上去。所以事后排查时，组织里凭空多出一个 `tpcp-docs`，就是外泄成功的信号。</li><li>还有一条容易被漏掉的路径：攻击者用另外被窃的 Docker Hub 凭据，**绕过 GitHub**，直接向 Docker Hub 推了 `aquasec/trivy:0.69.5` 和 `0.69.6` 两个镜像。只审计 GitHub 侧的引用，会漏掉这一条。</li><li>严重度：CVSS 4.0 评分 **9.4（CRITICAL）**；CISA 于 2026-03-26 将其列入 KEV。</li><li>已知安全版本：Trivy 二进制 `v0.69.2` / `v0.69.3`，`trivy-action` **`v0.35.0`**，`setup-trivy` `v0.2.6`。</li></ul>
+<p>**为什么 <code>v0.35.0</code> 幸存？** 因为那个标签受 GitHub 不可变发布（Immutable releases）保护，改不动。同一个仓库里，有不可变保护的那个标签毫发无伤，其余 76 个全线失守——这一条对比，比任何理论都更能说明这个功能的实际价值。</p>
+<p><strong>它是怎么在同一个月里被打两次的？</strong> 有公开分析指出，2 月底的首次入侵在 3 月 1 日披露后，团队做了凭据轮换，但<strong>轮换不是原子的</strong>：并不是所有凭据被同时吊销。攻击者在轮换窗口里用仍然有效的旧 token 取走了新一批凭据，于是有了 3 月 19 日的第二波。这也解释了为什么"轮换"本身会被写成一条安全控制——顺序错了，等于没做。</p>
+<h2>我实际审计自己的仓库：4 个 action，4 个都是标签</h2>
+<p>我没有停在"知道这件事很危险"，而是把那个 <code>pages.yml</code> 拿出来逐行过了一遍。结果不太好看，而且顺带暴露了第二个问题：**版本落后**。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">action</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">我当时写的引用</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">当前最新稳定版</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">建议固定的 SHA</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">actions/checkout</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v7.0.1（2026-07-20）</td><td style="border:1px solid #ddd;padding:8px;">`3d3c42e5aac5ba805825da76410c181273ba90b1`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">actions/configure-pages</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v6.0.0（2026-03-25）</td><td style="border:1px solid #ddd;padding:8px;">`45bfe0192ca1faeb007ade9deae92b16b8254a0d`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">actions/upload-pages-artifact</td><td style="border:1px solid #ddd;padding:8px;">`@v3`</td><td style="border:1px solid #ddd;padding:8px;">v5.0.0（2026-04-10）</td><td style="border:1px solid #ddd;padding:8px;">`fc324d3547104276b827a68afc52ff2a11cc49c9`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">actions/deploy-pages</td><td style="border:1px solid #ddd;padding:8px;">`@v4`</td><td style="border:1px solid #ddd;padding:8px;">v5.0.1（2026-09-01）</td><td style="border:1px solid #ddd;padding:8px;">`368f82528645a54fb793d4d04e342629a3f51346`</td></tr></tbody></table>
+<p>表里的 SHA 是我用下面这条命令现取的，你也可以对任意 action 复现：</p>
+<pre><code># 方式一：不带认证，直接取标签指向的 commit
+git ls-remote https://github.com/actions/checkout "refs/tags/v7.0.1*"
+
+# 输出里如果同时出现 refs/tags/v7.0.1 和 refs/tags/v7.0.1^{}，
+# 说明是附注标签（annotated tag），要取带 ^{} 的那一行才是 commit SHA。
+
+# 方式二：用 gh CLI 直接问 commit
+gh api repos/actions/checkout/commits/v7.0.1 --jq .sha</code></pre>
+<p>顺手说一个我在升级时踩到的点：<code>actions/checkout</code> 的 **v7.0.0** 起，为 <code>pull_request_target</code> 和 <code>workflow_run</code> 这两种事件**默认阻止检出 fork 的 PR**，v7.0.1 继续维护这一行为。这是安全方向的收紧，如果你有依赖"检出外部贡献者 PR 代码"的流程，升级 v4 到 v7 需要专门回归一遍。</p>
+<h2>踩坑录：5 个真实报错与修法</h2>
+<p>这一段是本文最有实操价值的部分。前两个报错出在"上游修漏洞"的善后阶段，第三个出在日志排查阶段，后两个出在我自己加固的时候。</p>
+<h3>报错一：`422 Validation Failed: tag_name was used by an immutable release and cannot be reused`</h3>
+<p>**场景**：trivy-action 事件善后时，官方把被污染的旧标签删掉，想让 <code>0.34.0</code> 这类名字重新指向正常 commit，结果被 GitHub 直接拒绝。</p>
+<p><strong>原因</strong>：攻击者的 force-push 让这些标签在 GitHub 侧被登记成了不可变发布。一旦某个标签名被不可变发布占用，这个名字就被<strong>永久烧掉</strong>：删 Git 标签不释放，删 release 也不释放（已发布的不可变 release 本身也删不掉）。</p>
+<p>**修法**：没有修法，只有绕。官方最终的处置是**换名字**——以带 <code>v</code> 前缀的形式重新发布 <code>v0.0.1</code> 到 <code>v0.34.2</code> 指向原始的正常 commit，并在通告里明确写清楚：要引用 0.35.0 以前的版本，请写 <code>aquasecurity/trivy-action@v0.34.0</code>，而不是 <code>@0.34.0</code>。</p>
+<p><strong>教训</strong>：不可变发布是<strong>前向生效</strong>的——打开开关不会让已有 release 变不可变；但一旦发布了不可变 release，这个名字就收不回来。所以发布流程要先出 draft，确认无误再 publish。这一条对"我们自己发布 action 或镜像"同样适用。</p>
+<h3>报错二：`Unable to resolve action 'aquasecurity/trivy-action@0.34.0', unable to find a version`</h3>
+<p>**场景**：善后告一段落，很多还没改的老流水线沿用 <code>@0.34.0</code>，运行直接挂在这一步。</p>
+<p><strong>原因</strong>：旧标签在处置过程中被删除，且因为报错一的原因无法以原名重建。</p>
+<p>**修法**：三条路，按推荐程度排——① 升级并固定到安全版本的完整 SHA；② 至少升到 <code>v0.35.0</code>；③ 如果业务确实锁在老版本，改用新命名的 <code>@v0.34.0</code>。</p>
+<p><strong>教训</strong>：<strong>上游为了修漏洞做的改名和删标签，对你就是一次破坏性变更</strong>。把引用绑在别人的可变标签上，等于把"什么时候 break"的开关也一起交了出去。固定到 SHA 之后，上游改名不影响你，升级变成一次你主动发起的 diff。</p>
+<h3>报错三：`base64: invalid input`</h3>
+<p>**场景**：排查阶段。CISA 通告里写明被泄露的 secrets 可能被**双重 base64 编码**。我头一次只解了一层，<code>base64 -d</code> 直接报 <code>invalid input</code>，一度以为日志被截断或者 payload 没落盘。</p>
+<p><strong>原因</strong>：编码了两层，解码次数不对。</p>
+<p><strong>修法</strong>：解两次，然后按安全事件流程处理：</p>
+<pre><code># 假设 $PAYLOAD 是从日志里抠出来的那段可疑字符串
+echo "$PAYLOAD" | base64 -d | base64 -d</code></pre>
+<p><strong>教训</strong>：日志里的"乱码"不是没价值，只是还没解。排查供应链事件时，先把 payload 的编码层级摸清楚，再判断"是不是真的没偷到东西"。</p>
+<h3>报错四：`Not authorized to perform sts:AssumeRoleWithWebIdentity`</h3>
+<p><strong>场景</strong>：把长期 cloud 凭据换成 OIDC 之后，部署 job 起不来。</p>
+<p>**原因**：两种，都很常见——① job 没有 <code>id-token: write</code> 权限，拿不到 OIDC token；② 云侧 trust policy 里的 <code>sub</code> 条件和实际运行的工作流上下文对不上（分支名、环境名写歪了）。</p>
+<p>**修法**：job 级补权限，并把 <code>sub</code> 收紧到具体分支：</p>
+<pre><code>jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # 需要 OIDC token 的 job 才加</code></pre>
+<pre><code>"Condition": {
+  "StringEquals": {
+    "token.actions.githubusercontent.com:sub": "repo:your-org/your-repo:ref:refs/heads/main"
+  }
+}</code></pre>
+<p><strong>教训</strong>：OIDC 的价值不是"换一种认证方式"，而是<strong>把凭据绑定到具体构建上下文</strong>。长期 key 一旦泄露，在吊销前谁都能用；OIDC token 只有几分钟有效期，而且 trust policy 还能把它钉在某一分支上。顺带一条运维纪律：<strong>轮换要原子</strong>——新凭据就位、消费方全部切过去、旧凭据同一批吊销，不要拆成几天的"慢慢来"。</p>
+<h3>报错五：短 SHA 让 workflow 运行期直接失败</h3>
+<p>**场景**：我把 <code>@v4</code> 换成 SHA 时，随手填了 7 位短 SHA，觉得够用。</p>
+<p><strong>原因</strong>：官方文档专门警告过：短 SHA 不安全，任何时候都不该用来指定 action 引用。因为任何人都能 fork 仓库推一个与之碰撞的 commit，之后所有在该 SHA 上的 clone 都会因为"commit 不明确"而失败；而 workflows 引用了被缩短的 SHA，会<strong>立刻失败</strong>。</p>
+<p><strong>修法</strong>：只写 40 位完整 SHA，后面用注释保留可读版本号，方便下一个人看懂：</p>
+<ul><li>uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1</li></ul>
+<pre></pre>
+<p><strong>教训</strong>：安全控制要能被"读懂"，否则下一个人升级时会把注释和 SHA 一起删掉。</p>
+<h2>今天就能做完的 6 步加固</h2>
+<p>1. **扫描**：<code>grep -rn "uses:" .github/workflows/ | grep -vE "@[0-9a-f]{40}"</code>，把所有未固定的引用列出来。</p>
+<p>2. <strong>固定</strong>：逐条换成完整 SHA，注释保留版本号。</p>
+<p>3. **组织级强制**：进入 Settings → Actions → General → Policies。2025-08-15 起，GitHub 的 allowed actions 策略已经支持两件事——用 <code>!</code> 前缀**显式屏蔽**某个 action 或版本，以及**强制 SHA pinning**（未固定的 workflow 直接运行失败）。把开关打开，记忆的负担就从每个工程师的脑子搬到了一个设置项上。</p>
+<p>4. **收权限**：workflow 顶层写 <code>permissions: contents: read</code>，只在需要 OIDC 的 job 上单独加 <code>id-token: write</code>。</p>
+<p>5. <strong>换凭据</strong>：能上 OIDC 的云访问全部改成 OIDC，把长期 key 清掉。</p>
+<p>6. <strong>加观测</strong>：在 CI 里加一步出站网络监控。Trivy 那波事件的 C2 是一次异常外连，只要有人盯着出站流量，就能在"日志被公开可读"之前发现问题。</p>
+<p>一个必须点出来的局限：<strong>固定 SHA 能挡住标签投毒，但挡不住"你固定的那个 SHA 本身就是恶意的"</strong>。如果凭据是在你固定它之前就被盗的，SHA 是真的，代码是坏的。所以第 3 步的强制策略和第 6 步的观测不能省。</p>
+<h2>GitHub 在 2025 到 2026 年补了什么，以及别把方案押在 preview 上</h2>
+<p>按官方 Changelog 已经落地的两件事：</p>
+<ul><li>**2025-08-15**：Actions 策略支持屏蔽指定 action 与强制 SHA pinning。</li><li>**2025-10-28**：不可变发布正式 GA。发布后的资产不能被增改删，标签不能被移动或删除，同时生成 Sigstore 格式的发布证明，可以用 `gh` CLI 或任意 Sigstore 兼容工具离线校验。</li></ul>
+<p>需要留意的是：不可变发布是**发布者侧**的设置，它保护的是"发布的资产和标签"，并不会改变 <code>uses:</code> 的解析方式。作为消费者，你**不能假设对方开了这个开关**——这就是为什么消费侧的控制必须落在 SHA 上。</p>
+<p>另外有一些仍在路线图或 preview 阶段的能力值得关注，但**不要拿来当方案**：workflow YAML 里的 <code>dependencies:</code> 依赖锁定段（思路对标 <code>go.mod</code> 加 <code>go.sum</code>，把直接与传递依赖都锁到 SHA 并做哈希校验）、托管 runner 的原生出站防火墙（在 runner VM 之外、L7 生效，所以即使攻击者在 runner 里拿到 root 也改不掉）、按分支/环境/workflow 作用域切分的 secrets。这些功能的公开时间与最终形态，我建议你**以 GitHub 官方 Changelog 为准**。</p>
+<p>还有一条值得记下的教训：GitHub 曾规划一种 OCI 形态的 "Immutable Actions"，让消费者继续写 <code>uses: owner/action@v1.2.3</code> 但底层不可变；据公开资料，该条目在 2025 年 12 月被从路线图中移除（标记为 not planned），方向改为不可变发布。我不建议把加固计划压在预览中的功能上——**能今天写进 YAML 的 40 位 SHA，比任何 roadmap 都可靠**。</p>
+<h2>深夜应急响应工位（联盟链接）</h2>
+<p>排查供应链事件最耗的不是脑力，是**同一时间看多份东西**：workflow 日志、<code>git log -p</code> 的 diff、上游的通告、你自己那份 SHA 清单。这对我这块工位的要求其实很朴素。</p>
+<ul><li>**Dell UltraSharp U2723QE 27" 4K USB-C Hub 显示器**：4K 分辨率下左右分屏看日志与 diff 不用来回切窗口，USB-C 一线连同时给笔记本供电，桌面少一根线，自带 Hub 还能省一个扩展坞。**真实缺点**：60Hz 刷新率，重度游戏不适合；对 Mac 的 HiDPI 缩放需要额外设置，不是插上就完美。**适合人群**：以文本、日志、代码为主，需要一线连的程序员。</li></ul>
+<p>  👉 https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20（约 $429–529，截至发稿，请以实际为准）</p>
+<ul><li>**BenQ ScreenBar Halo 2 显示器挂灯**：凌晨两点做日志比对，屏幕补光而非照亮整间屋子的方案更实用，不占桌面、不反光。**真实缺点**：价格明显高于同类挂灯，且需要屏幕上方有一定空间；带摄像头的窄边框显示器需要留意兼容。**适合人群**：经常在暗环境长时间看屏幕、又不想开顶灯的人。</li></ul>
+<p>  👉 https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20（约 $179–199，截至发稿，请以实际为准）</p>
+<p>以上为联盟链接。价格与库存随时变动，下单前请以 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 页面显示为准；这两件装备与本文的技术结论没有关系。</p>
+<h2>常见问题</h2>
+<p><strong>Q：我把 action 固定到 SHA，会不会错过安全更新？</strong></p>
+<p>会滞后，但可控。用 Dependabot 或 Renovate 的 GitHub Actions 管理器盯着，让升级变成一个个你主动 review 的 PR。另外，考虑给版本加一个"发布冷却期"（例如 7 天后再允许升级）——公开的安全分析普遍认为，大多数恶意版本会在发布后数小时到数天内被发现并撤下，把等待交给流程，比把判断交给当下的注意力可靠。</p>
+<p>**Q：官方 actions 组织（<code>actions/*</code>）的标签也要固定吗？**</p>
+<p>风险等级更低，但"更低"不等于零。Trivy 事件里失守的 <code>aquasecurity/*</code> 也是官方维护的知名组织。取值方式可以分级，写法上我建议统一固定到 SHA——规则统一了才有人真的执行。</p>
+<p><strong>Q：已经固定 SHA 了，还要做别的吗？</strong></p>
+<p>要。固定 SHA 只解决"标签被改写"。还需要：权限最小化、OIDC 替代长期凭据、出站网络观测，以及原子化的凭据轮换。</p>
+<p><strong>Q：怎么知道自己的流水线曾经跑过被污染的版本？</strong></p>
+<p>看时间窗，不看感觉。Trivy 事件的窗口是 2026-03-19 17:43 至 03-20 05:40（UTC，<code>trivy-action</code>），把这段时间跑过的 workflow 日志拉出来，搜可疑输出、搜 base64 串、查组织里有没有多出 <code>tpcp-docs</code>。落窗即视为泄露，凭据先轮换再慢慢查。</p>
+<h2>结语</h2>
+<p>标签是名字，SHA 是字节。这场事故的全部教训，最后能压缩成一句可执行的话：**把 <code>@v4</code> 换成 40 位 SHA，并在组织层把这件事变成不能违反的规则。**</p>
+<p>如果你也在做运维侧的权限与流程治理，可以顺着看两篇同类的实战复盘：一篇是 <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-600-seo.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 + WP-CLI 2.12 实战：600 篇文章内链与 SEO 批量重排</a>，讲的是"批量审计再批量写回"这套思路；另一篇是 <a href="https://yaohehe.github.io/2026-09-29-2026-wordpress-712-notes-5.html" target="_blank" rel="nofollow sponsored">WordPress 7.1.2 多人协作内容运营实战：Notes 内联批注与权限审计</a>，讲的是能力体系怎么盘。两篇的底层方法是一样的：**先把权限和引用关系看清楚，再谈效率。**</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+  <div id="related-articles-placeholder" style="margin-top:15px;"><!-- 动态相关阅读由insert-internal-links.py注入 --></div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
