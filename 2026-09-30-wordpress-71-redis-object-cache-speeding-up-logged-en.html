@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.1 + Redis Object Cache: Speeding Up Logged-In Membership Sites (5 Real Errors) - TechPassive</title>
+  <meta name="description" content="Page caching does nothing for logged-in users — and on membership, LMS and paid-content sites most requests bypass it entirely. This guide adds a persistent Redis object cache that moves wp_options, transients and meta queries into memory, with five real errors and fixes (Connection refused, OOM, multisite key collisions, WooCommerce session bleed, stale cache) plus the WP-CLI and redis-cli commands that push the hit rate past 90%.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress 7.1 + Redis Object Cache for Membership Sites</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></span><span class="tag">Redis</span><span class="tag">object cache</span><span class="tag">performance</span><span class="tag">WP-CLI</span><span class="tag">DevOps</span>
+  </div>
+  <div class="content">
+    <p>I actually maintain a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> site with 600+ articles and a paid members area. The moment I launched memberships I hit a weird symptom: anonymous visitors got fast pages, but the second you logged in, the dashboard and the members-only pages slowed to a crawl. The reason is structural — page caching only serves anonymous visitors, so a logged-in user carries a cookie that bypasses it, and every click lands back in PHP and MySQL to recompute the same data.</p>
+<p>This article takes that problem apart at the layer where it actually lives. We add one layer of persistent object cache with Redis so <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> stops rebuilding the same wp_options, transients and meta queries on every request. Everything below is based on <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.x, WP-CLI 2.12, Redis Object Cache 3.0 and Redis Open Source 8.10, and the commands are copy-paste ready.</p>
+<p>📌 Disclosure: the "Programmer desk gear" section near the end contains <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> affiliate links. If you buy through them I may earn a small commission at no extra cost to you. The technical part has no vendor relationship at all.</p>
+<h2>⏳ TL;DR (Too Long; Didn't Read)</h2>
+<ul><li>**Symptom**: fast for anonymous visitors, slow for logged-in users. That is the structural blind spot of page caching, not a weak server.</li><li>**Fix**: give <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> a layer of persistent object cache via Redis (the drop-in `wp-content/object-cache.php`), so `wp_cache_*` calls hit memory instead of being thrown away every request.</li><li>**Prerequisites**: a Redis server (`127.0.0.1:6379` or a Unix socket) plus PHP's `redis` extension (any of PhpRedis / Relay / Predis).</li><li>**Mandatory guardrail**: `maxmemory` + `maxmemory-policy allkeys-lru`. The default `noeviction` returns write errors once memory fills, which breaks checkout.</li><li>**Mandatory isolation**: on a multi-site box every site needs its own `WP_CACHE_KEY_SALT` or `WP_REDIS_PREFIX`, otherwise one site reads another site's cache.</li><li>**Acceptance test**: `wp redis status` shows Connected, and the hit rate computed from `redis-cli INFO stats` settles at 80–90%+ after warm-up.</li><li>**Rollback**: delete `wp-content/object-cache.php`, or set `WP_REDIS_DISABLED = true` in `wp-config.php`. One second back to normal.</li></ul>
+<h2>Why page caching cannot help logged-in users</h2>
+<p>Two things get conflated constantly:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Cache type</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What it stores</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Who it mainly serves</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Typical implementation</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Page cache</td><td style="border:1px solid #ddd;padding:8px;">Full HTML pages</td><td style="border:1px solid #ddd;padding:8px;">Anonymous visitors</td><td style="border:1px solid #ddd;padding:8px;">Nginx FastCGI Cache, CDN, page-cache plugins</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Object cache</td><td style="border:1px solid #ddd;padding:8px;">Database query result objects</td><td style="border:1px solid #ddd;padding:8px;">Everyone, especially logged-in users</td><td style="border:1px solid #ddd;padding:8px;">Redis / Memcached persistent cache taking over `wp_cache_*`</td></tr></tbody></table>
+<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s object cache is **non-persistent** by default: it lives only for the duration of a single request and is destroyed when that request ends. So the same piece of data gets queried 100 times across 100 requests. Membership sites, course and LMS sites, paid-content sites and stores with many signed-in customers are exactly the places where logged-in traffic dominates — page caching is nearly useless for them, while <code>wp_options</code>, user meta, post meta and transients are read over and over.</p>
+<p>In one line: a membership site that is "slow the moment you log in" is not missing a page cache. It is missing a persistent object cache. That is what we are fixing here.</p>
+<h2>Prerequisites: versions, extensions and services</h2>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>: 7.1.x (the current release is 7.1.2, a security release from 2026-09-22 that fixed one critical-severity issue; 7.1.1 shipped on 2026-09-17 with 17 Core fixes, 21 Block Editor fixes and 11 security fixes). Update to 7.1.2 before you touch the cache layer.</li><li>WP-CLI: 2.12.0, released March 2026 and the current stable version.</li><li>Redis: Redis Open Source 8.10.x (8.10.2, 2026-09-17, is the latest; if you are still on the 8.8 line, note the CVE-2026-62356 fix that landed in 8.8.2). Valkey and other compatible servers work too.</li><li>Object cache plugin: Redis Object Cache by Till Krüss (repo `rhubarbgroup/redis-cache`, GPL-3.0), now at 3.0.0 with 500K+ active installs on <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.org. The commercial Object Cache Pro 1.25.5 comes from the same team, listed from $95/month as of writing (check the official site for current pricing), and adds async writes, prefetching and cache locking.</li><li>PHP extension: `php -m | grep redis` must list `redis` (PhpRedis) or `relay`. Watch out: the PHP that runs WP-CLI and the PHP-FPM that serves your site are often different versions — both need the extension.</li></ul>
+<h2>Step 1: Install Redis and set a memory ceiling first</h2>
+<p>This is the step people skip, and the one that bites hardest. Redis ships with <code>maxmemory 0</code> (unlimited) and <code>maxmemory-policy noeviction</code> — when memory fills, it does not evict anything, it simply refuses every write.</p>
+<pre><code># Debian/Ubuntu
+sudo apt update && sudo apt install redis-server
+sudo systemctl enable --now redis-server
+redis-cli ping          # expect PONG</code></pre>
+<p>Then edit <code>/etc/redis/redis.conf</code>:</p>
+<pre><code>maxmemory 512mb
+maxmemory-policy allkeys-lru</code></pre>
+<ul><li>`maxmemory`: size it against the box's total RAM. A <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> object cache holds regenerable, disposable data, so capping it — rather than letting it fight MySQL for memory — is not optional.</li><li>`maxmemory-policy allkeys-lru`: when the cap is hit, evict the least recently used keys. All of them can be rebuilt on demand, so this fits.</li><li>If this Redis instance also holds data you cannot lose (queues, sessions, locks), switch to `volatile-lru` (only evict keys with a TTL), or better, give <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> its own database or instance — otherwise LRU can throw away the data you meant to keep.</li></ul>
+<p>Restart afterwards: <code>sudo systemctl restart redis-server</code>.</p>
+<p>> ⚠️ Never expose port 6379 to the public internet. On a single-server setup, bind <code>127.0.0.1</code>. If you genuinely need cross-host access, enable <code>requirepass</code> or ACLs and restrict the firewall to source IPs.</p>
+<h2>Step 2: Connection constants and a key prefix in wp-config.php</h2>
+<p>Add this to <code>wp-config.php</code>, above the <code>/* That's all, stop editing! */</code> line:</p>
+<pre><code>// Redis connection
+define( 'WP_REDIS_HOST', '127.0.0.1' );
+define( 'WP_REDIS_PORT', 6379 );
+define( 'WP_REDIS_DATABASE', 0 );
+define( 'WP_REDIS_TIMEOUT', 1 );
+define( 'WP_REDIS_READ_TIMEOUT', 1 );
+
+// Key prefix: must be unique per site, deriving from DB_NAME is bulletproof
+define( 'WP_REDIS_PREFIX', DB_NAME . ':' );
+define( 'WP_CACHE_KEY_SALT', DB_NAME . ':' );</code></pre>
+<p>Deriving the prefix from <code>DB_NAME</code> pays off the day you clone a site: change the database name and the cache namespace changes with it, so you never re-introduce a collision by copying <code>wp-config.php</code> and forgetting to edit the salt.</p>
+<p>If your Redis only allows TLS, add <code>define( 'WP_REDIS_SCHEME', 'tls' );</code> — omit it and the connection fails silently.</p>
+<h2>Step 3: Enable the drop-in and verify three layers</h2>
+<p>Installing the plugin is not what turns the cache on. The thing that actually works is the drop-in file <code>wp-content/object-cache.php</code>.</p>
+<pre><code>cd /var/www/your-site
+wp plugin install redis-cache --activate
+wp redis enable            # creates / updates the object-cache.php drop-in
+wp redis status            # the key check: is Status "Connected", and which client</code></pre>
+<p>Verify in three layers. Miss one and you can easily end up "connected but doing nothing":</p>
+<pre><code># 1. Redis is alive
+redis-cli ping
+
+# 2. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> thinks it is connected and the drop-in is enabled
+wp redis status
+
+# 3. Redis is actually receiving traffic
+redis-cli INFO stats | grep -E "keyspace_hits|keyspace_misses"</code></pre>
+<p>Do step 3 as a before/after: click around the site and <code>keyspace_hits</code> should start climbing. "Connected" with a flat counter means the cache is not actually being used.</p>
+<h2>💣 Troubleshooting: five real errors and their fixes</h2>
+<h3>Error 1: `RedisException: Connection refused` (plugin shows Not Connected)</h3>
+<p>**Cause**: Redis is not running, the host/port is wrong, PHP lacks the <code>redis</code> extension, or — the sneaky one — you are debugging with the CLI's PHP while the site runs a different PHP-FPM version, so the two disagree about extensions.</p>
+<p><strong>Diagnose and fix</strong>:</p>
+<pre><code>sudo systemctl status redis-server     # is it active (running)
+redis-cli -h 127.0.0.1 -p 6379 ping    # expect PONG
+php -m | grep -i redis                 # must also be present under the site's PHP</code></pre>
+<p>Install the extension for the right version (PHP 8.3 shown): <code>sudo apt install php8.3-redis && sudo systemctl restart php8.3-fpm</code>. And note: if you changed <code>WP_REDIS_HOST</code> / <code>WP_REDIS_PORT</code>, you changed <code>wp-config.php</code>, not the value already saved in the plugin UI — when they disagree, the constants win.</p>
+<h3>Error 2: `OOM command not allowed when used memory > 'maxmemory'`</h3>
+<p>**Cause**: Redis is still on the default <code>noeviction</code> policy and refuses writes the moment memory fills. Every post save and every WooCommerce session or transient write can trip it, and on the front end checkout or ordering starts returning errors. Redis is not broken; the policy is unset.</p>
+<p>**Fix**: apply the <code>maxmemory</code> + <code>maxmemory-policy allkeys-lru</code> (or <code>volatile-lru</code>) settings from Step 1, restart, then re-check:</p>
+<pre><code>redis-cli CONFIG GET maxmemory
+redis-cli CONFIG GET maxmemory-policy
+redis-cli INFO stats | grep evicted_keys   # some eviction is normal; a runaway climb means you need more memory</code></pre>
+<h3>Error 3: Multisite / multiple sites "cross-talking" — site A serves site B's data</h3>
+<p>**Cause**: several sites share one Redis database with no distinct key prefix. Keys like <code>options:alloptions</code> overwrite each other, and the symptoms look like random plugin bugs: the wrong menu, counts that do not add up, and flushing one site that also empties its neighbour.</p>
+<p>**Fix**: give every site a unique <code>WP_CACHE_KEY_SALT</code> (<code>DB_NAME . ':'</code> is a good default), optionally plus <code>WP_REDIS_PREFIX</code>. On a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> multisite network the plugin usually folds the blog ID into the prefix automatically, but verify:</p>
+<pre><code>redis-cli KEYS '*' | head               # you should see keys carrying the site marker / blog ID</code></pre>
+<p>Also remember: <code>FLUSHDB</code> empties the whole logical database, wiping every co-tenant site's warm cache. Prefer per-group flushes over full-database clears.</p>
+<h3>Error 4: WooCommerce cart / session weirdness (someone else's cart, stale stock)</h3>
+<p><strong>Cause</strong>: session and cart data — which must stay dynamic — got persisted into a shared cache. That data belongs to a single request or to the database, not to a shared object cache.</p>
+<p><strong>Fix</strong>: exclude the non-shareable groups from the persistent cache:</p>
+<pre><code>define( 'WP_REDIS_IGNORED_GROUPS', [
+  'woocommerce_sessions',
+  'wc_session_id',
+  'cart',
+  'woocommerce_transients',
+  'session',
+] );</code></pre>
+<p>Also: after bulk-updating stock or prices via CSV or the REST API, hooks do not always fire <code>wp_cache_delete</code>, so run <code>wp cache flush</code> when the job finishes. And under a flash sale, watch for the cache stampede — a hot key expiring while thousands of requests arrive at once sends them all to MySQL; the commercial Object Cache Pro cache lock exists precisely for that.</p>
+<h3>Error 5: You changed content, but the front end still shows the old version</h3>
+<p><strong>Cause</strong>: two classics. First, data changed while the cache was disabled and the stale copies are still there when you re-enable (Redis Object Cache has deleted transients on enable since 2.8.0, but historical copies still need an explicit flush). Second, a plugin flushes the page cache on save but not the object cache.</p>
+<p><strong>Fix and diagnose</strong>:</p>
+<pre><code>wp cache flush                     # flush once before re-enabling the object cache
+wp cache get alloptions options    # inspect an actual key to confirm whether it is stale</code></pre>
+<p>Do not treat <code>wp_cache_flush()</code> as a cure-all — it empties the entire cache and resets the hit rate to zero while it rebuilds. Prefer per-group flushes and reserve full clears for migrations or prefix changes.</p>
+<h2>Hit rate and memory: verify with numbers, not vibes</h2>
+<p>The only basis for tuning is data. Hit rate = <code>keyspace_hits / (keyspace_hits + keyspace_misses)</code>.</p>
+<pre><code>wp redis info                                   # the plugin's aggregate view
+redis-cli INFO stats | grep -E "keyspace_hits|keyspace_misses"
+redis-cli INFO memory | grep -E "used_memory_human|maxmemory_human"
+redis-cli SLOWLOG GET 10                        # a quick look for slow commands</code></pre>
+<p>Rules of thumb from the community (not hard standards):</p>
+<ul><li>A hit rate of **80%+** after warm-up means the layer is genuinely working; for membership and e-commerce sites even **60%+** is worthwhile.</li><li>**Below 30% after 24 hours**: either this site does not suit an object cache, or the cache is being flushed constantly — check `evicted_keys` and hunt for plugins that flush on every save.</li><li>Starting memory: a single site under 1,000 posts with no e-commerce usually fits in 64–128 MB; a WooCommerce store with tens of thousands of SKUs may need 256–512 MB. The steadier approach is to run a week with no cap, watch peak `used_memory`, then set `maxmemory` to 1.2–1.5× that peak.</li></ul>
+<h2>When Redis is not worth it</h2>
+<p>Redis is not a silver bullet. These cases gain little and add a service to maintain:</p>
+<ul><li>A static blog or brochure site with good page caching and almost no logged-in users — the page cache already does nearly all the work.</li><li>A single box tight on RAM where Redis competes with MySQL and PHP — cap `maxmemory` first so it never triggers the OOM killer and takes PHP-FPM down with it.</li></ul>
+<p>The test is simple: <strong>the more dynamic requests and the more logged-in users, the more an object cache is worth — and the less, the less.</strong></p>
+<h2>Programmer desk gear (with affiliate links)</h2>
+<p>This section is affiliate content, kept separate from the technical part so you can judge it for yourself.</p>
+<p>Staring at hit-rate charts, <code>INFO stats</code> and slow-query logs is, in practice, hours of late-night screen time. Two things earned their place on my desk:</p>
+<p><strong>🖥 Dell UltraSharp U2723QE 27" 4K USB-C monitor</strong></p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Spec</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Detail</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Size / resolution</td><td style="border:1px solid #ddd;padding:8px;">27-inch / 3840×2160</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Ports</td><td style="border:1px solid #ddd;padding:8px;">USB-C single-cable (with hub), DP, HDMI</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Price (approx.)</td><td style="border:1px solid #ddd;padding:8px;">$429–$529 as of writing; volatile, check the live page</td></tr></tbody></table>
+<p>**Real strengths**: one USB-C cable replaces a pile of adapters; at 4K you can spread a terminal, <code>redis-cli</code> and log windows side by side without squinting.</p>
+<p><strong>Real caveat</strong>: the built-in hub delivers limited power, so a loaded desk needs external power; and the IPS panel's blacks are average in a fully dark room.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the Dell U2723QE on Amazon >></a></p>
+<p><strong>💡 BenQ ScreenBar Halo 2 monitor light bar</strong></p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Spec</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Detail</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Color temperature</td><td style="border:1px solid #ddd;padding:8px;">2700K–6500K stepless</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Power</td><td style="border:1px solid #ddd;padding:8px;">5V/3A (a 5V/1A monitor USB port will flicker)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Price (approx.)</td><td style="border:1px solid #ddd;padding:8px;">$179–$199 as of writing</td></tr></tbody></table>
+<p><strong>Real strengths</strong>: zero desk footprint, and late-night screen viewing stops being harsh on the eyes; the wireless dial with an LCD means no fumbling for keys in the dark.</p>
+<p><strong>Real caveat</strong>: in auto-dimming mode the color temperature locks at 4000K, which skews cool — you switch it manually at night; and on glossy, thick monitors the clip slides down slowly over time.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the BenQ ScreenBar Halo 2 on Amazon >></a></p>
+<h2>FAQ</h2>
+<p><strong>Q: Do Redis object caching and page caching conflict?</strong></p>
+<p>No — they serve different audiences. The page cache serves anonymous visitors; the object cache serves logged-in users and dynamic requests. The best setup runs both, as long as each plugin does its own job and you do not let two "page cache" plugins overwrite the drop-in.</p>
+<p><strong>Q: The plugin says Connected, but my site did not get faster.</strong></p>
+<p>Look at the hit rate first. A flat hit rate usually means the drop-in never took over, or traffic is too low for the cache to warm up. A low-traffic site can take hours to warm; a busy one shows a difference in minutes.</p>
+<p><strong>Q: Free version or Object Cache Pro?</strong></p>
+<p>The free Redis Object Cache is enough for the vast majority of sites. Consider the commercial version only when your monthly request volume is high and you need enterprise features like async writes, prefetching and cache locking. Measure first, pay later.</p>
+<p><strong>Q: What is the fastest way to roll back if something breaks?</strong></p>
+<p>Delete <code>wp-content/object-cache.php</code> (equivalent to switching the object cache off), or temporarily add <code>define( 'WP_REDIS_DISABLED', true );</code> to <code>wp-config.php</code>. A live site should always have a one-second escape hatch.</p>
+<h2>Wrapping up</h2>
+<p>"Slow the moment you log in" on a membership site is really a missing persistent object cache, not a weak server. Once Redis is in place, three things decide whether it works: the <code>maxmemory</code> and eviction policy, key isolation across sites, and verifying with a hit rate instead of a feeling.</p>
+<p>If what you actually care about is the database itself — indexes, `wp_postmeta` and `meta_query` slow queries — start with my earlier piece, <a href="https://yaohehe.github.io/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" target="_blank" rel="nofollow sponsored">How I Cut a WordPress Query from 3.2s to 180ms</a>. Object caching and indexing are two different paths: fix slow queries first, then layer the cache, and keep that order. If order notification emails are still your headache, <a href="https://yaohehe.github.io/2026-09-28-woocommerce-111-wordpress-71-order-emails-not-arri-en.html" target="_blank" rel="nofollow sponsored">WooCommerce 11.1 Order Emails Not Arriving</a> pairs well with the "session bleed" section above, and if you maintain hundreds of articles, <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 + WP-CLI: Rebuilding Internal Links at Scale</a> is the companion read.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12: Rebuilding Internal Links Across 612 Posts</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, Internal Links</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12 实战：600 篇文章内链与 SEO 批量重排</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, 内链优化</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-28-woocommerce-111-wordpress-71-order-emails-not-arri-en.html" style="color:#3498db;text-decoration:none;">WooCommerce 11.1 Order Emails Not Arriving: A Three-Layer Debug from wp_mail to SPF/DKIM/DMARC</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WooCommerce, <a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-28-woocommerce-111-wordpress-71-wp_mail-spfdkimdmarc-.html" style="color:#3498db;text-decoration:none;">WooCommerce 11.1 订单邮件收不到实战：wp_mail 静默成功到 SPF/DKIM/DMARC 全链路排查</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WooCommerce, <a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></div>
+    </div>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
