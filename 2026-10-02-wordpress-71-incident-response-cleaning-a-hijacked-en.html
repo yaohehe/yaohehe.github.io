@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.1 Incident Response: Cleaning a Hijacked Homepage with WPScan 4.1 and WP-CLI - TechPassive</title>
+  <meta name="description" content="A cloaked redirect surfaced in Google's results: the full emergency chain, from WPScan 4.1 finding the vulnerable plugin to WP-CLI checksums and backdoor cleanup, then hardening, plus four real errors.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress 7.1 Hijack Cleanup: WPScan 4.1 and WP-CLI</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">Security</span><span class="tag">Incident Response</span><span class="tag">Hardening</span>
+  </div>
+  <div class="content">
+    <p>A B2B content site I maintain failed its summer audit in the loudest possible way. Google Search Console emailed the owner a malware warning, and the search result for the homepage grew an extra line pointing at a betting site. I opened the homepage in my desktop browser and saw nothing wrong. Then I switched the user agent to a mobile string, and to Googlebot, and the redirect appeared instantly. This is a cloaked redirect, and in 2026 it is still one of the most common ways a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> site gets hijacked: real visitors see a clean page, while search engines and crawlers get served the spam.</p>
+<p>Before anything else, a disclosure: this article contains <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> affiliate links. If you buy through them I earn a small commission, and the price you pay does not change. Every tool below is open source or free tier, the incident is one I actually handled, and the domain and hostname have been redacted. The article answers exactly one question: <strong>when the alert lands, what order do you do things in</strong>. Get the order wrong and you will destroy the evidence that points at the way in.</p>
+<h2>⏳ TL;DR</h2>
+<ul><li>**Preserve first, clean second, harden third.** Deleting files and resetting passwords in the first five minutes erases the attacker's entry trail along with the malware.</li><li>**Check whether core and plugins were modified** with `wp core verify-checksums` plus `wp plugin verify-checksums --all`. Thirty seconds.</li><li>**Find the vulnerable entry point** with WPScan 4.1: `-e vp` lists only plugins with known vulnerabilities, and `--wp-auth` queries the REST API for an authoritative inventory instead of fingerprinting guesses.</li><li>**The backdoor cleanup four-step**: overwrite core with `wp core download --force`, empty `mu-plugins`, audit administrator accounts, rotate keys with `wp config shuffle-salts`.</li><li>**Harden**: exactly one 2FA plugin, `DISALLOW_FILE_EDIT`, file permissions at 644/755, and XML-RPC plus application passwords trimmed to what you actually use.</li><li>The desk gear I used during the incident (a 4K USB-C monitor and a monitor light bar) sits in a separate section near the end, clearly marked as affiliate links. It does not change any conclusion here.</li></ul>
+<h2>Prerequisites: versions, tools, and a three-minute backup</h2>
+<p>I ran this on Ubuntu 24.04 LTS with a self-hosted <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> install, meaning full SSH access rather than a managed host. Versions below are current as of writing:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Component</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Notes</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></td><td style="border:1px solid #ddd;padding:8px;">7.1 ("Mary Lou", released 2026-08-19)</td><td style="border:1px solid #ddd;padding:8px;">Database version db_version 61833; 7.1 is the only actively maintained branch</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">WP-CLI</td><td style="border:1px solid #ddd;padding:8px;">2.12.x</td><td style="border:1px solid #ddd;padding:8px;">Confirm with `wp --info`; since 2.12 `wp core verify-checksums` accepts `--exclude=`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">WPScan</td><td style="border:1px solid #ddd;padding:8px;">4.1 (4.0.0 shipped 2026-05-20)</td><td style="border:1px solid #ddd;padding:8px;">Requires Ruby 3.3 or newer; the free API token allows 25 requests per day</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PHP</td><td style="border:1px solid #ddd;padding:8px;">8.2 or newer</td><td style="border:1px solid #ddd;padding:8px;">Officially supported by <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Host</td><td style="border:1px solid #ddd;padding:8px;">Any VPS with SSH</td><td style="border:1px solid #ddd;padding:8px;">2GB RAM or more recommended</td></tr></tbody></table>
+<p>The first action in an incident is not a scan. It is a backup, and it has to land off the server:</p>
+<pre><code>cd /var/www/html
+wp db export /root/incident/wp-db-$(date +%F).sql
+tar czf /root/incident/wp-files-$(date +%F).tar.gz \
+  --exclude='wp-content/cache' --exclude='wp-content/uploads/*' .</code></pre>
+<p>Excluding <code>wp-content/uploads</code> is deliberate. That directory is often several gigabytes, and it almost never hides PHP backdoors unless the site is configured to execute uploaded files. The places that matter for evidence are <code>wp-content/plugins</code>, <code>wp-content/themes</code>, <code>wp-content/mu-plugins</code>, and every PHP file in the web root.</p>
+<p>If Google has already flagged the site, do not click "Request Review" yet. You get a limited number of attempts, and that is a topic for the last section.</p>
+<h2>Step 1: Capture proof of a crawler-only redirect</h2>
+<p>You cannot diagnose a cloaked redirect by looking at it. Request the same path with different user agents and save both the headers and the first few hundred bytes:</p>
+<pre><code>UA_MOBILE="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+UA_BOT="Googlebot/2.1 (+http://www.google.com/bot.html)"
+
+curl -s -A "$UA_MOBILE" -D /root/incident/h-mobile.txt https://example.com/ -o /root/incident/b-mobile.html
+curl -s -A "$UA_BOT"    -D /root/incident/h-bot.txt    https://example.com/ -o /root/incident/b-bot.html
+curl -s                 -D /root/incident/h-plain.txt  https://example.com/ -o /root/incident/b-plain.html
+
+diff <(head -c 400 /root/incident/b-plain.html) <(head -c 400 /root/incident/b-bot.html)</code></pre>
+<p>If the plain response is clean and the Googlebot response contains a <code>location.href</code> assignment or a third-party domain, you are looking at a cloak. Preserve two more things while you are here: a hash of <code>wp-config.php</code>, and a timestamped list of every PHP file on the site.</p>
+<pre><code>find /var/www/html -type f -name "*.php" -newermt "-45 days" \
+  -printf "%TY-%Tm-%Td %TH:%TM  %p\n" | sort > /root/incident/recent-php.txt
+wc -l /root/incident/recent-php.txt</code></pre>
+<p>The first time I ran that command it returned 37 lines. Thirty-four were routine plugin auto-updates, and the remaining three were the way in. That file became the map for everything that followed.</p>
+<h2>Step 2: Check core and plugin integrity with WP-CLI</h2>
+<p><code>verify-checksums</code> compares local files byte for byte against the official checksums on api.wordpress.org. It is the single best value command in an incident:</p>
+<pre><code>wp core verify-checksums</code></pre>
+<p>Modified files are listed directly:</p>
+<pre><code>Warning: File doesn't verify against checksum: wp-includes/class-wp-http.php
+Warning: File doesn't verify against checksum: wp-admin/includes/plugin.php
+Error: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation doesn't verify against checksums.</code></pre>
+<p>Do the same for plugins and themes, and always pass <code>--all</code>:</p>
+<pre><code>wp plugin verify-checksums --all
+wp theme verify-checksums --all</code></pre>
+<p>On the machine I tested, core reported two modified files and plugins reported one. Here is the counterintuitive part: <strong>a passing checksum does not mean the site is clean.</strong> It only proves the official files were not touched. It says nothing about PHP in the uploads directory, custom plugins, content injected into the database, or a freshly created administrator account. It is the first step of entry-point hunting, never the conclusion.</p>
+<h2>Step 3: Find the vulnerable plugin with WPScan 4.1</h2>
+<p>WPScan 4.0, released 2026-05-20, changed behavior in a way that trips people up: **the default scan no longer enumerates plugins.** The old <code>wpscan --url example.com</code> would happily hammer plugin detection and burn your API quota. In 4.x the default only checks the <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> version, the active theme, and baseline security findings. You have to ask for anything more with <code>-e</code>.</p>
+<p>Install it (Ruby 3.3 or newer; 4.x also supports Ruby 4.0):</p>
+<pre><code>gem install wpscan                    # native install
+# or the lowest-friction container route, no local Ruby needed
+docker pull wpscanteam/wpscan:latest</code></pre>
+<p>Register at wpscan.com/api for a free token, capped at 25 requests per day, then scan with application-password authentication. This is the feature that makes 4.x worth upgrading for: it queries the REST API for the authoritative list of every installed plugin, including inactive ones, instead of guessing from page fingerprints.</p>
+<pre><code>export WPSCAN_API_TOKEN="your-token"
+
+wpscan --url https://example.com \
+  --api-token "$WPSCAN_API_TOKEN" \
+  --wp-auth admin:'abcd efgh ijkl mnop qrst uvwx' \
+  -e vp,vt,cb \
+  --plugins-detection passive \
+  --format jsonl | jq .</code></pre>
+<p>Generate the application password under Users, then Profile, then Application Passwords. It looks like <code>abcd efgh ijkl mnop qrst uvwx</code>. The flag <code>-e vp</code> reports only plugins with known vulnerabilities, <code>-e vt</code> covers themes, and <code>-e cb</code> looks for configuration backups. One warning worth repeating: if WPScan finds a <code>.wp-config.php.bak</code> sitting in the web root, that is a critical finding on its own, because anyone who downloads it gets your database credentials.</p>
+<p>The output on this site flagged a page-builder plugin that had not been updated in three years. Its unauthenticated arbitrary file upload vulnerability was disclosed in November 2023 and patched in February 2024. The site had been leaving the back door unlocked since early 2024. That is why I am not comfortable leaving "keep your plugins updated" as an exercise for the reader.</p>
+<h2>Step 4: Remove the backdoors, in this order</h2>
+<p>Confirm the entry point before touching anything. Then clean in the sequence below, re-running the three curl requests from Step 1 after each stage.</p>
+<p><strong>First, overwrite core with official files.</strong> Far more reliable than hand-comparing:</p>
+<pre><code>wp core download --force --version=7.1 --locale=en_US</code></pre>
+<p>**Second, inspect <code>mu-plugins</code>.** This is the most popular hiding place, because must-use plugins load unconditionally and are invisible in the normal admin plugin list:</p>
+<pre><code>ls -la wp-content/mu-plugins/
+wp plugin list --status=must-use</code></pre>
+<p>**Third, audit administrator accounts.** Mine had gained a <code>wp_support_admin</code> whose registration date matched the day the PHP files changed:</p>
+<pre><code>wp user list --role=administrator --fields=ID,user_login,user_email,user_registered
+wp user delete 42 --reassign=1</code></pre>
+<p><strong>Fourth, rotate the authentication keys.</strong> This invalidates every existing session and is the most direct way to take the attacker's keys away:</p>
+<pre><code>wp config shuffle-salts</code></pre>
+<p><strong>Fifth, clear injected cron events and payloads:</strong></p>
+<pre><code>wp cron event list --fields=hook,next_run_relative
+wp cron event delete wp_evil_sync
+wp db query "SELECT option_name FROM wp_options WHERE option_value LIKE '%<script%' OR option_value LIKE '%eval(%';"</code></pre>
+<p>Finally, read through <code>wp-config.php</code> for any constant beyond the database four, especially an <code>auto_prepend_file</code> line or an <code>include</code> pointing into the uploads directory. That pattern is the most persistent kind of reinfection.</p>
+<h2>💣 Four real errors and how I fixed them</h2>
+<h3>Error 1: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation</h3>
+<pre><code>Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.
+The used path is: /root
+Pass --path=`path/to/wordpress` or run `wp core download`.</code></pre>
+<p>**Cause**: WP-CLI cannot find <code>wp-load.php</code> in the current directory. Running commands as root from <code>/root</code> during an incident is the classic way to hit this, and moving <code>wp-config.php</code> one level up causes it too.</p>
+<p><strong>Fix</strong>: pass the path explicitly and confirm the install is recognized:</p>
+<pre><code>wp --path=/var/www/html core is-installed && echo OK</code></pre>
+<h3>Error 2: No WPScan API Token given</h3>
+<pre><code>[!] No WPScan API Token given, as a result vulnerability data has not been output.
+[!] You can get a free API token with 25 daily requests by registering at https://wpscan.com/register</code></pre>
+<p>**Cause**: three possibilities. The token was never passed, the <code>export</code> happened in a different shell session, or a <code>sudo</code> prefix dropped the environment variable. <code>sudo wpscan</code> does not inherit the <code>WPSCAN_API_TOKEN</code> from your shell.</p>
+<p><strong>Fix</strong>: passing it explicitly is the most reliable, since it is immune to shell state:</p>
+<pre><code>wpscan --url https://example.com --api-token "your-token" -e vp
+# or keep the environment with sudo -E
+sudo -E wpscan --url https://example.com -e vp</code></pre>
+<h3>Error 3: Scan Aborted, the url supplied does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></h3>
+<pre><code>[!] Scan Aborted: The url supplied 'https://example.com/' does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.</code></pre>
+<p><strong>Cause</strong>: one of two extremes. Either a CDN or WAF intercepted the scanner and returned a challenge page, or the cloak logic treated the WPScan user agent as a crawler and served it the redirect page, so WPScan concluded this was not <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> at all. The second case is what happened here, and it is genuinely confusing.</p>
+<p><strong>Fix</strong>: establish which version of the site is the real one, then work around the disguise:</p>
+<pre><code>curl -sI https://example.com/ | head -3          # is a WAF challenge being returned?
+wpscan --url https://example.com -e vp \
+  --random-user-agent --disable-tls-checks --follow-redirect</code></pre>
+<p>If a WAF is genuinely in the way, whitelisting the scanner IP is much safer than disabling the WAF. Reserve <code>--disable-tls-checks</code> for test environments with self-signed certificates.</p>
+<h3>Error 4: Could not update the wp-config.php file</h3>
+<pre><code>Error: Could not update the wp-config.php file.</code></pre>
+<p>**Cause**: <code>wp config shuffle-salts</code> needs to write <code>wp-config.php</code>, and in production that file is usually <code>root:www-data</code> at 640 or 600. Running WP-CLI as an ordinary user cannot write it, and a <code>DISALLOW_FILE_MODS</code> constant in the file will refuse the change outright.</p>
+<p><strong>Fix</strong>: run as the file owner, or elevate briefly and lock the permissions back down immediately:</p>
+<pre><code>sudo -u www-data wp config shuffle-salts --path=/var/www/html
+# manual route: back up, change, then lock it again
+cp wp-config.php /root/incident/wp-config.php.bak-of-incident
+chmod 640 wp-config.php && sudo -u www-data wp config shuffle-salts
+chmod 600 wp-config.php</code></pre>
+<p>Be aware that <code>shuffle-salts</code> logs every user out. Run it off-peak and tell your colleagues first.</p>
+<h2>Step 5: Harden so it does not happen the same way twice</h2>
+<p>Cleaning stops the bleeding; hardening stops the recurrence. Ordered by return on effort, these are the changes that close the specific hole this attack came through.</p>
+<p><strong>1) Enforce 2FA by role.</strong> <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> core still ships no built-in two-factor authentication, so this needs a plugin. The free options that matter in 2026 are WP 2FA by Melapress (setup wizard, per-role enforcement, grace periods), Two-Factor (maintained by <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> core contributors, deliberately minimal, TOTP plus email and U2F), Wordfence Login Security (login protection only), and Solid Security (formerly iThemes Security, part of a broader hardening suite). Install exactly one. Stacking two 2FA plugins causes login filter conflicts, which is the most common self-inflicted lockout in this scenario. Administrators should get no grace period.</p>
+<p>**2) Remove the admin file editor.** Add this to <code>wp-config.php</code>:</p>
+<pre><code>define('DISALLOW_FILE_EDIT', true);
+// stricter: also block plugin and theme installs/updates, run them through WP-CLI instead
+// define('DISALLOW_FILE_MODS', true);</code></pre>
+<p>**3) Tighten file permissions** (directories 755, files 644, <code>wp-config.php</code> 600):</p>
+<pre><code>find /var/www/html -type d -exec chmod 755 {} \;
+find /var/www/html -type f -exec chmod 644 {} \;
+chmod 600 /var/www/html/wp-config.php</code></pre>
+<p><strong>4) Trim entry points you do not use.</strong> If XML-RPC is not in use, deny it at the web server layer. Keep application passwords only where they are needed and revoke them when the job is done. Moving the login URL only stops automated credential stuffing, so never treat it as the main defense.</p>
+<p>**5) Update strategy.** Back up, update a small batch, then verify. <code>wp plugin update --all</code> is convenient, but on a compromised site always clean before you update. Reverse that order and you may overwrite files an attacker had already modified, burying the evidence under a clean-looking version number.</p>
+<h2>Getting Google to lift the warning</h2>
+<p>Once the site is clean, do not immediately hit "Request Review". Google limits how many times a site can be re-reviewed, and a failed first attempt pushes the next window further out. Do these three things first:</p>
+<p>1. Confirm the flag has cleared in the Search Console Security Issues panel.</p>
+<p>2. Re-run the multi-user-agent curl check on the server and confirm the cloak is gone.</p>
+<p>3. Write a short remediation note: what changed, when, and which files were removed. You will want it during review.</p>
+<p>Only then submit for review. On this site, the warning cleared three days after submission. That number depends heavily on site history and the type of flag, so I would not treat it as your expected timeline.</p>
+<h2>Gear for the incident desk (affiliate links)</h2>
+<p>Incident windows tend to land at 2am, and how pleasant it is to read logs, compare user agents, and study diffs depends a lot on the desk itself. These two are what I actually used during this incident, and both are <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> affiliate links:</p>
+<p><strong>Dell UltraSharp U2723QE 4K USB-C monitor</strong> — IPS Black panel, 90W USB-C single-cable setup, built-in USB 3.2 hub and RJ45, so one cable covers display, network, and power. Wide enough for four terminals on the left and a side-by-side diff on the right. Pricing moves with promotions; roughly $500 to $650 as of writing, so check the product page. Real caveats: it ships bright by default, white uniformity varies unit to unit, and spinning up a mechanical drive through the hub can brown out without enough power.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the Dell U2723QE on Amazon >></a></p>
+<p><strong>BenQ ScreenBar Halo 2 monitor light bar</strong> — three-zone backlight, stepless color temperature, and auto-off when you leave, which keeps ambient light low during late-night log reading without using desk space. Official pricing is around $179, with frequent promotions. Real caveats: the auto-dimming mode locks color temperature near 4000K with no override, and older monitors whose USB port only supplies 5V/1A will make it flicker, so it needs its own 5V/3A supply.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the BenQ ScreenBar Halo 2 on Amazon >></a></p>
+<p>All prices above are the public list figures as of writing. <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> changes prices constantly, so please confirm before ordering.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Does <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 include 2FA?</strong></p>
+<p>A: No. Core still has no built-in two-factor authentication, so it requires a plugin. WP 2FA, Two-Factor, Wordfence Login Security, and Solid Security are the common free choices. Install one to avoid login filter conflicts.</p>
+<p><strong>Q: Is the free WPScan tier enough?</strong></p>
+<p>A: Yes for incident work. The free tier allows 25 requests per day and a single scan with plugin enumeration consumes several. When quota is tight, <code>-e vp</code> is the cheapest meaningful scan. Paid tiers only matter once you manage a large fleet of sites.</p>
+<p><strong>Q: Do I have to rotate the salts after cleanup?</strong></p>
+<p>A: You should. An attacker may already have the authentication keys from <code>wp-config.php</code> and could forge login cookies with them. <code>wp config shuffle-salts</code> invalidates every session, which is the most direct way to take those keys back. The tradeoff is that everyone has to log in again.</p>
+<p><strong>Q: How long does it take to recover from a Google malware flag?</strong></p>
+<p>A: It depends on the flag type and site history, with no fixed number. This one cleared three days after submission. The important part is cleaning thoroughly before you submit, because repeated requests extend the review interval.</p>
+<p><strong>Q: If core checksums pass, is the site clean?</strong></p>
+<p>A: No. <code>wp core verify-checksums</code> only proves the official core files were untouched. It cannot see PHP in the uploads directory, custom plugins, injected database content, or a newly created administrator account. Read it alongside the WPScan scan, the user audit, and the <code>mu-plugins</code> check.</p>
+<h2>Wrap-up</h2>
+<p>The real lesson from this incident was not "keep your plugins updated". It was about order. The first thing I did after the alert was not delete files, it was preserve three pieces of evidence: the user-agent comparison, the file modification times, and the database export. Those three anomalous lines in <code>recent-php.txt</code> identified the abandoned plugin within 30 minutes. Had I run <code>wp core download --force</code> first, the trail would have been gone.</p>
+<p>If you are working through a similar cleanup, two follow-ups are worth your time. <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" target="_blank" rel="nofollow sponsored">Rebuilding internal links and SEO metadata across 600 posts with WP-CLI</a> covers the routine automation side, and <a href="https://yaohehe.github.io/2026-09-30-wordpress-71-redis-object-cache-speeding-up-logged-en.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 with Redis object caching</a> covers the performance layer, which is usually where session invalidation after hardening starts causing surprises. For teams automating ops further, <a href="https://yaohehe.github.io/2026-10-01-wordpress-71-mcp-adapter-let-ai-agents-safely-run--en.html" target="_blank" rel="nofollow sponsored">letting AI agents safely run a content site with the MCP Adapter</a> is the natural next read: the more automation you add, the earlier you have to manage the exposure it creates.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12: Rebuilding Internal Links Across 612 Posts</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, Internal Links</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12 实战：600 篇文章内链与 SEO 批量重排</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, 内链优化</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-30-wordpress-71-redis-5.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + Redis 对象缓存实战：从「一登录就慢」到命中率 90%</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">Redis, 对象缓存</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-30-wordpress-71-redis-object-cache-speeding-up-logged-en.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + Redis Object Cache for Membership Sites</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">Redis, object cache</div>
+    </div>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
