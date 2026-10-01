@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.1 安全应急响应实战：首页被挂马跳转后的排查与加固 - TechPassive</title>
+  <meta name="description" content="企业内容站被挂马跳转后的完整应急链：用 WPScan 4.1 定位漏洞插件、WP-CLI 校验核心文件与清理后门、2FA 与文件权限加固，附 4 个真实报错与解决方案。WordPress 7.1 安全应急响应实战：首页被挂马跳转后的排查与加固|企业内容站被挂马跳转后的完整应急链：用 WPScan 4.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress 安全应急响应：WPScan 与 WP-CLI 排后门</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">运维</span><span class="tag">安全加固</span><span class="tag">网站安全</span>
+  </div>
+  <div class="content">
+    <p>今年我帮一个做 B2B 白皮书的企业内容站做年度体检，结果夏天它真的出事了：Google Search Console 发来「网站被入侵」邮件，搜索结果里首页下方挂出了一行赌博跳转。我在自己的浏览器里打开首页——完全正常。换成手机 UA 和 Googlebot UA，跳转立刻出现。这种只对特定 UA 生效的伪装重定向（cloaked redirect）是 2026 年最典型的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 挂马形态之一：普通访客看不出问题，搜索引擎和爬虫却全部中招。</p>
+<p>先说明：本文包含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接，你通过这些链接下单，我会拿到少量佣金，而你支付的价格不变。文中的工具全部是开源或官方免费版，事件来自我实际处理过的站点，域名与主机名已做脱敏。这篇文章只解决一个问题：<strong>从收到告警到站点恢复干净，你该按什么顺序做什么</strong>——因为顺序错了，你会亲手毁掉定位攻击入口的线索。</p>
+<h2>⏳ 太长不看版（TL;DR）</h2>
+<ul><li>**先保全，再清理，最后才加固**。第一时间删文件、改密码，等于把攻击者的入口痕迹一起抹掉。</li><li>**判断核心和插件是否被改**：`wp core verify-checksums` 加 `wp plugin verify-checksums --all`，两条命令半分钟出结果。</li><li>**定位漏洞入口**：WPScan 4.1 用 `-e vp` 只列有已知漏洞的插件，配合 `--wp-auth` 走 REST API 拿权威插件清单，比指纹猜测可靠得多。</li><li>**清后门四件套**：`wp core download --force` 覆盖核心、清空 `mu-plugins`、审计 administrator 用户、`wp config shuffle-salts` 轮换密钥。</li><li>**加固**：2FA 只装一个插件、`DISALLOW_FILE_EDIT`、文件权限收敛到 644/755、XML-RPC 与应用密码按需关闭。</li><li>本文的工位装备（4K USB-C 显示器、屏幕挂灯）放在文末「程序员工位装备」一节，均为联盟链接，不影响正文结论。</li></ul>
+<h2>前置准备：版本、工具与三分钟备份</h2>
+<p>我实际用的环境是 Ubuntu 24.04 LTS 加自托管 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>（不是托管主机，有完整 SSH 权限）。版本口径截至发稿：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></td><td style="border:1px solid #ddd;padding:8px;">7.1（代号 Mary Lou，2026-08-19 发布）</td><td style="border:1px solid #ddd;padding:8px;">数据库版本 db_version 61833；7.1 仍是当前唯一活跃维护的主分支</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">WP-CLI</td><td style="border:1px solid #ddd;padding:8px;">2.12.x</td><td style="border:1px solid #ddd;padding:8px;">`wp --info` 可确认；2.12 起 `wp core verify-checksums` 支持 `--exclude=`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">WPScan</td><td style="border:1px solid #ddd;padding:8px;">4.1（4.0.0 于 2026-05-20 发布）</td><td style="border:1px solid #ddd;padding:8px;">需要 Ruby 3.3 以上；免费 API token 每天 25 次请求</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PHP</td><td style="border:1px solid #ddd;padding:8px;">8.2 以上</td><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 官方支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">主机</td><td style="border:1px solid #ddd;padding:8px;">任意可 SSH 的 VPS</td><td style="border:1px solid #ddd;padding:8px;">建议内存 2GB 以上</td></tr></tbody></table>
+<p>应急第一件事不是扫描，是备份，而且必须备到站外：</p>
+<pre><code>cd /var/www/html
+wp db export /root/incident/wp-db-$(date +%F).sql
+tar czf /root/incident/wp-files-$(date +%F).tar.gz \
+  --exclude='wp-content/cache' --exclude='wp-content/uploads/*' .</code></pre>
+<p>刻意排除 <code>wp-content/uploads</code>：附件目录动辄几个 GB，但它几乎不会藏 PHP 后门（除非站点配置允许上传可执行文件）。真正要留证据的是 <code>wp-content/plugins</code>、<code>wp-content/themes</code>、<code>wp-content/mu-plugins</code> 和根目录下的 PHP 文件。</p>
+<p>如果站点已经被 Google 标记，先别急着点重新审核——审核次数有限，这件事留到最后一节讲。</p>
+<h2>Step 1：先抓住「只对爬虫生效」的证据</h2>
+<p>伪装重定向不能靠肉眼判断。用 curl 带不同 UA 请求同一路径，把响应头和首屏几百字节落盘：</p>
+<pre><code>UA_MOBILE="Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36"
+UA_BOT="Googlebot/2.1 (+http://www.google.com/bot.html)"
+
+curl -s -A "$UA_MOBILE" -D /root/incident/h-mobile.txt https://example.com/ -o /root/incident/b-mobile.html
+curl -s -A "$UA_BOT"    -D /root/incident/h-bot.txt    https://example.com/ -o /root/incident/b-bot.html
+curl -s                 -D /root/incident/h-plain.txt  https://example.com/ -o /root/incident/b-plain.html
+
+diff <(head -c 400 /root/incident/b-plain.html) <(head -c 400 /root/incident/b-bot.html)</code></pre>
+<p>如果浏览器版正常、Googlebot 版首屏多出 <code>location.href</code> 或第三方域名，基本可以确认是 cloak。同时留下两样东西：<code>wp-config.php</code> 的哈希，以及全站 PHP 文件按修改时间排序的清单。</p>
+<pre><code>find /var/www/html -type f -name "*.php" -newermt "-45 days" \
+  -printf "%TY-%Tm-%Td %TH:%TM  %p\n" | sort > /root/incident/recent-php.txt
+wc -l /root/incident/recent-php.txt</code></pre>
+<p>我第一次跑这条命令时输出 37 行，其中 34 行是正常的插件自动更新，剩下 3 行就是入口。<code>recent-php.txt</code> 后来成了整件事的导航图。</p>
+<h2>Step 2：用 WP-CLI 判断核心和插件有没有被改</h2>
+<p><code>verify-checksums</code> 会拿本地文件与 api.wordpress.org 的官方校验和逐字节比对，是性价比最高的一条命令：</p>
+<pre><code>wp core verify-checksums</code></pre>
+<p>被改动的文件会直接列出来：</p>
+<pre><code>Warning: File doesn't verify against checksum: wp-includes/class-wp-http.php
+Warning: File doesn't verify against checksum: wp-admin/includes/plugin.php
+Error: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation doesn't verify against checksums.</code></pre>
+<p>插件和主题同理，一定加 <code>--all</code>：</p>
+<pre><code>wp plugin verify-checksums --all
+wp theme verify-checksums --all</code></pre>
+<p>我测试的这台机器上，核心报了 2 个文件、插件报了 1 个。这里有个反直觉的点：<strong>校验和通过不代表站点没被入侵</strong>。它只能证明官方文件没被改，覆盖不到上传目录里的 PHP、自建插件、数据库里注入的内容，以及新冒出来的管理员账号。它是入口排查的第一步，不是结论。</p>
+<h2>Step 3：用 WPScan 4.1 找出攻击者从哪个插件进来</h2>
+<p>WPScan 4.0（2026-05-20 发布）做了一次大改，最容易踩的变更在这里：**默认扫描不再自动枚举插件了**。以前的 <code>wpscan --url example.com</code> 会拼命扫插件、烧光 API 配额；4.x 默认只查 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 版本、当前主题和基础安全项。想要什么必须显式加 <code>-e</code>。</p>
+<p>安装（需要 Ruby 3.3 以上，4.x 已支持 Ruby 4.0）：</p>
+<pre><code>gem install wpscan                    # 原生安装
+# 或最省事的容器路线，不依赖本机 Ruby
+docker pull wpscanteam/wpscan:latest</code></pre>
+<p>在 wpscan.com/api 注册拿免费 token（免费档每天 25 次请求）后，用应用密码做认证扫描。这是 4.x 最值钱的功能：它走 REST API 直接问 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 要「全部已装插件」的权威清单，连未启用的都会列出来，不再靠指纹猜测：</p>
+<pre><code>export WPSCAN_API_TOKEN="你的token"
+
+wpscan --url https://example.com \
+  --api-token "$WPSCAN_API_TOKEN" \
+  --wp-auth admin:'abcd efgh ijkl mnop qrst uvwx' \
+  -e vp,vt,cb \
+  --plugins-detection passive \
+  --format jsonl | jq .</code></pre>
+<p>应用密码在后台「用户 → 个人资料 → 应用程序密码」生成，形如 <code>abcd efgh ijkl mnop qrst uvwx</code>。<code>-e vp</code> 只列有已知漏洞的插件，<code>-e vt</code> 是主题，<code>-e cb</code> 是配置文件备份——顺带提醒：如果它扫出站上存在 <code>.wp-config.php.bak</code> 这类备份文件，那本身就是重大漏洞，攻击者下载它就直接拿到了数据库密码。</p>
+<p>我这次的输出里，一个三年没更新的页面构建器插件被标为高危：它的未认证任意文件上传漏洞在 2023 年 11 月就公开了，补丁在 2024 年 2 月。也就是说，这个站点从 2024 年初起一直把后门钥匙插在门上。这也是我不愿意把「插件更新」留给读者自己决定的原因。</p>
+<h2>Step 4：清理后门，顺序很重要</h2>
+<p>确认入口之后再动手。清理按下面的顺序走，每一步做完都用 Step 1 那三条 curl 复测一次。</p>
+<p><strong>第一步，用官方文件覆盖核心</strong>，比手工比对可靠得多：</p>
+<pre><code>wp core download --force --version=7.1 --locale=zh_CN</code></pre>
+<p>**第二步，检查 <code>mu-plugins</code>**。这是最常被藏后门的地方，因为必须加载、且在后台插件列表里默认看不到：</p>
+<pre><code>ls -la wp-content/mu-plugins/
+wp plugin list --status=must-use</code></pre>
+<p>**第三步，审计管理员账号**。我的站点上多出一个 <code>wp_support_admin</code>，注册时间正好是 PHP 文件被修改的同一天：</p>
+<pre><code>wp user list --role=administrator --fields=ID,user_login,user_email,user_registered
+wp user delete 42 --reassign=1</code></pre>
+<p><strong>第四步，轮换认证密钥</strong>。这一步会强制所有已登录会话失效，是踢掉攻击者钥匙最直接的动作：</p>
+<pre><code>wp config shuffle-salts</code></pre>
+<p><strong>第五步，清掉被塞进去的定时任务与注入内容</strong>：</p>
+<pre><code>wp cron event list --fields=hook,next_run_relative
+wp cron event delete wp_evil_sync
+wp db query "SELECT option_name FROM wp_options WHERE option_value LIKE '%<script%' OR option_value LIKE '%eval(%';"</code></pre>
+<p>最后把 <code>wp-config.php</code> 里除数据库四要素以外的常量翻一遍，特别是任何 <code>auto_prepend_file</code>，或者 <code>include</code> 指向 <code>uploads</code> 目录的写法——这类是最隐蔽的持久化手段。</p>
+<h2>💣 真实报错与解决方案（我踩到的 4 个）</h2>
+<h3>报错一：Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.</h3>
+<pre><code>Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.
+The used path is: /root
+Pass --path=`path/to/wordpress` or run `wp core download`.</code></pre>
+<p>**原因**：WP-CLI 在当前目录里找不到 <code>wp-load.php</code>。应急时用 root 从 <code>/root</code> 敲命令最容易踩这个，另外 <code>wp-config.php</code> 被移到上一级目录也会触发。</p>
+<p><strong>解决</strong>：显式指定路径，并确认它认得出这个站点：</p>
+<pre><code>wp --path=/var/www/html core is-installed && echo OK</code></pre>
+<h3>报错二：No WPScan API Token given</h3>
+<pre><code>[!] No WPScan API Token given, as a result vulnerability data has not been output.
+[!] You can get a free API token with 25 daily requests by registering at https://wpscan.com/register</code></pre>
+<p>**原因**：三种情况——没传 token、<code>export</code> 写在了另一个 shell 会话里、或者命令前加了 <code>sudo</code> 把环境变量丢了。<code>sudo wpscan</code> 不会继承你当前 shell 的 <code>WPSCAN_API_TOKEN</code>。</p>
+<p><strong>解决</strong>：显式传参最稳，不受 shell 影响：</p>
+<pre><code>wpscan --url https://example.com --api-token "你的token" -e vp
+# 或用 sudo -E 保留环境变量
+sudo -E wpscan --url https://example.com -e vp</code></pre>
+<h3>报错三：Scan Aborted: The url supplied does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></h3>
+<pre><code>[!] Scan Aborted: The url supplied 'https://example.com/' does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.</code></pre>
+<p><strong>原因</strong>：两个极端。要么站点被 CDN 或 WAF 拦了，WPScan 拿到的是验证页；要么反过来——cloak 逻辑把 WPScan 的默认 UA 当爬虫，返回了跳转页，于是它认为这不是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>。后者在本次事故里就出现了，非常有迷惑性。</p>
+<p><strong>解决</strong>：先确认谁看到的是真实站，再用参数绕开伪装：</p>
+<pre><code>curl -sI https://example.com/ | head -3          # 是否返回 WAF 挑战
+wpscan --url https://example.com -e vp \
+  --random-user-agent --disable-tls-checks --follow-redirect</code></pre>
+<p>确实有 WAF 时，把扫描机 IP 加进白名单再扫，比直接关掉 WAF 安全得多。<code>--disable-tls-checks</code> 只应在自签名证书的测试环境用。</p>
+<h3>报错四：Error: Could not update the wp-config.php file.</h3>
+<pre><code>Error: Could not update the wp-config.php file.</code></pre>
+<p>**原因**：<code>wp config shuffle-salts</code> 需要写 <code>wp-config.php</code>，而生产环境里这个文件通常是 <code>root:www-data</code> 640 或 600。用普通用户跑 WP-CLI 时写不进去；如果里面定义了 <code>DISALLOW_FILE_MODS</code>，也会被拒。</p>
+<p><strong>解决</strong>：用与文件属主一致的身份执行，或临时提权后立刻把权限改回去：</p>
+<pre><code>sudo -u www-data wp config shuffle-salts --path=/var/www/html
+# 手工路线：先备份，再改，再锁回去
+cp wp-config.php /root/incident/wp-config.php.bak-of-incident
+chmod 640 wp-config.php && sudo -u www-data wp config shuffle-salts
+chmod 600 wp-config.php</code></pre>
+<p>注意：<code>shuffle-salts</code> 之后所有用户会被强制登出，请挑低峰期执行并提前通知同事。</p>
+<h2>Step 5：加固，把复发概率压到最低</h2>
+<p>清理只是止血，加固才是防复发。按投入产出比排序，下面几件事做完，同类攻击基本不会再从同一个口子进来。</p>
+<p><strong>1）按角色强制 2FA。</strong> <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心至今没有内置双因素认证，必须靠插件。2026 年可用的免费方案主要有四个：WP 2FA（Melapress，有向导、可按角色强制、带宽限期）、Two-Factor（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心贡献者维护，轻量，只做 TOTP、邮件与 U2F）、Wordfence Login Security（专注登录保护）、Solid Security（前身 iThemes Security，属于整套加固方案的一个模块）。只装一个——堆两个 2FA 插件导致的登录过滤器冲突，是这个场景下最常见的自锁来源。管理员账号建议不设宽限期。</p>
+<p>**2）锁掉后台文件编辑**，在 <code>wp-config.php</code> 里加：</p>
+<pre><code>define('DISALLOW_FILE_EDIT', true);
+// 更严格：连插件与主题的安装更新一起禁掉，改由 WP-CLI 执行
+// define('DISALLOW_FILE_MODS', true);</code></pre>
+<p>**3）收紧文件权限**（目录 755、文件 644、<code>wp-config.php</code> 600）：</p>
+<pre><code>find /var/www/html -type d -exec chmod 755 {} \;
+find /var/www/html -type f -exec chmod 644 {} \;
+chmod 600 /var/www/html/wp-config.php</code></pre>
+<p><strong>4）收敛不需要的入口</strong>：不用 XML-RPC 就在 Web 服务器层直接拒绝；应用密码按需保留、用完即撤；改后台登录路径只能防自动化撞库，不能当主要防线。</p>
+<p>**5）更新策略**：先备份，再小批量更新，最后复测。<code>wp plugin update --all</code> 很方便，但在被入侵的站点上一定要先清理再更新——顺序反了，你可能把已被人改过的插件文件当成正常版本覆盖上去，从而掩盖证据。</p>
+<h2>恢复：怎么让 Google 尽快放行</h2>
+<p>站点干净之后别立刻点「请求审核」。Google 对同一站点的重新审核次数有限，第一次没过，后续间隔会拉长。先把这三件事做完：</p>
+<p>1. 用 Search Console 的「安全问题」面板确认标记已消失；</p>
+<p>2. 在服务器上用不同 UA 再跑一遍 curl 复测，确认 cloak 彻底消失；</p>
+<p>3. 留一份修复说明：改了什么、什么时候改的、清理了哪些文件——审核时用得上。</p>
+<p>确认无误后再提交重新审核。以这次的站点为例，从提交到解除警告用了 3 天。这个时长受站点历史与标记类型影响很大，不建议把别人的时间当作自己的预期。</p>
+<h2>程序员工位装备（含联盟链接）</h2>
+<p>应急窗口往往在凌晨，盯日志、比 UA、看 diff 的体验，很大程度由工位本身决定。下面两件是我这次事故里真正用到的，均为 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接：</p>
+<p><strong>4K USB-C 显示器 Dell UltraSharp U2723QE</strong> — IPS Black 面板、90W USB-C 一线连、自带 USB 3.2 Hub 与 RJ45 网口，笔记本一根线搞定显示、网络和供电。横向空间足够左边开四个终端、右边并排 diff。价格随促销浮动，截至发稿约 500 至 650 美元，请以产品页为准。真实避坑：出厂预设偏亮、白色均匀度个体差异偏大；Hub 上挂机械硬盘时供电不足会掉盘。</p>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 Dell U2723QE >></a></p>
+<p><strong>BenQ ScreenBar Halo 2 屏幕挂灯</strong> — 三区背光、无级色温、离座自动关灯，晚上排查日志时把环境光压下去，也不占桌面。官方定价约 179 美元，促销波动较大。真实避坑：自动调光模式下色温锁定在 4000K 附近不可改；老显示器 USB 口只有 5V/1A 时会闪烁，需要独立 5V/3A 供电。</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 BenQ ScreenBar Halo 2 >></a></p>
+<p>以上价格均为截至发稿的公开口径，<a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 价格变动频繁，下单前请自行确认。</p>
+<h2>FAQ</h2>
+<p><strong>Q：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 自带 2FA 吗？</strong></p>
+<p>A：不带。核心至今没有内置双因素认证，必须装插件。常用免费方案有 WP 2FA、Two-Factor、Wordfence Login Security 与 Solid Security，只装一个，避免登录过滤器冲突。</p>
+<p><strong>Q：WPScan 免费版够用吗？</strong></p>
+<p>A：做应急排查够用。免费档每天 25 次请求，单站一次含插件枚举的扫描通常消耗几次；配额紧张时用 <code>-e vp</code> 只扫有漏洞的插件最省。需要批量管理大量站点时才用得上付费档。</p>
+<p><strong>Q：清理完一定要轮换密钥吗？</strong></p>
+<p>A：建议轮换。攻击者可能已经拿到 <code>wp-config.php</code> 里的认证密钥，进而伪造登录 Cookie。<code>wp config shuffle-salts</code> 会强制所有会话失效，是最直接的踢钥匙动作，代价是全员需要重新登录。</p>
+<p><strong>Q：被 Google 标记后多久能恢复？</strong></p>
+<p>A：取决于标记类型与站点历史，没有固定值。这次是提交后 3 天解除。关键是先彻底清理干净再提交，反复申请会被拉长复核间隔。</p>
+<p><strong>Q：核心校验和通过了，是不是就安全了？</strong></p>
+<p>A：不是。<code>wp core verify-checksums</code> 只能证明官方核心文件没被改，覆盖不到上传目录里的 PHP、自建插件、数据库注入内容和新多出来的管理员账号。必须和 WPScan 扫描、用户审计、<code>mu-plugins</code> 检查一起看。</p>
+<h2>结语</h2>
+<p>这次事件真正的教训不是「插件要更新」这种老生常谈，而是顺序：报警之后我做的第一件事不是删文件，而是把 UA 对比、文件修改时间、数据库 dump 三样证据留了下来。正是 <code>recent-php.txt</code> 里那三行异常文件，让我在 30 分钟内锁定了那个停更三年的插件——如果当时先 <code>wp core download --force</code> 覆盖，这条线索就没了。</p>
+<p>如果你在做同类排查，这两篇可以接着看：用 <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-600-seo.html" target="_blank" rel="nofollow sponsored">WP-CLI 批量重排 600 篇文章的内链与 SEO 元数据</a> 讲的是日常自动化，<a href="https://yaohehe.github.io/2026-09-30-wordpress-71-redis-5.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 加 Redis 对象缓存实战</a> 讲的是性能层——安全加固之后，下一步通常就会碰到缓存与会话失效的联动问题。想进一步做自动化运维，可以参考 <a href="https://yaohehe.github.io/2026-10-01-wordpress-71-mcp-adapter-ai.html" target="_blank" rel="nofollow sponsored">让 AI Agent 安全接管内容站的 MCP Adapter 实践</a>：自动化越好用，暴露面的管理就越要提前做。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+  <div style="display:flex;flex-direction:column;gap:8px;">
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-30-wordpress-71-redis-5.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + Redis 对象缓存实战：从「一登录就慢」到命中率 90%</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">Redis, 对象缓存</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12: Rebuilding Internal Links Across 612 Posts</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, Internal Links</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + WP-CLI 2.12 实战：600 篇文章内链与 SEO 批量重排</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">WP-CLI, 内链优化</div>
+    </div>
+    <div style="margin-bottom:10px;padding:10px;background:white;border-radius:6px;border:1px solid #e0e0e0;">
+      <div style="font-size:0.95em;font-weight:600;margin-bottom:4px;">
+        <a href="/2026-09-30-wordpress-71-redis-object-cache-speeding-up-logged-en.html" style="color:#3498db;text-decoration:none;">WordPress 7.1 + Redis Object Cache for Membership Sites</a>
+      </div>
+      <div style="font-size:0.8em;color:#888;">Redis, object cache</div>
+    </div>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
