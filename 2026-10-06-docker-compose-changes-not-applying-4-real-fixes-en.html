@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Compose Changes Not Applying: 4 Real Fixes - TechPassive</title>
+  <meta name="description" content="You edited ports and env vars in docker-compose.yml, ran restart, and the service kept the old config. Covers the config-hash label, systemd daemon-reload and drop-in rules, with real diagnostics.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Docker Compose Config Not Applying: 4 Real Errors and the Fixes</h1>
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">self-hosted</span><span class="tag">DevOps</span><span class="tag">Docker Compose</span><span class="tag">systemd</span>
+  </div>
+  <div class="content">
+    <p>The sentence that makes self-hosted operations miserable is: "I changed the config. Why didn't it take effect?"</p>
+<p>That sentence shows up constantly, and it is almost never an application bug. More often it is a mismatch between how the deployment tool decides what "applied" means and what you intuitively expect it to mean. I manage a dozen or so Compose projects on one machine, and nearly every one of my repeat mistakes collapses into a single fact: **a container's configuration is fixed at the moment the container is created.** <code>restart</code> just runs the process again inside that same container. It will never re-read your YAML.</p>
+<p>This article is not about standing up a service. It is about one thing: <strong>why the configuration did not apply, and how to identify which layer ate it within five minutes.</strong> Every command here is copy-pasteable.</p>
+<blockquote>Disclosure: this post contains <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> affiliate links. Prices are unchanged if you buy through them, and I earn a small commission. The hardware mentioned is self-purchased, and prices reflect typical ranges as of publication — check the product page for current pricing.</blockquote>
+<h2>The mental model: restart and up -d are not the same operation</h2>
+<p>The first mistake almost everyone makes is treating <code>docker compose restart</code> as "apply the new config." It is not.</p>
+<p>Environment variables, port mappings, mount paths, the command, the run user, the image ID — all of these are written into the container's own record when the container is created. <code>restart</code> sends a stop signal to the main process and starts it again **inside the same container**. Since the container was never replaced, none of those fields can have changed.</p>
+<p>So after <code>restart</code>, all of the following are guaranteed to be unchanged:</p>
+<ul><li>Edits to `ports:`, `volumes:`, `environment:`, or `command:` in `docker-compose.yml`</li><li>Changed values in `.env` (Compose reads `.env` while **rendering the service definition**, not while starting a process)</li><li>Edits to the file referenced by `env_file:` (resolved into the definition at the same stage)</li><li>A new image (the container still runs the image it was created from)</li></ul>
+<p>The command that actually applies changes is <code>docker compose up -d</code>. Here is how it works: Compose reads the Compose file, resolves every variable, computes a hash of the resulting service definition, and stores that hash as a label on the container when it creates it. On the next <code>up -d</code>, it computes the hash again and compares it to the label on the running container. **Different hash, new container. Same hash, Compose leaves it alone.**</p>
+<p>That single mechanism also explains the other common confusion: "I changed the config, and <code>up -d</code> did nothing." Nothing is broken — nothing actually differed. Either the key you edited never made it into the rendered result (a typo'd key, for example), or something else is overriding it.</p>
+<p>One more version trap: the old hyphenated <code>docker-compose</code> (the Python-based V1) is no longer in current packages. As of July 2026, getting <code>docker-compose: command not found</code> on a fresh Ubuntu box is **expected behavior**, not a broken machine. The current form is <code>docker compose</code> with a space — a Go plugin installed alongside Docker Engine, commonly referred to as Compose V2. Use <code>docker compose version</code> to confirm.</p>
+<h2>The command ladder: match the rung to what you edited</h2>
+<p>Start from the cheapest rung and climb only as far as your edit requires. This saves both needless rebuilds and avoidable downtime.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What you changed</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Command to run</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Recreates the container?</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Process crashed, just bring it back</td><td style="border:1px solid #ddd;padding:8px;">`docker compose restart web`</td><td style="border:1px solid #ddd;padding:8px;">Never — it never recreates</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Service reads config from a host bind mount</td><td style="border:1px solid #ddd;padding:8px;">`docker compose exec web nginx -s reload`</td><td style="border:1px solid #ddd;padding:8px;">No, and it drops no connections</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Edited the Compose file, `.env`, or `env_file`</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d`</td><td style="border:1px solid #ddd;padding:8px;">Only if the definition hash changed</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Edited the Dockerfile or application code</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d --build web`</td><td style="border:1px solid #ddd;padding:8px;">Builds first, then recreates</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Suspect a stale build cache</td><td style="border:1px solid #ddd;padding:8px;">`docker compose build --no-cache web`, then `up -d web`</td><td style="border:1px solid #ddd;padding:8px;">Rebuilds every layer</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Changed an image tag and need the new one</td><td style="border:1px solid #ddd;padding:8px;">`docker compose pull web`, then `up -d web`</td><td style="border:1px solid #ddd;padding:8px;">Recreates only after the pull</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Want to force-refresh the runtime environment</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d --force-recreate`</td><td style="border:1px solid #ddd;padding:8px;">Unconditionally recreates</td></tr></tbody></table>
+<p>The two most counter-intuitive rows are the first two. <code>restart</code> is not a reload, and <code>exec ... reload</code> is the reload. If your nginx config directory is bind-mounted from the host, editing the file on the host does not require replacing the container at all — reload in place instead, which is far gentler and does not drop the connections the container is currently serving.</p>
+<p>Conversely, "update the image" requires **two commands**. <code>pull</code> downloads the new image; <code>up -d</code> is what notices the image ID changed and recreates the container. Run <code>up -d</code> without pulling and you will quietly keep running last month's <code>latest</code>, with no error at all.</p>
+<p>One automation-related detail is worth remembering: <code>up -d</code> returns as soon as the containers are created, which is why a deploy script that runs <code>up -d</code> and immediately probes with curl **often fails on the first try**. Use <code>up -d --wait</code> to block until every service that declares a <code>healthcheck</code> reports healthy, exiting non-zero if one never gets there. That flag is only as good as the check behind it, so write the healthcheck properly before leaning on it in automation.</p>
+<h2>Error 1: you changed .env and the service still uses the old values</h2>
+<p>This is the single most frequent one I see. There is no exception in the logs. The service simply <strong>quietly ignores</strong> your edit.</p>
+<p>The observable symptom usually shows up application-side: it cannot reach the database, it is listening on the old port, or the config value printed in its logs differs from what you just wrote.</p>
+<p>The cause is that <code>.env</code> is read while Compose **renders the service definition**, and the resolved result is baked into that definition. <code>restart</code> never re-renders.</p>
+<p>Diagnostic order:</p>
+<pre><code># 1. Look at the final rendered definition — did my value make it in?
+docker compose config
+
+# 2. Read the hash label stored on the container
+docker inspect --format '{{ index .Config.Labels "com.docker.compose.config-hash" }}' <container>
+
+# 3. Read the environment variable the container actually has
+docker compose exec web env | grep MY_VAR</code></pre>
+<p>If step 1 prints your new value and step 3 still shows the old one, you simply did not recreate. Run <code>docker compose up -d <service></code>. If step 1 still shows the old value, the problem is at the rendering layer — commonly because the file referenced by <code>env_file:</code> does not exist, or because you are in the wrong directory. Compose takes the project name and resolves the file relative to the current directory, so running it one level up yields <code>no configuration file provided: not found</code>.</p>
+<h2>Error 2: the systemd drop-in is written but the service behaves identically</h2>
+<p>The scenario: you do not want to edit <code>/lib/systemd/system/nginx.service</code> directly (a package upgrade will overwrite it), so you write a drop-in. After <code>systemctl restart</code>, nothing changed.</p>
+<p>The most common error text looks like this:</p>
+<pre><code>Failed to read drop-in file /etc/systemd/system/nginx.service.d/override.conf:
+Syntax error</code></pre>
+<p>Or a quieter variant, where nothing is reported at all but your file is simply never read:</p>
+<pre><code># Named override.txt — systemd ignores it outright, because it requires .conf</code></pre>
+<p>systemd's rules for drop-ins are strict:</p>
+<ul><li>The directory must be named `<full unit name>.d`, i.e. `nginx.service.d`, not `nginx.d`</li><li>The filename **must end in `.conf`**</li><li>It must live under `/etc/systemd/system/`, which takes precedence over `/run/` and `/usr/lib/`</li><li>Multiple drop-ins are applied in lexicographic order of filename</li></ul>
+<p>After writing one you **must** run <code>systemctl daemon-reload</code>. systemd reads unit files into memory and does not look at disk again, so editing the file without reloading is equivalent to having done nothing:</p>
+<pre><code>sudo systemctl edit nginx.service      # interactive drop-in editor, hardest to get wrong
+sudo systemctl daemon-reload
+sudo systemctl restart nginx</code></pre>
+<p>To confirm what systemd actually used, run <code>systemctl cat nginx.service</code> — it shows the **merged, effective** unit content, which is far more reliable than reading files on disk yourself.</p>
+<h2>Error 3: "Service has more than one ExecStart= setting"</h2>
+<p>This one appears when a drop-in tries to override <code>ExecStart</code>:</p>
+<pre><code>nginx.service: Service has more than one ExecStart= setting in drop-in.
+Refusing.</code></pre>
+<p><code>ExecStart=</code> is a list-type directive. Writing another one in a drop-in **appends** rather than overrides, so you end up with two. The rule is: **clear it with an empty assignment first, then set the new value.**</p>
+<pre><code>[Service]
+ExecStart=
+ExecStart=/usr/local/bin/nginx -c /etc/nginx/my.conf</code></pre>
+<p>The same applies to other list directives — adding <code>OnCalendar=</code> in a timer and getting two firings, for example, or stacking <code>Environment=</code>. Single-value directives are simply overwritten when you write them; no clearing needed.</p>
+<p>The opposite trap: **dependencies can be added but never removed.** <code>Requires=</code>, <code>After=</code> and friends cannot be unset through a drop-in. To genuinely replace a unit, use <code>systemctl edit --full</code> to write a complete unit, or mask and redefine it.</p>
+<p>To audit a whole machine for units that have been overridden by drop-ins — or, worse, frozen by a full copy — run:</p>
+<pre><code>systemctl daemon-reload
+systemd-delta --type=overridden</code></pre>
+<p><strong>A full copy of the unit file is the worst case</strong>: it freezes upstream's version, so package upgrades will never reach you.</p>
+<h2>Error 4: the unit is correct but the service will not start</h2>
+<p>Drop-in syntax is valid, the daemon-reload ran, and <code>systemctl start</code> still fails. The errors typically look like:</p>
+<pre><code>myapp.service: Failed at step EXEC spawning /opt/myapp/bin/myapp: No such file or directory</code></pre>
+<p>Or the more common restart loop:</p>
+<pre><code>myapp.service: Start request repeated too quickly.
+myapp.service: Failed with result 'exit-code'.
+systemd: Failed to start MyApp daemon.</code></pre>
+<p>The first means the <code>ExecStart</code> path does not exist or is not executable — check with <code>ls -l</code>. The second means the app started and exited immediately, and <code>Restart=on-failure</code> brought it straight back, hitting the rate limit. In that case **stop reading the restart policy and find out why the app exited**:</p>
+<pre><code>sudo systemctl status myapp.service
+sudo journalctl -u myapp.service -n 50 -o cat   # strip systemd's wrapper, read the app's own first error</code></pre>
+<p>The <code>-o cat</code> step matters. systemd only tells you "the process exited"; the actual cause lives in the service's own stdout/stderr, and you cannot see it without stripping the wrapper.</p>
+<p>Validate syntax before changing anything and you will avoid a lot of blind restarts:</p>
+<pre><code>sudo systemd-analyze verify /etc/systemd/system/myapp.service</code></pre>
+<p>It parses the unit, reports syntax errors and unknown directives, and checks whether the executable named in <code>ExecStart=</code> exists.</p>
+<h2>The version-specific trap: containers get recreated after a Compose upgrade</h2>
+<p>Reconciliation in Compose changed considerably during 2026, and if you upgraded recently these are worth knowing:</p>
+<ul><li>**v5.2.0 (2026-06-23)** introduced a new reconciliation algorithm between observed and expected container state, flagged as a breaking change in a minor release.</li><li>**v5.4.0 (2026-08-03)** modeled volume recreation and network lifecycle in the reconcile plan, so volume and subnet changes became visible before they were applied. It also fixed multi-platform builds to use the platform image-manifest digest.</li><li>**v5.5.0 (2026-08-17)** overhauled image digest reconciliation. **Note: the first time you run `compose up` after upgrading, existing containers may be recreated**, because the digest comparison moved to a new model. This is a one-time event; once the digests settle, unnecessary recreation stops.</li></ul>
+<p>The practical consequence: if your script diffs container IDs to decide whether "anything changed," <strong>verify the first run after the upgrade separately</strong> instead of treating it as an anomaly.</p>
+<h2>A five-minute triage checklist</h2>
+<p>Configuration did not apply. Walk these in order:</p>
+<pre><code># 1. Render layer: is my change in the final definition?
+docker compose config | grep -i MY_VAR
+
+# 2. Definition layer: did the hash change?
+docker inspect --format '{{ index .Config.Labels "com.docker.compose.config-hash" }}' <container>
+
+# 3. Container layer: did the environment variable actually arrive?
+docker compose exec <service> env | grep MY_VAR
+
+# 4. Mount layer: bind mount or named volume?
+docker inspect <container> --format '{{json .Mounts}}'
+
+# 5. Image layer: which image ID am I really running?
+docker inspect <container> --format '{{.Image}}'
+docker image inspect <image>:<tag> --format '{{.Id}}'</code></pre>
+<p>Step 4 gets skipped most often. <strong>Editing a file on the host and not seeing it inside the container</strong> is another flavor of "my change did not apply" — if that mount is a named volume rather than a bind mount, the host directory and the container directory are two completely independent copies of the data.</p>
+<h2>Closing: make the mechanism a habit</h2>
+<p>I kept exactly three rules from all of this:</p>
+<p>1. **After editing a Compose file, always run <code>docker compose config</code> first** and read the rendered result. Never edit and immediately <code>up</code>. This one habit prevents the large majority of low-level mistakes.</p>
+<p>2. **<code>restart</code> is only for reviving a crashed process.** Any configuration change goes through <code>up -d</code>. Add <code>--build</code> when build artifacts changed, and <code>pull</code> first when the image changed.</p>
+<p>3. **Never edit files directly under <code>/lib/systemd/system/</code> or <code>/usr/lib/systemd/system/</code>.** Use drop-ins, run <code>daemon-reload</code>, then verify with <code>systemctl cat</code>.</p>
+<p>One more note: the pile of small services on my machine is fundamentally "one small host plus a lot of containers." If you are building a similar home lab, these three items are what I actually use — a Raspberry Pi 5 as an always-on node, a Cat6 cable for the rack run, and a microSD card holding configs and logs. All self-purchased, prices confirmed on the product page.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">View Raspberry Pi 5 (8GB) on Amazon</a></p>
+<p>👉 <a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">View Amazon Basics Cat6 Ethernet Cable on Amazon</a></p>
+<p>👉 <a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">View Amazon Basics microSD Card 128GB on Amazon</a></p>
+<h2>Further reading</h2>
+<p>Once your self-hosted services are actually running, the next question is how you know they are alive and behaving. Observability should come next — I wrote up the full approach in <a href="https://yaohehe.github.io/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" target="_blank" rel="nofollow sponsored">adding full tracing to a self-hosted workflow with Langfuse</a>, and the Docker and self-hosting pitfalls overlap heavily with this one.</p>
+<p>If these services change alongside your CI/CD, then "when did the config take effect" stops being purely an ops question and becomes a release-process question. <a href="https://yaohehe.github.io/2026-09-29-github-actions-supply-chain-post-mortem-2026-i-aud-en.html" target="_blank" rel="nofollow sponsored">GitHub Actions supply chain post-mortem</a> covers the other species of "my change did not apply" — the action's tag moved, and you thought you were running the old version while actually running someone else's.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
