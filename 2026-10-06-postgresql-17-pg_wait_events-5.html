@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL 17 线上卡顿排查实战：用 pg_wait_events 找出"谁在等谁"的 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="数据库没宕机、CPU 不高、慢查询日志干净，但所有接口超时。这篇复盘用 PostgreSQL 17 新增的 pg_wait_events 视图，配合 pg_stat_activity、pg_locks 与 pg_blocking_pids，逐步还原 5 个真实锁等待报错的现象、定位与修复，并给出可直接复制的排查 SQL 与分级超时配置。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>PostgreSQL 线上排查：数据库没挂，但接口全卡了</h1>
+  <div class="post-tags">
+    <span class="tag">运维</span><span class="tag">数据库</span><span class="tag">PostgreSQL</span><span class="tag">排坑</span><span class="tag">性能优化</span>
+  </div>
+  <div class="content">
+    <h2>⏳ 太长不看版：先给结论</h2>
+<ul><li>接口大面积超时的那个晚上，数据库进程活着、CPU 只有 10%、慢查询日志一条没记——因为后端不是在**跑**，而是在**等**。</li><li>PostgreSQL 把"在等什么"写进 `pg_stat_activity` 的 `wait_event_type` 与 `wait_event` 两列；PostgreSQL 17 起新增 `pg_wait_events` 视图（`type` / `name` / `description` 三列），把等待事件直接翻译成人话。</li><li>定位顺序固定为：先在 `pg_stat_activity` 里找 `wait_event_type = 'Lock'` 的会话，再用 `pg_blocking_pids(pid)` 递归找到真正的根阻塞者，最后用 `pg_locks` 核对锁类型，再决定是 cancel 还是 terminate。</li><li>把"偶发窗口"升级成"线上中断"的，通常不是某条慢查询，而是一个 **idle in transaction** 的长事务把锁攥在手里不放。</li></ul>
+<blockquote>说明：本文含独立第三方联盟链接，购买不会改变你的价格，但可能为本站带来佣金；是否购买与本文的排障方法无关。</blockquote>
+<h2>事故现场：数据库没挂，但接口全卡了</h2>
+<p>环境先交代清楚，因为后面几条命令的行为跟版本强相关：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本 / 说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">操作系统</td><td style="border:1px solid #ddd;padding:8px;">Ubuntu 24.04 LTS</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">数据库</td><td style="border:1px solid #ddd;padding:8px;">PostgreSQL 18.6（2026-08-13 发布）；被排查的实例同时有 17.11</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">连接池</td><td style="border:1px solid #ddd;padding:8px;">PgBouncer 1.25.2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">观察工具</td><td style="border:1px solid #ddd;padding:8px;">pg_stat_activity、pg_locks、pg_stat_statements、pg_wait_events</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">内网</td><td style="border:1px solid #ddd;padding:8px;">2.5G 交换机，PG 主库与只读库同交换机</td></tr></tbody></table>
+<p>场景是典型的电商后台：下午两点，订单接口 P99 从 80ms 飙到 12s，然后 30 秒后出现大量 <code>504</code>。值班第一反应是"数据库慢了"，于是去看三样东西：</p>
+<p>1. <code>top</code>：PostgreSQL 后端进程 CPU 合计只有 10% 出头。</p>
+<p>2. 慢查询日志：<code>log_min_duration_statement = 1000</code> 开着，但那一小时几乎没记录。</p>
+<p>3. 连接数：PgBouncer 的 <code>cl_active</code> 蹭到了 <code>max_client_conn</code> 上限，后面开始排队。</p>
+<p>这三条同时成立，基本可以排除"某条 SQL 全表扫得太慢"。**CPU 不高 + 慢查询日志干净 + 连接全占满**，指向的是同一个方向：大部分会话根本没有在消耗 CPU，它们在等一把锁，而等待是不进慢查询日志的（除非你另开 <code>log_lock_waits</code>）。</p>
+<p>我实际排查时，第一件事是重启了一次数据库——这几乎是等待类故障里最没价值的动作，还把现场证据一起清掉了。后来我从 14:05 查到 14:40，真正定性只花了不到十分钟，前面半小时全浪费在"重启碰运气"上。下面这套流程，就是我事后整理出来、希望下一次不用再走弯路的那份清单。</p>
+<h2>先把"在等"量化：wait_event_type 与 wait_event</h2>
+<p>PostgreSQL 从 9.6 起就在 <code>pg_stat_activity</code> 里提供了 <code>wait_event_type</code> 与 <code>wait_event</code> 两列。只要一个后端没有在跑 CPU 工作，它就会在这两列里写下自己暂停的原因。取值大类只有几种：</p>
+<ul><li>`Lock`：等重量级锁（表锁、行锁、`transactionid` 等），最常见的事故来源。</li><li>`LWLock`：等轻量级锁，多半是内部资源竞争（如 `WALWrite`、`ProcArray`）。</li><li>`IO`：等磁盘 I/O（如 `DataFileRead`、`WALWrite`）。</li><li>`Client`：等客户端读/写，典型是 `ClientRead`（应用拿到结果却没及时提交或继续发查询）。</li><li>`IPC`、`Timeout`、`BufferPin`、`Activity`：内部通信、超时等待、缓冲区争用、进程主循环。</li></ul>
+<p>要记住一个反直觉的事实：<code>wait_event_type = 'Client'</code> 且 <code>wait_event = 'ClientRead'</code>，往往意味着"数据库没问题，是应用端在磨蹭"。这类等待在只读库上尤其容易被误判成数据库卡顿。</p>
+<p>先跑一条只读的总览 SQL，把当前所有非空闲会话按等待类型聚合：</p>
+<pre><code>SELECT wait_event_type, wait_event, count(*) AS sessions
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+  AND state <> 'idle'
+GROUP BY 1, 2
+ORDER BY sessions DESC;</code></pre>
+<p>如果结果里 <code>Lock</code> 一栏突然有个几十条，事故基本就锁定了。这条语句只读、无副作用，可以在生产上随时跑。</p>
+<h2>PG 17 的 pg_wait_events：把 wait_event 翻译成人话</h2>
+<p><code>pg_stat_activity.wait_event</code> 返回的是英文标识符，比如 <code>WALWrite</code>、<code>ClientRead</code>、<code>relation</code>。在 17 之前，你想知道它到底什么意思，只能翻官方文档或源码里的 <code>wait_event_names.txt</code>。PostgreSQL 17 起，这些描述被固化成了一个系统视图 <code>pg_wait_events</code>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">列</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">含义</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`type`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">等待事件大类，与 `wait_event_type` 一致</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`name`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">具体等待名，与 `wait_event` 一致</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`description`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">一句人话解释</td></tr></tbody></table>
+<p>这个视图是只读的、任何角色都能查、没有统计重置、没有运行时开销，本质上就是"随服务器一起发布的文档"。它在标准 17.x 上大约有 350 行，且每个大版本都会随新埋点增长。把 <code>pg_stat_activity</code> 与它按 <code>type</code> / <code>name</code> 连起来，就能在事故现场直接读到"到底在等谁、为什么等"：</p>
+<pre><code>SELECT a.pid, a.usename, a.state, a.wait_event_type, a.wait_event,
+       now() - a.xact_start AS xact_age,
+       now() - a.query_start AS query_age,
+       w.description
+FROM pg_stat_activity a
+JOIN pg_wait_events w
+  ON a.wait_event_type = w.type
+ AND a.wait_event = w.name
+WHERE a.wait_event IS NOT NULL
+  AND a.state = 'active'
+ORDER BY xact_age DESC;</code></pre>
+<p><code>xact_age</code>（事务存活时长）比 <code>query_age</code>（当前语句时长）更有价值：一个只跑了 200ms 的语句，如果挂在一个开了 18 分钟的事务里，它照样能攥着 18 分钟前拿到的锁。</p>
+<h2>排查三连：三条可以直接复制的 SQL</h2>
+<p><strong>第一连，找出被挡住的人：</strong></p>
+<pre><code>SELECT pid, usename, application_name, wait_event_type, wait_event,
+       now() - query_start AS waited, left(query, 80) AS stmt
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+ORDER BY waited DESC;</code></pre>
+<p><strong>第二连，顺着阻塞链找到根：</strong></p>
+<pre><code>SELECT blocked.pid   AS blocked_pid,
+       pg_blocking_pids(blocked.pid) AS blocker_pids,
+       blocked.state AS blocked_state,
+       blocker.pid   AS blocker_pid,
+       blocker.state AS blocker_state,
+       now() - blocker.xact_start AS blocker_xact_age,
+       left(blocker.query, 80) AS blocker_stmt
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocker
+  ON blocker.pid = ANY (pg_blocking_pids(blocked.pid))
+WHERE blocked.wait_event_type = 'Lock'
+ORDER BY blocker_xact_age DESC;</code></pre>
+<p><code>pg_blocking_pids()</code> 返回的是**数组**，可能不止一个。要特别注意 <code>blocker_state</code>：如果是 <code>idle in transaction</code>，说明这个后端早就没在做有用的事，却仍然持有锁——这是事故里最常见、也最该被处理的一种。</p>
+<p><strong>第三连，核对到底等了哪种锁：</strong></p>
+<pre><code>SELECT l.pid, l.locktype, l.relation::regclass, l.mode, l.granted,
+       now() - a.query_start AS waited
+FROM pg_locks l
+JOIN pg_stat_activity a ON l.pid = a.pid
+WHERE NOT l.granted
+ORDER BY waited DESC;</code></pre>
+<p>行级争用有个坑：因为行锁写在磁盘上，<code>pg_locks</code> 里往往看不到 <code>tuple</code>，而是显示为对方等待 <code>transactionid</code>。所以"我查了 pg_locks 却看不见行锁"是正常现象。</p>
+<h2>踩坑录：5 个真实报错与定位修法</h2>
+<h3>报错一：ERROR: canceling statement due to lock timeout</h3>
+<pre><code>ERROR:  canceling statement due to lock timeout</code></pre>
+<p><strong>现象</strong>：批量更新订单状态的任务，每过一阵就报一次，重试又能成功。</p>
+<p>**根因**：语句在 <code>lock_timeout</code> 设定时间内没拿到锁，被 PostgreSQL 主动取消。注意它和 <code>statement_timeout</code> 不是一回事——<code>lock_timeout</code> 管的是"排队等锁"的时间，<code>statement_timeout</code> 管的是"整条语句执行"的总时间。**把 <code>statement_timeout</code> 调大，救不了被 <code>lock_timeout</code> 取消的语句。**</p>
+<p>**修复**：先用上面第二连的 SQL 找出 blocker；如果 blocker 是弃用的 <code>idle in transaction</code>，用 <code>pg_terminate_backend()</code> 释放；如果是合法但很重的事务，把批量任务改成"短 <code>lock_timeout</code>（如 100ms）+ 应用层重试循环"，让它失败得又快又明显，而不是长期占着连接排队。</p>
+<h3>报错二：ERROR: relation "pg_wait_events" does not exist</h3>
+<pre><code>ERROR:  relation "pg_wait_events" does not exist
+LINE 1: SELECT * FROM pg_wait_events LIMIT 3;</code></pre>
+<p><strong>现象</strong>：照着本文的 SQL 在线上跑，直接报关系不存在。</p>
+<p>**根因**：该视图是 **PostgreSQL 17 才引入**的（commit 1e68e43d）。在 16 及更早版本上，这个视图不存在。用 <code>SHOW server_version;</code> 或 <code>SELECT version();</code> 一查便知。</p>
+<p>**修复**：17 以下版本请退回 <code>pg_stat_activity</code> 的 <code>wait_event_type</code> / <code>wait_event</code> 两列，再对照官方文档的等待事件表阅读；长期方案是升级到受支持的大版本——注意 **PostgreSQL 14 将于 2026-11-12 停止接收修复**，仍在跑 14 的实例应尽快规划升级。</p>
+<h3>报错三：ERROR: deadlock detected</h3>
+<pre><code>ERROR:  deadlock detected
+DETAIL:  Process 52210 waits for ShareLock on transaction 998877; blocked by process 51990.
+Process 51990 waits for ShareLock on transaction 552211; blocked by process 52210.
+HINT:  See server log for query details.</code></pre>
+<p><strong>现象</strong>：两个会话互相等对方持有的行锁，形成环。</p>
+<p>**根因**：两条业务路径以**相反顺序**加锁。比如路径 A 先锁订单再锁库存，路径 B 先锁库存再锁订单。PostgreSQL 的死锁检测器会在 <code>deadlock_timeout</code>（默认 1s）后介入，随机回滚其中一个事务。</p>
+<p>**修复**：这类问题靠加超时治不好，必须统一加锁顺序——所有涉及"订单 + 库存"的事务，都按固定顺序（如先订单后库存）访问。同时把 <code>log_lock_waits = on</code> 打开，让日志留下证据链。</p>
+<h3>报错四：FATAL: terminating connection due to idle-in-transaction timeout</h3>
+<pre><code>FATAL:  terminating connection due to idle-in-transaction timeout</code></pre>
+<p><strong>现象</strong>：应用里偶发"连接被服务端断开"，且总出现在某几个报表接口之后。</p>
+<p>**根因**：业务在一个 <code>BEGIN</code> 里做了一件"数据库之外的事"（调外部接口、跑一段耗时后处理），期间事务一直开着。在 PostgreSQL 18.6 / 17.11 里，若设置了 <code>idle_in_transaction_session_timeout</code>，这种挂着不干活的会话会被强制断开并回滚。**这是保护机制，不是 bug**——但它会暴露你的事务边界画错了。</p>
+<p>**修复**：把外部调用、消息发送等非数据库操作挪出事务；对确实无法避免的长事务，改成短事务 + 幂等重试。同时给普通业务库统一设置 <code>idle_in_transaction_session_timeout</code>（如 <code>60s</code>），让"忘了提交"的事务早点死掉，而不是攥着锁拖垮全站。</p>
+<h3>报错五：pg_blocking_pids() 返回空数组，会话却确实在等</h3>
+<p>**现象**：某个会话 <code>wait_event_type = 'Lock'</code>，但 <code>pg_blocking_pids(pid)</code> 返回 <code>{}</code>，看起来"没人挡它"。</p>
+<p>**根因**：<code>pg_blocking_pids()</code> 只能识别**同一实例内**的重量级锁阻塞链。若会话其实在等 <code>Client</code>（<code>ClientRead</code>，等应用读走结果）或其它内部等待，这个函数自然给不出 blocker。也可能阻塞者是别的数据库，或经过连接池复用后 PID 语义变化，导致看起来无人阻塞。</p>
+<p>**修复**：回到 <code>pg_stat_activity</code> 看 <code>wait_event_type</code> 的真实值——是 <code>Lock</code>，还是 <code>Client</code> / <code>IO</code> / <code>LWLock</code>；只有 <code>Lock</code> 才该继续找 blocker。同时给每个应用设置 <code>application_name</code>，让会话可追溯到具体服务，别在连接池里靠猜。</p>
+<h2>把"等"用 EXPLAIN 看见：PG 17 的 SERIALIZE 与 MEMORY</h2>
+<p>有些"慢"不是锁，而是数据转换与优化器内存。PostgreSQL 17 给 <code>EXPLAIN</code> 加了两个新选项：</p>
+<ul><li>`SERIALIZE`：显示把结果集转换成网络传输格式所花的时间——大结果集或复杂类型的查询，这部分可能是大头。</li><li>`MEMORY`：报告优化器规划阶段使用的内存量。</li></ul>
+<p>再叠加 <code>ANALYZE</code> 与 <code>BUFFERS</code>，一条语句的完整画像就齐了：</p>
+<pre><code>EXPLAIN (ANALYZE, BUFFERS, SERIALIZE, MEMORY, TIMING)
+SELECT o.id, o.status, o.total
+FROM orders o
+WHERE o.batch_id = 42;</code></pre>
+<p>重点看三处：<code>actual rows</code> 与 <code>rows=</code> 估算是否量级相符（差异大说明统计信息过期，跑 <code>ANALYZE</code>）；<code>read=</code> 缓冲区计数是否畸高（说明缺索引或表膨胀）；<code>Serialization</code> 段是否占比异常（说明瓶颈在数据转换而非扫描）。</p>
+<h2>加固：把"偶发"压成"可控"</h2>
+<p>1. **分级超时**，而不是一个全局值：OLTP 用紧的 <code>statement_timeout</code>；迁移、分析类会话单独放宽或临时置 0；<code>lock_timeout</code> 一律设置，让等锁尽早失败而不是无限排队；<code>idle_in_transaction_session_timeout</code> 必设。</p>
+<p>2. **迁移用低锁模式**：生产上建索引用 <code>CREATE INDEX CONCURRENTLY</code>；大表变更避开业务高峰；<code>ALTER TABLE</code> 前先 <code>SET lock_timeout</code>，抢不到锁就退避重试，别把 DDL 排在长查询后面形成"锁队列"。</p>
+<p>3. **让日志有证据**：<code>log_lock_waits = on</code>、<code>deadlock_timeout</code> 按业务敏感度调整、关键服务统一 <code>application_name</code>，事故时才能快速还原链路。</p>
+<h2>自建 PostgreSQL 主机 / 程序员工位清单（联盟链接）</h2>
+<p>下面三件是本文这套排查流程反复用到"自建小实验室"时的常见搭配——一台低功耗节点跑 PG 测试实例、一条合格网线连主从、一张卡放冷备。仅为采购参考，与本文排障方法没有绑定关系：</p>
+<ul><li>Raspberry Pi 5（8GB）：低功耗的自建 PG 测试节点，适合复现锁等待与主从延迟。👉 <a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 >></a></li><li><a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Basics Cat 6 网线：主从复制与内网传输用，长度按机房/桌面实际选。👉 <a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 >></a></li><li><a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Basics microSDXC 128GB：单板机系统盘，用于搭建可随时重装的测试环境。👉 <a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 >></a></li></ul>
+<p>价格随内存与促销常变，请以 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 商品页实时标价为准。</p>
+<h2>常见问题 FAQ</h2>
+<p>**Q：<code>wait_event_type = 'Client'</code> 也算数据库卡顿吗？**</p>
+<p>A：不算。<code>Client</code> 表示后端在等客户端读走结果或发下一条语句，瓶颈在应用侧。看到大量 <code>ClientRead</code>，先去查应用是不是拿了连接不提交。</p>
+<p>**Q：没有权限查 <code>pg_stat_activity</code> 里其他用户的会话怎么办？**</p>
+<p>A：普通角色只能看到自己会话的 <code>query</code> 文本，但 <code>wait_event_type</code> / <code>wait_event</code> / <code>pid</code> 仍可读。需要完整视图时，用 <code>pg_monitor</code> 角色或超级用户。</p>
+<p>**Q：<code>pg_wait_events</code> 会拖慢生产吗？**</p>
+<p>A：不会。它是静态目录视图，无统计重置、无运行时开销，随时可查。</p>
+<p>**Q：<code>lock_timeout</code> 设多少合适？**</p>
+<p>A：没有万能值。OLTP 短事务常从 1s 起调，迁移/DDL 用更短（如 100ms）配合重试；关键是"让它失败得早而明显"，而不是放任无限排队。</p>
+<p>**Q：<code>idle_in_transaction_session_timeout</code> 会不会误杀正常长事务？**</p>
+<p>A：会，所以阈值要按业务定。它衡量的是"事务开着但什么都没做"的时长，正常持续在跑的长事务不受影响；被杀的通常是真的写错了事务边界。</p>
+<h2>结语</h2>
+<p>这次事故的教训可以压成一句话：**数据库故障里，"慢"和"等"是两码事，而 <code>pg_wait_events</code> 让"等"第一次变得可以直接读出来。** 把等待类型看清楚、把阻塞链溯到根、把三类超时分层次设好，绝大多数"接口突然全卡"的场面都能在十分钟内定性，而不是靠重启碰运气。</p>
+<p>延伸阅读：</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
