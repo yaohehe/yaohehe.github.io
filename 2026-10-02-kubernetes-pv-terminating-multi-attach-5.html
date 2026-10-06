@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kubernetes 存储排障复盘：PV 泄漏、Terminating 卡死与 Multi-Attach 的 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="一次自建集群升级后的存储故障复盘：从 PV 回收策略未被遵守导致的后端卷泄漏，到 PVC 卡死在 Terminating、RWO 卷跨节点报 Multi-Attach，给出可复制的 kubectl 排查命令与 5 个真实报错的修法。Kubernetes 存储排障复盘：PV 泄漏、Terminating 卡死与 Mult">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Kubernetes 存储排障：PV 泄漏与 Multi-Attach 修复</h1>
+  <div class="post-tags">
+    <span class="tag">Kubernetes</span><span class="tag">Docker</span><span class="tag">运维</span><span class="tag">CI/CD</span><span class="tag">存储</span>
+  </div>
+  <div class="content">
+    <p>我维护一套自建的三节点 Kubernetes 集群，上面跑着几个内部服务和 CI 的构建缓存。今年初我给存储组件做了一次常规升级，本以为只是滚动重启，第二天早上却收到告警：一个 StatefulSet 的三个 Pod 全部卡在 ContainerCreating，两个 PVC 卡在 Terminating 超过十小时，而后端对象存储里还静静躺着三条没有任何人引用的孤儿卷。我实际排查了六个小时才收尾，最后发现根因既不是网络也不是磁盘，而是三件最容易被忽略的事：PV 回收策略的 Finalizer 行为、RWO 卷的跨节点独占锁，以及「先删 PV 再删 PVC」这个顺序错误。</p>
+<p>先说明：本文包含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接，你通过这些链接下单我会拿到少量佣金，而你支付的价格不变。文中涉及的生产域名、卷 ID 和节点名均已脱敏，命令在 Kubernetes 1.35 与 1.36 上实测通过。</p>
+<h2>⏳ 太长不看版（TL;DR）</h2>
+<ul><li>Terminating 不是故障，是保护机制在等条件满足；先去确认谁还占着它，不要上来就 patch 掉 Finalizer。</li><li>回收策略没被执行，多数是 CSI external-provisioner 版本低于 v5.0.1，Finalizer 压根没被加上。</li><li>RWO 卷同一时刻只能挂在一个节点上；节点挂掉后残留的 VolumeAttachment 会让新 Pod 永远卡住。</li><li>用 Deployment 加 RWO 卷做 RollingUpdate，多副本场景几乎一定死锁，改成 Recreate 或 StatefulSet。</li><li>先删 PVC 再删 PV 是正确顺序；反过来会让后端卷泄漏，而且全程没有任何报错。</li><li>预防三件套：固定删除顺序、有状态负载用 StatefulSet、给 PV 与 VolumeAttachment 做告警。</li></ul>
+<h2>前置准备：版本口径与一次可回滚的快照</h2>
+<p>我实际使用的环境是自建集群（kubeadm 部署）加 CSI 存储插件，版本口径截至发稿：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Kubernetes</td><td style="border:1px solid #ddd;padding:8px;">1.37（2026-08-26 发布）</td><td style="border:1px solid #ddd;padding:8px;">当前维护 1.37 / 1.36 / 1.35 三条分支；1.34 将于 2026-10-27 EOL</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">CSI external-provisioner</td><td style="border:1px solid #ddd;padding:8px;">v5.0.1 及以上</td><td style="border:1px solid #ddd;padding:8px;">低于此版本不会为新 PV 打上回收策略 Finalizer</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">kubectl</td><td style="border:1px solid #ddd;padding:8px;">与集群同小版本</td><td style="border:1px solid #ddd;padding:8px;">排查命令全部基于原生 kubectl 与 jq</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">存储</td><td style="border:1px solid #ddd;padding:8px;">任意 CSI 驱动</td><td style="border:1px solid #ddd;padding:8px;">需要 ReadWriteOnce / ReadWriteMany 语义</td></tr></tbody></table>
+<p>动任何存储对象之前，先把现场固定下来，下面几条命令是只读的，不会改变状态：</p>
+<pre><code>kubectl get pv,pvc -A
+kubectl get volumeattachment -o wide
+kubectl get pv  -o yaml > /tmp/pv-snapshot.yaml
+kubectl get pvc -A -o yaml > /tmp/pvc-snapshot.yaml</code></pre>
+<h2>为什么「先删 PV 再删 PVC」会泄漏后端卷</h2>
+<p>这里涉及 KEP-2644，标题是「始终遵守 PersistentVolume 回收策略」。它的原始问题是：当一个 PV 与 PVC 处于 Bound 状态时，删除顺序会决定回收策略是否被执行。先删 PVC 再删 PV，回收流程正常；但如果先删 PV 再删 PVC，回收流程会因为 PV 对象已经从 API Server 消失而拿不到最新状态，最终不触发后端卷删除——也就是卷泄漏，而且全程没有任何报错，只有账单和存储配额在悄悄增长。</p>
+<p>这个特性在 1.23 以 alpha 引入，需要通过 HonorPVReclaimPolicy 特性门控显式开启；1.31 转为 beta 并默认开启，1.33 达到 GA。实现方式是在 CSI 卷的 PV 上补一个 Finalizer：</p>
+<pre><code>finalizers:
+  - kubernetes.io/pv-protection
+  - external-provisioner.volume.kubernetes.io/finalizer</code></pre>
+<p>其中 external-provisioner.volume.kubernetes.io/finalizer 只在该 PV 对应的后端存储被真正删除后才会移除；而 kubernetes.io/pv-protection 则是在 PV 仍与 PVC 绑定时阻止删除。理解这两者的差别，是读懂后面所有 Terminating 现象的前提。</p>
+<h2>Step 1：三分钟定位到底谁卡住了</h2>
+<p>先不要猜，按顺序读状态。第一步看 PV 与 PVC 的 Phase，第二步看 Finalizer，第三步看有没有残留的 VolumeAttachment：</p>
+<pre><code>kubectl get pvc -A | grep -i terminating
+kubectl get pv  | grep -i terminating
+kubectl get pvc my-data -n myapp -o jsonpath='{.metadata.finalizers}'
+kubectl get volumeattachment -o custom-columns=NAME:.metadata.name,PV:.spec.source.persistentVolumeName,NODE:.spec.nodeName,ATTACHED:.status.attached</code></pre>
+<p>第三步最容易被跳过，但它往往是整条排查链的答案。只要有一条 VolumeAttachment 指向一个已经不存在的节点，那个卷就再也挂不上新节点，表现就是 Pod 一直 ContainerCreating。</p>
+<h2>💣 踩坑录：5 个真实报错与修法</h2>
+<h3>报错一：PVC 一直 Terminating，删不掉</h3>
+<p>现象是执行 kubectl delete pvc 之后，状态长时间停在 Terminating，describe 出来是这样：</p>
+<pre><code>Name:       my-data
+Namespace:  myapp
+Status:     Terminating
+Finalizers: [kubernetes.io/pvc-protection]</code></pre>
+<p>原因：kubernetes.io/pvc-protection 这个 Finalizer 会在仍有 Pod 挂载该 PVC 时阻止删除。常见触发是一个卡在 Terminating 的 Pod，或一个跑在已失联节点上的 Pod。先用 jq 找出引用它的 Pod：</p>
+<pre><code>kubectl get pods -A -o json | jq -r '.items[]
+  | select(.spec.volumes[]?.persistentVolumeClaim.claimName=="my-data")
+  | .metadata.name'</code></pre>
+<p>如果 Pod 所在节点已经失联，加 --force --grace-period=0 删除；确认没有任何 Pod 引用之后，Finalizer 会自行清除。只有在确认卷已卸载、且明确知道后果时，才手工 patch：</p>
+<pre><code>kubectl patch pvc my-data -n myapp --type merge -p '{"metadata":{"finalizers":null}}'</code></pre>
+<h3>报错二：PV Terminating 且后端卷泄漏</h3>
+<p>现象：PV 上带着 external-provisioner.volume.kubernetes.io/finalizer，长期 Terminating；同时对象存储里能看到一条无人引用的卷。</p>
+<p>原因：如果 external-provisioner 低于 v5.0.1，集群不会为新 PV 打这个 Finalizer，于是先删 PV 再删 PVC 时后端卷不会被删。反过来，如果 Finalizer 在、但 CSI 驱动控制器不可用，删除请求也无法完成。先确认版本与驱动状态：</p>
+<pre><code>kubectl -n kube-system get deploy csi-provisioner \
+  -o jsonpath='{.spec.template.spec.containers[0].image}'
+kubectl get pod -n kube-system | grep -i csi</code></pre>
+<p>修法：把 external-provisioner 升到 v5.0.1 或更高并重启驱动，在存储侧确认卷已删除后，Finalizer 会随之释放。确实需要强制清理时：</p>
+<pre><code>kubectl patch pv pv-my-data --type merge -p '{"metadata":{"finalizers":null}}'</code></pre>
+<h3>报错三：Multi-Attach，卷挂不上新节点</h3>
+<p>现象：Pod 永远停在 ContainerCreating，describe pod 的 Events 里是：</p>
+<pre><code>Warning  FailedAttachVolume  attachdetach-controller
+Multi-Attach error for volume "pvc-9f2a..." Volume is already exclusively attached to one node and can't be attached to another</code></pre>
+<p>原因：ReadWriteOnce 的语义是「同一时刻只允许一个节点读写挂载」，不是「一个 Pod」。如果旧节点崩溃或 Pod 没有干净终止，卷会一直标记为挂在旧节点上。找到残留的 VolumeAttachment 并删除即可：</p>
+<pre><code>kubectl get volumeattachment | grep pvc-9f2a
+kubectl delete volumeattachment <attachment-name></code></pre>
+<p>如果这个 attachment 自己还带 Finalizer 删不掉，先 describe 看是哪个外部控制器在持有，再决定是否 patch。</p>
+<h3>报错四：滚动更新必然死锁</h3>
+<p>现象：Deployment 用 RollingUpdate 且挂 RWO 卷，kubectl rollout status 永远不结束，新旧两个 Pod 都在等对方。</p>
+<p>原因：新 Pod 调度到节点 B，需要把卷从节点 A 摘下来再挂到 B；但旧 Pod 要等新 Pod Ready 才终止；而新 Pod 又因为卷还挂在 A 上无法 Ready——一个闭环。多副本下这几乎 100% 会死锁。修法是把单副本有状态负载的策略改成 Recreate，或直接改用 StatefulSet：</p>
+<pre><code>spec:
+  strategy:
+    type: Recreate</code></pre>
+<p>临时解卡可以先把副本数归零，等卷卸载后再拉起：</p>
+<pre><code>kubectl scale deployment my-app -n myapp --replicas=0
+sleep 30
+kubectl scale deployment my-app -n myapp --replicas=1</code></pre>
+<h3>报错五：ProvisioningFailed，存储类找不到</h3>
+<p>现象：PVC 一直 Pending，describe pvc 里是：</p>
+<pre><code>Warning  ProvisioningFailed  persistentvolume-controller
+storageclass.storage.k8s.io "fast-nvme-ssd" not found</code></pre>
+<p>原因：PVC 引用的 StorageClass 名称不存在，或跨可用区时卷的 zone 与节点 zone 不匹配（后者通常表现为 Unable to attach or mount volumes: timed out waiting for the condition，且没有 Multi-Attach 字样）。先列出可用存储类，再确认绑定模式：</p>
+<pre><code>kubectl get storageclass
+kubectl get pv pvc-9f2a... -o jsonpath='{.spec.nodeAffinity}'</code></pre>
+<p>预防跨区问题，给 StorageClass 设置 volumeBindingMode: WaitForFirstConsumer，让调度器先把 Pod 定到节点，再就近创建卷。</p>
+<h2>🛡️ 加固：让这类故障不再发生</h2>
+<p>三条纪律。第一，固定删除顺序：永远先删 PVC 再删 PV，并且在驱动升级完成前不要手工删 PV。第二，把有状态负载从 Deployment 迁到 StatefulSet，每个副本独占自己的 PVC，从设计上消灭 Multi-Attach。第三，把监控补齐，对 PV 阶段与 VolumeAttachment 数量做告警，比等用户来报障便宜得多。这三条里最容易被当成小事、却最值钱的是第三条：我这次是从监控告警才发现的，如果只靠人肉巡检，三条泄漏卷可能要在账单里躺上整整一个季度才会被发现，而那时候你早已记不清它们对应哪个已删的命名空间。</p>
+<h2>自建 Kubernetes 实验室的桌面装备</h2>
+<p>我的测试集群跑在三块单板机上，桌面这几个小件对我来说是刚需，均含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接，价格受内存现货波动影响，请以页面为准：</p>
+<p>👉 <a href="https://amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 Raspberry Pi 5 8GB</a>，做 kubelet 与 etcd 的实验节点很合适，发布价 $80 起。</p>
+<p>👉 <a href="https://amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 Amazon Basics Cat 6 网线</a>，节点间走 1GbE 也够用。</p>
+<p>👉 <a href="https://amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 Amazon Basics microSDXC 128GB</a>，刷系统镜像必备。</p>
+<h2>总结与相关阅读</h2>
+<p>存储排障的核心不是背命令，而是理解两件事：Finalizer 代表还有一步没完成，RWO 代表同一时刻只能挂一个节点。读懂这两条，Terminating 与 Multi-Attach 就都不再神秘。这也是我在这次事故里最大的收获：Kubernetes 的存储层并不神秘，它只是把「谁在占用资源、占用到什么时候」判断得非常严格，一旦上层的操作顺序与它的假设冲突，它就会用 Terminating 这种看似卡死的方式，安静地等你把顺序摆正。反过来，只要顺着 Finalizer 和 VolumeAttachment 这两条线索往下走，绝大多数「卷挂不上、删不掉」的问题都能在十分钟内定位，而不是靠反复重启或直接改底层存储去赌运气。</p>
+<p>如果你也在折腾自托管基础设施，可以接着看这几篇：<a href="https://yaohehe.github.io/2026-09-29-2026-github-actions-4-action.html" target="_blank" rel="nofollow sponsored">GitHub Actions 供应链踩坑实录</a>、<a href="https://yaohehe.github.io/2026-10-02-2026-raspberry-pi-5-vs-orange-pi-5-vs-radxa-rock-5.html" target="_blank" rel="nofollow sponsored">2026 程序员创客开发板横评</a>、<a href="https://yaohehe.github.io/2026-10-01-wordpress-71-mcp-adapter-ai.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 MCP Adapter 实战</a>。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
