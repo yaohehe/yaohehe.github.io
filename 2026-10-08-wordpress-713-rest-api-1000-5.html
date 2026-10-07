@@ -76,16 +76,16 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>WordPress 7.1.3 REST API 批量同步实战：5 个真实报错</h1>
   <div class="post-tags">
-    <span class="tag">WordPress</span><span class="tag">REST-API</span><span class="tag"><a href="/2026-09-30-wordpress-71-redis-5.html" class="internal-link">运维</a></span>
+    <span class="tag">WordPress</span><span class="tag"><a href="/2026-10-08-wordpress-713-rest-api-batch-sync-5-real-errors.html" class="internal-link">REST-API</a></span><span class="tag"><a href="/2026-09-30-wordpress-71-redis-5.html" class="internal-link">运维</a></span>
   </div>
   <div class="content">
     <p>2026 年 10 月 6 日发布的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.3 是一次纯安全更新，七个漏洞里有三个由 Anthropic 报告，其中一个是 WXR 导出的二阶 SQL 注入。这意味着如果你在做内容管道，最近这批改动和你的关系不只是"打补丁"——导出的输入校验、以及未登录状态下私有文章评论的可见性判定都被动过了。本文不重复安全公告，只解决一个具体问题：把 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 当内容后端用的时候，REST API 到底会在哪儿把你卡住，以及每个卡点对应的命令。</p>
 <p>我实际维护着一个 1000 篇量级的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站点，前端是 headless 架构，日常靠 REST API 把文章同步到静态站和移动端。这套管道第一版能跑，但一遇到 400 篇以上的批量更新就开始出现各种"看起来像网络问题"的报错。花了三周把这些卡点逐个定位，才发现没有一个是网络问题。</p>
 <p>本文提到的装备推荐位是联盟链接：TechPassive 通过 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Associates 链接获得佣金，写作与结论不受影响。</p>
 <h2>⏳ 太长不看版（TL;DR）</h2>
-<p>🥇 **三道墙必须先记住**：<code>per_page</code> 硬上限 100（超出直接 400 报错）、<code>/batch/v1</code> 单批默认 25 个请求（可用过滤器调高）、<code>OPTIONS</code> 预检不带凭据所以会被认证逻辑打成 401。</p>
+<p>🥇 <strong>三道墙必须先记住</strong>：<code>per_page</code> 硬上限 100（超出直接 400 报错）、<code>/batch/v1</code> 单批默认 25 个请求（可用过滤器调高）、<code>OPTIONS</code> 预检不带凭据所以会被认证逻辑打成 401。</p>
 <p>👉 三道墙的完整实测数据见下方逐条拆解。</p>
-<p>🔧 **最省的一刀是 <code>_fields</code>**：不加裁剪时单篇响应约 18 KB，加上 <code>_fields=id,slug,title,date</code> 后约 1.2 KB，同步 1000 篇的传输量差一个数量级。</p>
+<p>🔧 <strong>最省的一刀是 <code>_fields</code></strong>：不加裁剪时单篇响应约 18 KB，加上 <code>_fields=id,slug,title,date</code> 后约 1.2 KB，同步 1000 篇的传输量差一个数量级。</p>
 <p>👉 批量写入的可用脚本见「完整脚本」一节。</p>
 <p>⚠️ <strong>自检别跳过</strong>：Application Passwords 配好后先跑 30 秒 curl 自检，能省掉八成的"密码明明是对的却报 401"。</p>
 <p>👉 自检命令见「打通鉴权」一节。</p>
@@ -95,8 +95,8 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>这三道墙都不是 bug，是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的既定设计。但文档里的描述和实际返回的错误信息之间有落差，第一次撞上的人几乎都会怀疑自己写错了代码。</p>
 <h2>前置准备：分清四种鉴权方式的适用边界</h2>
 <p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API 有四种鉴权方式，选错比配置错更浪费时间。我实际在生产环境里只用其中两种，其他两种只在特定场景用。</p>
-<p>**Application Passwords（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.6 起内置）** —— 服务端到服务端的首选。生成在「用户 → 个人资料 → 应用程序密码」，是一串 24 字符令牌，形如 <code>abcd 1234 efgh 5678</code>，用 HTTP Basic Auth 传递。注意令牌里的空格是有效字符，不要在 base64 编码前删掉。它**必须走 HTTPS**：非 HTTPS 站点上 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 会直接禁用这个功能，除非你自己加过滤器覆盖（这属于别在公网做的事）。</p>
-<p>**Cookie + Nonce** —— 只能同源。浏览器里跑的 Gutenberg 侧代码用这个，带 <code>X-WP-Nonce</code> 头。跨域的前端用不了，别在这上面浪费时间。</p>
+<p><strong>Application Passwords（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.6 起内置）</strong> —— 服务端到服务端的首选。生成在「用户 → 个人资料 → 应用程序密码」，是一串 24 字符令牌，形如 <code>abcd 1234 efgh 5678</code>，用 HTTP Basic Auth 传递。注意令牌里的空格是有效字符，不要在 base64 编码前删掉。它<strong>必须走 HTTPS</strong>：非 HTTPS 站点上 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 会直接禁用这个功能，除非你自己加过滤器覆盖（这属于别在公网做的事）。</p>
+<p><strong>Cookie + Nonce</strong> —— 只能同源。浏览器里跑的 Gutenberg 侧代码用这个，带 <code>X-WP-Nonce</code> 头。跨域的前端用不了，别在这上面浪费时间。</p>
 <p><strong>JWT（插件提供）</strong> —— 适合需要短期令牌的用户侧会话，比如会员面板、评论提交这类有终端用户交互的场景。服务端脚本用它属于过度设计。</p>
 <p><strong>OAuth 1.0a / 2.0（插件提供）</strong> —— 第三方应用代表用户授权访问时才需要。单机同步用不上。</p>
 <p>判断标准很简单：脚本和后台任务用 Application Passwords，带用户登录态的界面用 JWT，其他两个先不用考虑。</p>
@@ -106,7 +106,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   https://example.com/wp-json/wp/v2/users/me</code></pre>
 <p>返回 <code>HTTP/1.1 200 OK</code> 就说明整条链路是通的。返回 401 且响应体是：</p>
 <pre><code>{"code":"rest_not_logged_in","message":"The Authorization header is missing.","data":{"status":401}}</code></pre>
-<p>那说明凭据根本没到达 PHP。九成是 Apache 在 CGI/FastCGI 模式下把 <code>Authorization</code> 头丢掉了。修法是在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 根目录 <code>.htaccess</code> 里、<code># BEGIN <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></code> 那一行**之前**加：</p>
+<p>那说明凭据根本没到达 PHP。九成是 Apache 在 CGI/FastCGI 模式下把 <code>Authorization</code> 头丢掉了。修法是在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 根目录 <code>.htaccess</code> 里、<code># BEGIN <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></code> 那一行<strong>之前</strong>加：</p>
 <pre><code>RewriteEngine On
 RewriteCond %{HTTP:Authorization} ^(.*)
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]</code></pre>
@@ -121,20 +121,20 @@ RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]</code></pre>
 <pre><code>curl -sI "https://example.com/wp-json/wp/v2/posts?per_page=1" | grep -i x-wp
 # x-wp-total: 1043
 # x-wp-totalpages: 1043</code></pre>
-<p><code>X-WP-Total</code> 是记录总数，<code>X-WP-TotalPages</code> 是总页数。这两个头只出现在分页响应里，**不在 JSON body 内**，很多第一次写同步脚本的人会因此以为拿不到总数。</p>
+<p><code>X-WP-Total</code> 是记录总数，<code>X-WP-TotalPages</code> 是总页数。这两个头只出现在分页响应里，<strong>不在 JSON body 内</strong>，很多第一次写同步脚本的人会因此以为拿不到总数。</p>
 <p>顺手提醒一个审计用途：把 <code>X-WP-Total</code> 和站点 <code>sitemap.xml</code> 里的 URL 数量对比，差值就是当前搜索引擎发现不了的文章数。我实际做这个对比时发现过 37 篇差异，全部是发布流程漏推的。</p>
 <h2>墙二：batch/v1 一次最多 25 个请求，先用 OPTIONS 探测上限</h2>
-<p>批量写入用 <code>POST /wp-json/batch/v1</code>，一次请求里塞多个子请求，能显著减少往返。默认上限是 25，这个值由 <code>rest_get_max_batch_size</code> 过滤器控制。**别硬编码 25**，先探测：</p>
+<p>批量写入用 <code>POST /wp-json/batch/v1</code>，一次请求里塞多个子请求，能显著减少往返。默认上限是 25，这个值由 <code>rest_get_max_batch_size</code> 过滤器控制。<strong>别硬编码 25</strong>，先探测：</p>
 <pre><code>curl -s -X OPTIONS https://example.com/wp-json/batch/v1 \
   | python -c "import sys,json; print(json.load(sys.stdin)['endpoints'][0]['args']['requests']['maxItems'])"</code></pre>
 <p>调高上限的话，在 <code>functions.php</code> 里加：</p>
 <pre><code>add_filter('rest_get_max_batch_size', function () {
     return 100;
 }, 20);</code></pre>
-<p>批量响应返回的是 **207 Multi-Status**，不是 200，并且子请求的成败是独立的——一个失败不会让整批回滚。这意味着你必须逐条检查 <code>responses</code> 数组里的 <code>status</code> 字段，不能只看顶层状态码。</p>
+<p>批量响应返回的是 <strong>207 Multi-Status</strong>，不是 200，并且子请求的成败是独立的——一个失败不会让整批回滚。这意味着你必须逐条检查 <code>responses</code> 数组里的 <code>status</code> 字段，不能只看顶层状态码。</p>
 <h2>墙三：_embed 与未裁剪响应把管道拖慢，_fields 是最省的一刀</h2>
 <p>默认情况下，一篇文章的 JSON 里包含完整的内容渲染、修订历史元数据、多种尺寸的特征图 URL。实测单篇约 18 KB。</p>
-<p>想省事可以加 <code>_embed</code> 把特色图和作者信息内联进来，但代价是响应体进一步膨胀。**做批量同步时正确做法是既不用 <code>_embed</code>，也不用全字段，而是显式裁剪：**</p>
+<p>想省事可以加 <code>_embed</code> 把特色图和作者信息内联进来，但代价是响应体进一步膨胀。<strong>做批量同步时正确做法是既不用 <code>_embed</code>，也不用全字段，而是显式裁剪：</strong></p>
 <pre><code>curl -s "https://example.com/wp-json/wp/v2/posts?per_page=100&page=1&_fields=id,slug,title,date,modified"</code></pre>
 <p>实测单篇降到约 1.2 KB。1000 篇同步的传输量从约 18 MB 掉到 1.2 MB，比任何压缩开关都有效。</p>
 <p><code>_fields</code> 有个副作用要注意：字段名要一个一个列全，它不接受通配符；裁剪之后也别指望对象里还有你没请求的元数据。</p>
@@ -194,7 +194,7 @@ print(f"done, {total} posts")</code></pre>
 <p>原因分析：单批子请求数量超过 <code>rest_get_max_batch_size</code>，默认 25。错误信息通常长得像 <code>Invalid parameter(s): requests</code>，容易被误读成 body 格式错误。</p>
 <p>解决方案：先用 OPTIONS 探测 <code>endpoints[0].args.requests.maxItems</code> 的实际值（可能已被其他插件改过），然后按这个值切块。注意别盲目调大——<code>/batch/v1</code> 最终仍是一串独立写操作，调太大只是把压力从"HTTP 层"挪到"数据库层"。</p>
 <h3>报错三：浏览器控制台报 CORS 错误，看 Network 里却是 401</h3>
-<p>原因分析：跨域请求带自定义头会先发一个 <code>OPTIONS</code> 预检，预检**不带凭据**，所以如果你的认证逻辑对所有方法一视同仁地要求凭据，预检就会被打成 401，浏览器把它翻译成 CORS 错误，你根本看不到真正的失败点。</p>
+<p>原因分析：跨域请求带自定义头会先发一个 <code>OPTIONS</code> 预检，预检<strong>不带凭据</strong>，所以如果你的认证逻辑对所有方法一视同仁地要求凭据，预检就会被打成 401，浏览器把它翻译成 CORS 错误，你根本看不到真正的失败点。</p>
 <p>解决方案：让 <code>OPTIONS</code> 方法免认证通过，同时由它返回 CORS 头：</p>
 <pre><code>add_action('rest_api_init', function () {
     remove_filter('rest_pre_serve_request', 'rest_send_cors_headers');
@@ -215,7 +215,7 @@ print(f"done, {total} posts")</code></pre>
 <p>原因分析：这不是资源问题。根因通常是两个叠加——一是没加 <code>_fields</code> 导致单次响应过大，二是没有限速。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 PHP 请求是逐个处理的，一个同步脚本全速打满几百个并发写请求，队列就堵在数据库连接上。</p>
 <p>解决方案：先加 <code>_fields</code> 削响应体，再在批次之间 <code>time.sleep(0.3)</code>。如果仍然超时，去看 MySQL 的 <code>max_connections</code> 和 PHP-FPM 的 <code>pm.max_children</code>，两个值要配套调。</p>
 <h3>报错五：Site Health 报 authorization header 测试失败，本机 php -S 一切正常</h3>
-<p>原因分析：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自带的 Site Health 里有一项 <code>wp-site-health/v1/tests/authorization-header</code>，它的实现是发一次**回环请求**到自己的站点。在单线程开发服务器（<code>php -S</code>）上，回环请求会等自己释放，等于自己把自己堵死，于是报失败。</p>
+<p>原因分析：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自带的 Site Health 里有一项 <code>wp-site-health/v1/tests/authorization-header</code>，它的实现是发一次<strong>回环请求</strong>到自己的站点。在单线程开发服务器（<code>php -S</code>）上，回环请求会等自己释放，等于自己把自己堵死，于是报失败。</p>
 <p>解决方案：这个假报警在生产环境通常不会出现。真要确认，绕过 Site Health，直接跑前面那个 <code>users/me</code> 的 curl——那才是 API 实际看到的。你也可以读 <code>REDIRECT_HTTP_AUTHORIZATION</code> 这个环境变量，服务器级配置改完（尤其是迁移或改 <code>.htaccess</code> 之后）它必须是空才说明头没传下来。</p>
 <h2>行业应用：三种同步拓扑的成本与取舍</h2>
 <p>我把这套管道在三种场景下的实际形态整理如下，成本数字是托管商的公开标价区间，发稿前请以官网为准。</p>
@@ -225,7 +225,7 @@ print(f"done, {total} posts")</code></pre>
 <p>👉 <a href="https://www.amazon.com/dp/B09GK8LBWS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">CalDigit TS4 18 端口 Thunderbolt 4 扩展坞</a></p>
 <p>👉 <a href="https://www.amazon.com/dp/B0BNZ4D72B?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Anker 675 12 合 1 USB-C 扩展坞（含显示器支架）</a></p>
 <h2>FAQ</h2>
-<p>**Q：<code>per_page</code> 能调大吗？**</p>
+<p><strong>Q：<code>per_page</code> 能调大吗？</strong></p>
 <p>有 <code>rest_api_collection_params</code> 过滤器可以覆盖，但官方明确不建议——大查询会拖垮站点。我的做法是保持 100，靠 <code>_fields</code> 把单条变小。</p>
 <p><strong>Q：Application Passwords 能当主密码用吗？</strong></p>
 <p>不能。两者是不同的凭据体系，应用密码明确绕过双因素认证（这正是它作为独立机器凭据的设计目的）。它只该出现在服务端环境变量里，绝不能进前端代码或 Git 仓库。</p>
