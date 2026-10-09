@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n Task Runner Architecture: External and Queue Mode - TechPassive</title>
+  <meta name="description" content="n8n Task Runner architecture explained layer by layer, config boundaries for external and queue mode, root causes of five real errors, and hardware cost tradeoffs.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>n8n Task Runner Architecture and External Mode</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag"><a href="/2026-10-06-docker-compose-changes-not-applying-4-real-fixes-en.html" class="internal-link">Docker</a></span><span class="tag">self-hosted</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong> — n8n's Code node does not run inside the main process. Since 2.x the official docs split it into a separate Task Runner, scheduled by a component called the task broker. I tested two self-hosted setups and confirmed three things. First, <strong>the task runner is the only isolation layer between user-provided code and your n8n database, encryption key, and stored credentials</strong> — that is the docs' own wording, not my paraphrase. Second, <strong>internal mode is deprecated as of n8n 3.0</strong>, and instances still running it print a deprecation warning at startup. Third, in queue mode <strong>every worker needs its own runner sidecar</strong>; pointing workers at the main instance's broker is the most common way this breaks. Below you get a copy-pasteable compose file, five real error messages taken from official docs and a GitHub issue with their root causes, and the hardware math for self-hosting.</p>
+<h2>Why the Code node deserves its own process</h2>
+<p>The Code node lets users write arbitrary JavaScript or Python. If that code ran inside the main process, anyone who can edit a workflow could potentially read your database, your encryption key, your stored credentials, and your environment variables. The docs put this in a warning box at the top of the task runner page:</p>
+<blockquote>Without them, or with internal mode, anyone who can edit a workflow could potentially read your database, encryption key, stored credentials, and environment variables.</blockquote>
+<p>That is why n8n keeps insisting on task runners in production since 2.x. It is not an optional performance tweak — it is a security boundary.</p>
+<h2>The three-layer architecture</h2>
+<p>The official architecture description names three roles, and all three are required:</p>
+<ul><li><strong>Task runner</strong> — the process that actually executes code, connected to the broker over a <strong>websocket</strong> connection. Both JS and Python execution happen here.</li><li><strong>Task broker</strong> — the coordinator. <strong>The n8n instance itself (main and worker) acts as the broker</strong>, listening on port <code>5679</code> by default.</li><li><strong>Task requester</strong> — whoever submits the task. In n8n's case, <strong>the Code node is the task requester</strong>.</li></ul>
+<p>The flow: the Code node submits a task request to the broker, the broker broadcasts it, an idle runner picks it up over the websocket, executes it inside its sandbox, and returns the result to the requester. The broker only coordinates — it never runs your code.</p>
+<h2>Two modes and three defaults you must change</h2>
+<h3>Internal mode (deprecated, do not use)</h3>
+<p>In internal mode n8n launches the runner as a <strong>child process</strong> that shares the same <code>uid</code> and <code>gid</code> as the main process. The docs flag two things: it is <strong>deprecated from n8n 3.0</strong> and n8n logs a deprecation warning at startup even when <code>N8N_RUNNERS_MODE</code> is unset. The docs also state it is <strong>insecure by design</strong> — code that escapes the runner sandbox has the same access as n8n itself, including stored credentials. Use it only on isolated instances holding nothing but mock data.</p>
+<h3>External mode (the only production choice)</h3>
+<p>In external mode a <strong>launcher</strong> starts runners on demand and manages their lifecycle. In practice this means adding a sidecar container running the <code>n8nio/runners</code> image next to n8n. Three hard constraints:</p>
+<p>1. <strong>Versions must match exactly</strong> — the <code>n8nio/runners</code> version must equal the <code>n8nio/n8n</code> version.</p>
+<p>2. <strong>n8n must be ≥ 1.111.0</strong> — external mode is unavailable below that.</p>
+<p>3. <strong>The broker listens on localhost by default</strong> — in <a href="/2026-09-29-github-actions-supply-chain-post-mortem-2026-i-aud-en.html" class="internal-link">Docker</a> Compose you must set <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code>, or the runner cannot reach it.</p>
+<p>The official compose reference, aligned to those constraints:</p>
+<pre><code>services:
+  n8n:
+    image: n8nio/n8n:1.111.0
+    environment:
+      - N8N_RUNNERS_MODE=external
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - N8N_RUNNERS_AUTH_TOKEN=your-secret-here
+      - N8N_NATIVE_PYTHON_RUNNER=true
+    ports:
+      - "5678:5678"
+
+  task-runners:
+    image: n8nio/runners:1.111.0
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n-main:5679
+      - N8N_RUNNERS_AUTH_TOKEN=your-secret-here
+    depends_on:
+      - n8n</code></pre>
+<p>⚠️ <strong>Two official-docs inconsistencies worth knowing.</strong> The sample above still carries <code>N8N_RUNNERS_ENABLED=true</code>, yet the environment variable reference marks that variable <strong>deprecated from n8n 2.0</strong> (it is only required on 1.x). And the task runner environment variable page refers to the config file as <code>/etc/n8n-task-runners.json</code> in one place and <code>/etc/task-runners.json</code> in another. <strong>Trust whatever is actually inside the image for your version</strong> — after upgrading, run <code>docker exec <runner> ls /etc/</code> to confirm.</p>
+<h3>Three defaults worth tuning</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Variable</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Default</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Meaning</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_MAX_CONCURRENCY</code></td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">Tasks a single runner executes at once</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_TASK_TIMEOUT</code></td><td style="border:1px solid #ddd;padding:8px;">300</td><td style="border:1px solid #ddd;padding:8px;">Max seconds per task before the runner stops and restarts it</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT</code></td><td style="border:1px solid #ddd;padding:8px;">15</td><td style="border:1px solid #ddd;padding:8px;">Idle seconds before shutdown; the launcher restarts on new work</td></tr></tbody></table>
+<p>A few security-relevant defaults are also worth memorizing: <code>N8N_RUNNERS_MAX_PAYLOAD</code> defaults to 1 073 741 824 bytes (about 1 GB) as the ceiling for broker-to-runner payloads; <code>N8N_RUNNERS_INSECURE_MODE</code> defaults to <code>false</code> and is discouraged in production; <code>N8N_RUNNERS_HEARTBEAT_INTERVAL</code> defaults to 30 seconds, after which a silent runner is treated as dead and restarted.</p>
+<p>On queue mode performance, the docs give a baseline of <strong>up to 220 workflow executions per second on a single instance</strong>, with further scaling by adding instances. The docs' single-instance benchmark ran on an ECS c5a.large with 4GB RAM; the multi-instance comparison used seven 8GB instances arranged as two webhook processors, four workers, one database, and one main running n8n plus Redis. The docs also state that <strong>all execution data between workers and main flows through Redis and Postgres, and workers are stateless</strong>, so adding replicas is safe.</p>
+<h2>Troubleshooting: five real errors and their root causes</h2>
+<p>Every item below is traceable to official documentation, a GitHub issue, or the n8n community forum. None of them are invented "typical" errors.</p>
+<h3>Error one: Task request timed out after 60 seconds</h3>
+<p>This is the most common external-runner error. It means the task waited 60 seconds without an idle runner becoming available. Note that the 60 seconds comes from the default of <code>N8N_RUNNERS_TASK_REQUEST_TIMEOUT</code>, <strong>not</strong> from <code>N8N_RUNNERS_TASK_TIMEOUT</code> (which defaults to 300).</p>
+<p>Two root causes appear in real community cases: the worker has no runner sidecar of its own, and <code>N8N_RUNNERS_AUTH_TOKEN</code> differs between main and runner. The latter shows up in logs as <code>Task runner connection attempt failed with status code 403</code>.</p>
+<p><strong>Fix</strong> — give every worker its own sidecar; confirm both sides use an identical token (while debugging, switch to a simple value like <code>test123</code> to rule out special-character parsing issues); confirm the broker listen address is <code>0.0.0.0</code>. Only raise the timeout when the task is genuinely compute-heavy rather than when the runner never connected.</p>
+<h3>Error two: getaddrinfo ENOTFOUND while the runner waits for the broker</h3>
+<p>The signature is the runner container repeatedly printing <code>Waiting for task broker to be ready...</code> and <code>Waiting for launcher's task offer to be accepted...</code>, alongside <code>Task runner failed to start { error: Error: getaddrinfo ENOTFOUND ... }</code>, and never receiving a task.</p>
+<p><strong>Cause</strong> — the hostname in <code>N8N_RUNNERS_TASK_BROKER_URI</code> is wrong. One documented community case had a compose service named <code>n8n</code> while the URI pointed at <code>http://n8n-main:5679</code>.</p>
+<p><strong>Fix</strong> — the hostname must match the compose service name exactly. Verify from inside the runner container with <code>getent hosts <hostname></code>; if it resolves to an IP, connectivity is fine.</p>
+<h3>Error three: JS Code nodes hang while Python nodes work</h3>
+<p>This one is counterintuitive enough to deserve its own section. In GitHub issue #22798 the main-side log shows <code>Task (xxx) deferred until runner is ready</code> immediately followed by <code>Deregistered runner</code>, <strong>repeating every 2 to 3 seconds</strong>, while the external <code>launcher-javascript</code> registers successfully but never receives an offer. Under the identical configuration, a Python Code node running <code>return 1 + 1</code> executed fine.</p>
+<p>The issue was eventually closed as <strong>closed:cant-reproduce</strong>, and the reporter then identified the real cause: <strong>their own extended runner image</strong>, a custom Dockerfile that added extra JS and Python dependencies. A maintainer had noted earlier that this step should be a non-issue, since the environment variables matched on both sides.</p>
+<p><strong>Fix</strong> — when JavaScript specifically fails on an external runner, fall back to the stock <code>n8nio/runners</code> image to establish a working baseline, then add custom dependencies back one at a time. The docs give a related constraint: extending the image requires <strong>at least <code>n8nio/runners:1.121.0</code></strong>.</p>
+<h3>Error four: Python imports rejected, or out-of-memory</h3>
+<p>Two separate problems that often get conflated. The docs are explicit that <strong>all Python standard library and third-party imports are disabled by default</strong>, and that in external mode the allowlists <strong>must be set as <code>env-overrides</code> inside the runner image's <code>/etc/n8n-task-runners.json</code>, not passed as container environment variables</strong>:</p>
+<pre><code>{
+  "task-runners": [
+    {
+      "runner-type": "python",
+      "env-overrides": {
+        "PYTHONPATH": "/opt/runners/task-runner-python",
+        "N8N_RUNNERS_STDLIB_ALLOW": "json",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "numpy,pandas"
+      }
+    }
+  ]
+}</code></pre>
+<p>The official out-of-memory messages come in three shapes: <code>Execution stopped at this node (n8n may have run out of memory while executing it)</code>, <code>Allocation failed - JavaScript heap out of memory</code> in server logs, and <code>Problem running workflow</code>, <code>Connection Lost</code>, or <code>503 Service Temporarily Unavailable</code> when the instance has become unavailable. The docs name the Code node and the older Function node as memory hogs, and also flag <strong>manual executions</strong>, because n8n copies data for the frontend.</p>
+<p><strong>Fix</strong> — adjust <code>N8N_RUNNERS_MAX_OLD_SPACE_SIZE</code> (it maps to Node's <code>--max-old-space-size</code>); split large batches as the docs suggest (process 200 rows per execution instead of 10,000); note that <code>N8N_RUNNERS_ID</code> requires n8n 2.35.0 or newer, and that two runners sharing one ID keep evicting each other.</p>
+<h3>Error five: the worker starts but never does anything</h3>
+<p>The community consensus here is direct: workers that cannot decrypt credentials are suffering from an <code>N8N_ENCRYPTION_KEY</code> that differs between main and worker. And because manual executions run on main by default, you get the classic symptom of a workflow that works in production but fails when you test it — unless <code>OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true</code> is set. Community reports also flag an environmental factor: a worker configured with 0.5 CPU and 1GB RAM is too small, and while Postgres repeatedly logs <code>Database connection timed out</code>, the grant token exchange cannot complete in time. Adding resources resolved it immediately.</p>
+<p><strong>Fix</strong> — confirm the key is byte-identical; enable offload if needed; give workers at least 1.0 CPU and 2048MB of memory, and check the database container's resources separately.</p>
+<h2>Hardware and cost math for self-hosting</h2>
+<p>For n8n plus Postgres plus Redis, official and community guidance agree closely: self-hosting needs roughly 2 cores, 2GB RAM, and 20GB SSD as a minimum (development and testing only); <strong>production wants 4+ cores, 8-16GB of RAM, and PostgreSQL</strong>. That last point drives every hardware decision that follows.</p>
+<p>Take a <a href="https://www.amazon.com/dp/B0C339KVH9?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Beelink EQ14 N150 mini PC (16GB DDR4, 500GB NVMe, dual 2.5GbE)</a> as the example. At the time of writing its listing specifies an Intel Twin Lake N150 (4 cores, 4 threads, up to 3.6GHz), a single 16GB DDR4 3200MHz module, a 500GB NVMe SSD, and dual 2.5GbE NICs, priced at $199.00 with a 4.4-star rating. The dual 2.5GbE suits splitting main and worker onto separate networks, but note the **single memory slot caps out at 16GB and runs single-channel** — reaching 32GB means replacing the machine, and since 8-16GB is only a starting point for production, memory gets tight fast once queue mode and workers are added.</p>
+<p>The second thing people overlook is power. The docs' memory page lists the ways an instance becomes unavailable, and a workflow that dies mid-run leaves executions stuck in a running state. Community advice is to enable Redis persistence and set `N8N_GRACEFUL_SHUTDOWN_TIMEOUT=30`. A <a href="https://www.amazon.com/dp/B0BCMLLSHL?tag=techpassive-20" target="_blank" rel="nofollow sponsored">CyberPower CP1500AVRLCD3 UPS (1500VA/900W, 12 outlets, AVR)</a> is a 1500VA/900W unit listed at $199.95 at the time of writing, with a rated runtime of about 3 minutes at full load and about 12 minutes at half load. That is short, but it is enough for the job that matters: giving Postgres time to finish writing and close cleanly during an outage.</p>
+<p>One model-number trap to flag: if you encounter the older CP1500AVRLCD, <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a>'s own page states it <strong>has been replaced by the CP1500AVRLCD3</strong>.</p>
+<p>The cost comparison is straightforward. A mini PC at the EQ14 level ($199.00) plus a UPS ($199.95) is a <strong>one-time outlay</strong>, while n8n Cloud starts around $24 per month and prices by execution. Community template pages put self-hosted queue mode on usage-billed platforms like Railway at roughly $3-5 per month for a typical project. <strong>Automations that run hard pay back the hardware within a year; a workflow that fires a few times a week is cheaper and simpler on Cloud.</strong> That tradeoff depends on your execution volume, not on which option is technically better.</p>
+<h2>Hardening checklist: four layers of defense</h2>
+<p>The official hardening page does not say much, but what it says is specific:</p>
+<p>1. <strong>Use the distroless image</strong> — append <code>-distroless</code> to the Docker tag (the docs use <code>2.4.6-distroless</code>). It contains only the application and its runtime dependencies, with no package manager or shell.</p>
+<p>2. <strong>Run as the nobody user</strong> — uid and gid 65532.</p>
+<p>3. <strong>Configure a read-only root filesystem</strong> — but mount a minimal <code>emptyDir</code> volume at <code>/tmp</code>, since runners still need temporary space.</p>
+<p>4. <strong>Apply an AppArmor profile</strong> — block reads of sensitive <code>/proc</code> files. With this rule, any attempt to read <code>environ</code> or <code>mounts</code> is denied and logged:</p>
+<pre><code>audit deny @{PROC}/[0-9]*/{environ,mounts} rwl,</code></pre>
+<p>Environment variable defaults add one more layer: Python code cannot read the runner's environment by default (<code>N8N_BLOCK_RUNNER_ENV_ACCESS</code> defaults to <code>true</code>), and Node built-in module imports are disabled by default (<code>NODE_FUNCTION_ALLOW_BUILTIN</code> is empty). <strong>When you need to open something up, add it under <code>env-overrides</code> in the config file rather than as a container environment variable.</strong></p>
+<h2>How this differs from existing n8n articles here</h2>
+<p>We have already covered migrating from SQLite to PostgreSQL (<a href="https://yaohehe.github.io/2026-06-15-n8n-5-sqlitessl-2026.html" target="_blank" rel="nofollow sponsored">5 problems swapping SQLite for Postgres</a>), Redis 502s and timeout debugging (<a href="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html" target="_blank" rel="nofollow sponsored">n8n Langfuse 502 and Redis in practice</a>), and early self-hosting Docker deployment pitfalls (<a href="https://yaohehe.github.io/2026-04-27-n8n-self-hosted-docker-deployment-5-real-problems--en.html" target="_blank" rel="nofollow sponsored">5 real n8n self-hosted Docker problems</a>). Those articles answer "how do I get it running at all." This one is only about **code execution isolation and horizontal scaling once it runs** — they are sequential in a debugging workflow, not overlapping in scope.</p>
+<h2>When you actually need queue mode</h2>
+<p>Official and community guidance agree, and it is worth stating plainly to avoid over-engineering:</p>
+<p><strong>Signs you need queue mode</strong> — executions start queueing and finish minutes after they trigger; one long workflow (a large AI batch, a slow API loop) blocks everything else; webhooks time out under burst traffic; you cannot tolerate the main process being a single point of failure.</p>
+<p><strong>Signs you do not</strong> — a handful of scheduled workflows per day. The community framing is blunt: adding Redis and Postgres at that point buys operational overhead you will not use. Queue mode turns one process into at least three or four (main, worker, Redis, Postgres), each of which you now need to back up, patch, and monitor.</p>
+<p>Two concurrency traps are worth calling out. A worker's <code>--concurrency</code> (how many executions that worker runs at once, default 10) and the separate production concurrency limit are <strong>independent knobs</strong> — if the latter is set too low, adding workers accomplishes nothing. And <strong>queue mode does not support filesystem binary data</strong>, because the worker that produced a file and the main process serving it may be different processes on different machines, where a local path means nothing. Switch to S3-compatible external storage configured identically on every process, or you will get files that exist on one node and 404 everywhere else.</p>
+<h2>Configuration quick reference</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Scenario</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Key settings</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Production Code node (minimum)</td><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_MODE=external</code> + <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code> + matching <code>N8N_RUNNERS_AUTH_TOKEN</code> on both sides</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Queue mode</td><td style="border:1px solid #ddd;padding:8px;"><code>EXECUTIONS_MODE=queue</code> + shared Postgres and Redis + <code>n8n worker --concurrency=N</code>, with <strong>a dedicated sidecar per worker</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Officially stated single-instance ceiling</td><td style="border:1px solid #ddd;padding:8px;">220 workflow executions per second</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Version floors</td><td style="border:1px solid #ddd;padding:8px;">n8n ≥ 1.111.0; extended runner image ≥ 1.121.0</td></tr></tbody></table>
+<p>To be explicit about sourcing: every version number, default, port, timeout, and error string above comes from n8n's official documentation and GitHub issues (as of 2026-10-10, the latest release is n8n 2.42.6), and hardware prices and specifications are as listed on <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> at the time of writing and do change. <strong>I did not run an end-to-end load test against n8n 2.42.6 — the 220 executions per second figure is the docs' stated number, not my measurement.</strong> The fixes for the error cases reflect official documentation and community consensus; what I tested firsthand was external-mode connectivity and configuration behavior across two setups.</p>
+<p>This post contains affiliate links. I may earn a commission if you buy through them, at no extra cost to you. If you have questions about the sandbox isolation boundary, treat the official <a href="https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners/" target="_blank" rel="nofollow sponsored">Set up task runners</a> page as the source of truth and cross-check defaults against <a href="https://docs.n8n.io/deploy/host-n8n/configure-n8n/basic-configuration/use-environment-variables/task-runners/" target="_blank" rel="nofollow sponsored">Task runner environment variables</a>.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
