@@ -76,7 +76,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>n8n Task Runner 架构与外置模式实战</h1>
   <div class="post-tags">
-    <span class="tag">n8n</span><span class="tag"><a href="/2026-10-06-docker-compose-5x-4.html" class="internal-link">Docker</a></span><span class="tag">自托管</span>
+    <span class="tag"><a href="/2026-10-10-n8n-task-runner-architecture-external-and-queue-mo-en.html" class="internal-link">n8n</a></span><span class="tag"><a href="/2026-10-06-docker-compose-5x-4.html" class="internal-link">Docker</a></span><span class="tag">自托管</span>
   </div>
   <div class="content">
     <p><strong>TL;DR</strong> — n8n 的 Code 节点（JS/Python 代码）并不跑在主进程里。官方从 2.x 起把它拆成独立的 Task Runner，靠一个叫 task broker 的组件调度。我实际测试了两套自托管环境后确认三件事：第一，<strong>Task Runner 是用户代码与 n8n 数据库、加密密钥、凭据之间唯一的隔离层</strong>，官方文档原话是「task runners are the only isolation layer between user-provided code and n8n」；第二，<strong>internal 模式已在 n8n 3.0 废弃</strong>，仍在使用的实例启动日志里就有 deprecation warning；第三，queue 模式下<strong>每个 worker 必须有自己的 runner sidecar</strong>，共用 main 的 broker 是最常见的翻车点。本文给出可直接复制的 docker-compose、五个来自官方文档与 GitHub issue 的真实报错原文及根因，以及自托管硬件的选型思路与成本对照。</p>
@@ -95,7 +95,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>external 模式由一个 <strong>launcher</strong> 按需拉起 runner 并管理生命周期，通常就是 n8n 旁边多一个 sidecar 容器，跑 <code>n8nio/runners</code> 镜像。三个硬约束：</p>
 <p>1. <strong>版本必须完全对齐</strong> — <code>n8nio/runners</code> 的版本号必须与 <code>n8nio/n8n</code> 一致。</p>
 <p>2. <strong>n8n 版本必须 ≥ 1.111.0</strong> — 低于此版本不支持 external 模式。</p>
-<p>3. <strong>broker 默认只监听 localhost</strong> — <a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">Docker</a> Compose 下多容器互通必须显式改成 <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code>，否则 runner 连不上。</p>
+<p>3. <strong>broker 默认只监听 localhost</strong> — Docker Compose 下多容器互通必须显式改成 <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code>，否则 runner 连不上。</p>
 <p>官方 compose 参考配置（已按上述要求对齐）：</p>
 <pre><code>services:
   n8n:
@@ -155,8 +155,8 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p><strong>解法</strong> — 确认 key 逐字节一致；按需开启 offload；worker 至少给到 1.0 CPU / 2048MB 内存，并单独检查数据库容器资源。</p>
 <h2>自托管场景下的硬件与成本对照</h2>
 <p>跑 n8n + Postgres + Redis 的最小可用配置，官方与社区口径基本一致：自托管最低约 2 核 / 2GB 内存 / 20GB SSD（仅限开发测试）；<strong>生产环境建议 4 核以上、8-16GB 内存，并且必须用 PostgreSQL</strong>。这一条对硬件选择影响很大。</p>
-<p>以一台 <a href="https://www.amazon.com/dp/B0C339KVH9?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Beelink EQ14 N150 迷你主机（16GB DDR4 / 500GB NVMe，双 2.5G 网口）</a> 为例，截至发稿其页面规格为 Intel Twin Lake N150（4 核 4 线程，最高 3.6GHz，单条 16GB DDR4 3200MHz，500GB NVMe SSD，双 2.5GbE 网口），售价 $199.00，评分 4.4 星。它的双 2.5GbE 刚好适合 main 与 worker 分离部署，但要注意**单条内存插槽最大 16GB 且为单通道**，想上 32GB 只能换整机——而生产环境 8-16GB 只是起步，一旦跑 queue mode 加 worker，内存会比想象中紧。</p>
-<p>另一个容易被忽略的点是供电。官方在内存一节提到服务「不可用」的几种表现，而工作流跑到一半掉电会留下卡在 running 的执行记录。社区给的建议是启用 Redis 持久化并设置 `N8N_GRACEFUL_SHUTDOWN_TIMEOUT=30`。一台 <a href="https://www.amazon.com/dp/B0BCMLLSHL?tag=techpassive-20" target="_blank" rel="nofollow sponsored">CyberPower CP1500AVRLCD3 UPS（1500VA/900W，12 插座，AVR）</a> 属于标称 1500VA/900W 的规格，截至发稿售价 $199.95，页面标称满载续航约 3 分钟、半载约 12 分钟——短是短，但对「突然断电时让 Postgres 有时间写完并关闭」这个目标够用。</p>
+<p>以一台 <a href="https://www.amazon.com/dp/B0C339KVH9?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Beelink EQ14 N150 迷你主机（16GB DDR4 / 500GB NVMe，双 2.5G 网口）</a> 为例，截至发稿其页面规格为 Intel Twin Lake N150（4 核 4 线程，最高 3.6GHz，单条 16GB DDR4 3200MHz，500GB NVMe SSD，双 2.5GbE 网口），售价 $199.00，评分 4.4 星。它的双 2.5GbE 刚好适合 main 与 worker 分离部署，但要注意<strong>单条内存插槽最大 16GB 且为单通道</strong>，想上 32GB 只能换整机——而生产环境 8-16GB 只是起步，一旦跑 queue mode 加 worker，内存会比想象中紧。</p>
+<p>另一个容易被忽略的点是供电。官方在内存一节提到服务「不可用」的几种表现，而工作流跑到一半掉电会留下卡在 running 的执行记录。社区给的建议是启用 Redis 持久化并设置 <code>N8N_GRACEFUL_SHUTDOWN_TIMEOUT=30</code>。一台 <a href="https://www.amazon.com/dp/B0BCMLLSHL?tag=techpassive-20" target="_blank" rel="nofollow sponsored">CyberPower CP1500AVRLCD3 UPS（1500VA/900W，12 插座，AVR）</a> 属于标称 1500VA/900W 的规格，截至发稿售价 $199.95，页面标称满载续航约 3 分钟、半载约 12 分钟——短是短，但对「突然断电时让 Postgres 有时间写完并关闭」这个目标够用。</p>
 <p>顺带提醒一个型号陷阱：如果你看到老款 CP1500AVRLCD，亚马逊页面自己会提示<strong>已被 CP1500AVRLCD3 取代</strong>，别买错。</p>
 <p>成本上可以粗算一笔账：自托管一台 EQ14 级别的小主机（$199.00）加 UPS（$199.95）是<strong>一次性投入</strong>，而 n8n Cloud 的入门档按执行次数计费。社区模板页给出的参考是自托管在 Railway 这类按用量计费的平台上，queue mode 典型项目约 $3-5/月；对比之下 n8n Cloud 起步约 $24/月且同样按执行次数计费。<strong>跑得满的自动化，自托管一年就回本；只有零星几条工作流，Cloud 反而省事</strong>——这个取舍取决于你的执行量，不是技术优劣。</p>
 <h2>加固清单：external 模式的四层防御</h2>
@@ -168,7 +168,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <pre><code>audit deny @{PROC}/[0-9]*/{environ,mounts} rwl,</code></pre>
 <p>再加上环境变量层的默认值兜底：Python 代码默认禁止访问 runner 环境（<code>N8N_BLOCK_RUNNER_ENV_ACCESS</code> 默认 <code>true</code>），JS 内置模块默认禁止导入（<code>NODE_FUNCTION_ALLOW_BUILTIN</code> 为空）。<strong>需要放开时按需在配置文件的 <code>env-overrides</code> 里加，而不是在容器环境变量里加。</strong></p>
 <h2>与站内已有 n8n 文章的分工</h2>
-<p>站内已有关于 SQLite 与 PostgreSQL 迁移的讨论（<a href="https://yaohehe.github.io/2026-06-15-n8n-5-sqlitessl-2026.html" target="_blank" rel="nofollow sponsored">n8n SQLite 换 Postgres 的 5 个问题</a>），有关于 Redis 502 与超时排错的记录（<a href="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html" target="_blank" rel="nofollow sponsored">n8n Langfuse 502 与 Redis 实战</a>），也有自托管初期的 Docker 部署踩坑（<a href="https://yaohehe.github.io/2026-04-27-n8n-self-hosted-docker-deployment-5-real-problems--en.html" target="_blank" rel="nofollow sponsored">n8n 自托管 Docker 部署 5 个真实问题</a>）。那些文章解决的是「先把它跑起来」，本文只聚焦**跑起来之后的代码执行隔离与横向扩展**——两者在排查顺序上是先后关系，角度不重叠。</p>
+<p>站内已有关于 SQLite 与 PostgreSQL 迁移的讨论（<a href="https://yaohehe.github.io/2026-06-15-n8n-5-sqlitessl-2026.html" target="_blank" rel="nofollow sponsored">n8n SQLite 换 Postgres 的 5 个问题</a>），有关于 Redis 502 与超时排错的记录（<a href="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html" target="_blank" rel="nofollow sponsored">n8n Langfuse 502 与 Redis 实战</a>），也有自托管初期的 Docker 部署踩坑（<a href="https://yaohehe.github.io/2026-04-27-n8n-self-hosted-docker-deployment-5-real-problems--en.html" target="_blank" rel="nofollow sponsored">n8n 自托管 Docker 部署 5 个真实问题</a>）。那些文章解决的是「先把它跑起来」，本文只聚焦<strong>跑起来之后的代码执行隔离与横向扩展</strong>——两者在排查顺序上是先后关系，角度不重叠。</p>
 <h2>什么时候才真的需要 queue mode</h2>
 <p>官方与社区的判断一致，值得单独拎出来避免过度工程：</p>
 <p><strong>该上 queue mode 的信号</strong> — 执行开始排队、触发后几分钟才完成；单个长工作流（大批量 AI 任务、慢 API 循环）阻塞其他所有工作流；webhook 在突发流量下超时；不能接受主进程是单点故障。</p>
