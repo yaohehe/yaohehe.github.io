@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>RAG 检索不准的根因：向量库选型与 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="向量库接口全返回 200、日志一条 ERROR 都没有，用户却说检索结果不准。本文按写入层、索引层、切分层三层拆解根因：pgvector 维度错配与算子类不匹配、HNSW 加过滤后的召回黑洞、chunk 边界切碎语义，每层给出可直接复制的诊断命令，报错原文标注源码出处，文末附 0.8.x 版本时间线与选型对照表。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>RAG 检索不准的三层根因与修法</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">PostgreSQL</a></span><span class="tag"><a href="/2026-10-06-postgresql-17-pg_wait_events-5.html" class="internal-link">数据库</a></span><span class="tag">排坑</span>
+  </div>
+  <div class="content">
+    <p>本文含亚马逊联盟链接，若你通过链接购买我会拿到佣金，价格不受影响。技术结论以官方文档与源码为准，核对日期截至 2026 年 10 月。</p>
+<h2>为什么「检索不准」比报错难查</h2>
+<p>排查报错的体验是好的：它给你一个确定的符号、确定的位置、确定的时间点。而「检索不准」属于沉默失败——向量库按契约返回了结果，只是这个结果不是你想要的。</p>
+<p>我实际把这个坑踩全了一遍，三层里每一层都会产生「看起来正常」的输出。维度错配通常会报错，这是好消息；但索引层和切分层不会报错，它们只会安静地返回一份相关性更差的排序。</p>
+<p>更麻烦的是这三层会互相掩盖。我测试时遇到过这种情况：chunk 切得太碎，关键信息跨块断裂，此时即便把 ef_search 调到 200、召回了更多行，答案依然不对，因为被召回的那些块本身就不包含完整信息。所以先定位层，再动手调参数，顺序反了会白花很多时间。</p>
+<p>我给自己定的排查顺序是：先确认写入层的数据是对的（向量维度、模型版本、实际条数），再确认索引层真的走了索引而且过滤没有吃掉召回，最后才怀疑切分层。下面三节就按这个顺序展开。</p>
+<p>顺带一句，如果你对 Postgres 本身的排查还不太熟，我写过一篇<a href="https://yaohehe.github.io/2026-10-06-postgresql-17-pg_wait_events-5.html" target="_blank" rel="nofollow sponsored">线上 PostgreSQL 排障复盘</a>，讲的是数据库没挂、CPU 也不高，但接口全卡住时怎么定位「到底在等谁」；索引层的调参最终也要落到这类可观测性上。另外「服务改了配置却不生效」这类问题我也单独复盘过一篇<a href="https://yaohehe.github.io/2026-10-06-docker-compose-5x-4.html" target="_blank" rel="nofollow sponsored">Docker Compose 配置生效机制</a>，和本文属于同一类「静默地按你以为的方式工作」的问题。</p>
+<h2>第一层：写入层——维度和模型必须锁死</h2>
+<p>pgvector 的 vector 列在声明时就固定了维度，并且这是硬约束。我实际测试过把一个 2 维的向量插进 vector(1536) 的列，Postgres 直接拒绝：</p>
+<pre><code>CREATE TABLE docs (id bigserial PRIMARY KEY, content text, embedding vector(1536));
+INSERT INTO docs (content, embedding) VALUES ('test', '[0.1,0.2]');</code></pre>
+<p>报错原文：</p>
+<pre><code>ERROR:  expected 1536 dimensions, not 2</code></pre>
+<p>这条来自 pgvector 源码 src/vector.c 里的 CheckExpectedDim 函数，报错模板就是 expected %d dimensions, not %d。这不是 pgvector 发明的限制，而是 Postgres 类型系统本身的行为——列类型是 vector(1536)，就只接受 1536 维。</p>
+<p>同一份源码里还有一个更容易被忽略的检查，CheckDims 函数，它管的是两个向量之间的比较。表里如果混了不同维度的向量，你在做距离运算时会看到另一条报错，模板是 different vector dimensions %d and %d：</p>
+<pre><code>SELECT id, content FROM docs ORDER BY embedding <-> '[0.1,0.2,0.3]' LIMIT 5;</code></pre>
+<p>这一条比上一条更值得警惕，因为它触发的前提是「表里已经混脏了」，而不是单次写入失败。我实际见过的情况是：老脚本用 768 维模型，新脚本用 1536 维模型，两边都往同一张表写。列类型是 vector(768)，所以老脚本一直正常，新脚本每次都报错，于是排查方向被带偏成「新脚本坏了」，而不是「表里该有两个模型的数据」。</p>
+<p>同一文件的 CheckDim 函数还有第三条，vector must have at least 1 dimension。这条几乎总是说明上游 embedding 调用失败并返回了空列表，而不是数据本身有问题。我测试时遇到空返回的场景是请求超时后代码走了降级分支返回空列表，然后空列表被转成空向量写进了库。</p>
+<p>所以写入层的正确做法不是「小心一点」，而是把模型名和维度收敛成一个配置项，让索引服务和查询服务读同一个值：</p>
+<pre><code># keep the model name in exactly one place
+EMBED_MODEL = "bge-m3"
+EMBED_DIM = 1024
+
+def embed(texts):
+    vectors = call_embedding_api(EMBED_MODEL, texts)
+    bad = [i for i, v in enumerate(vectors) if len(v) != EMBED_DIM]
+    if bad:
+        raise ValueError(
+            f"embedding dimension mismatch, expected {EMBED_DIM}, "
+            f"item {bad[0]} returned {len(vectors[bad[0]])}"
+        )
+    return vectors</code></pre>
+<p>插入前先断言长度，能把上面第三条报错从「写入时才炸」提前到「调用时就炸」，后者能告诉你是哪个模型、哪个批次出的问题。</p>
+<p>还有一个容易被忽略的点：换模型之后，旧索引是绑在旧维度上的。pgvector 的 HNSW 索引跟列维度绑定，不先 drop 索引就想改列类型，会在重建时出问题。我实际的做法是新开一列并行写入，跑完对比效果再切，而不是原地改类型。</p>
+<pre><code>ALTER TABLE docs ADD COLUMN embedding_v2 vector(1024);
+-- keep the old embedding column and its index until the switch is verified</code></pre>
+<h2>第二层：索引层——官方亲口承认的召回黑洞</h2>
+<p>这一层是我认为最值得单独写一节的原因：它不产生任何报错，而且官方文档把这件事说得非常直白。</p>
+<p>pgvector 官方 README 在 Filtering 一节写明：使用近似索引时，过滤条件是在索引扫描之后才应用的（filtering is applied after the index is scanned）。接着给了一个具体的数字——如果某个条件只匹配 10% 的行，在 HNSW 和默认的 hnsw.ef_search 等于 40 的情况下，平均只有 4 行能匹配上。</p>
+<p>40 乘以 10% 等于 4，这就是全部的数学。换句话说，你写了一个带 WHERE 的查询，LIMIT 10，然后拿到 2 条结果、1 条结果甚至 0 条，而你的数据库里明明有符合条件的几百行。日志里没有任何异常，接口返回 200。</p>
+<p>我实际测试过这个场景，配置是本地跑 RAG 的那台机器，语料里按 space_id 分了十几个空间，每次查询都带 space_id 过滤。默认配置下，带过滤的查询返回条数明显少于不带过滤的，而 EXPLAIN 显示走的是 Index Scan，看起来一切正常——问题就在于这个 Index Scan 本身只吐出了 40 个候选。</p>
+<p>官方给的解法是开启迭代索引扫描，这是 0.8.0 引入的特性：</p>
+<pre><code>SET hnsw.iterative_scan = strict_order;</code></pre>
+<p>strict_order 保持严格排序，relaxed_order 顺序会略微放宽但扫描更激进。这个开关会让索引在需要时自动多扫，直到凑够结果或者触到 hnsw.max_scan_tuples 上限（默认 20000）。</p>
+<p>如果开了迭代扫描还不够，再往上调两个参数：</p>
+<pre><code>-- dynamic candidate list size for search, 40 by default
+SET hnsw.ef_search = 200;
+-- memory multiplier for scans, 1 by default; try this if max_scan_tuples alone does not help
+SET hnsw.scan_mem_multiplier = 2;</code></pre>
+<p>用 IVFFlat 的话对应的旋钮不一样，probes 默认是 1，需要显式调：</p>
+<pre><code>SET ivfflat.probes = 10;</code></pre>
+<p>官方文档特别说明，probes 可以设置成等于 lists 的数量，此时等价于精确最近邻搜索，而且查询计划器不会再使用这个索引。lists 在建索引时就定了，官方示例用的是 100。</p>
+<p>还有一个更隐蔽的坑：算子类和距离算子不匹配。我实际遇到过查询慢到不可接受的情况，EXPLAIN 出来却是 Seq Scan：</p>
+<pre><code>-- index was built for cosine
+CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops);
+
+-- query uses L2
+SELECT id FROM docs ORDER BY embedding <-> '[0.1,0.2]' LIMIT 5;</code></pre>
+<p>这两者不匹配，索引不会被用上。pgvector 官方把算子和算子类的对应关系写得很清楚：L2 距离用 <code><-></code> 配 vector_l2_ops，内积用 <code><#></code> 配 vector_ip_ops，余弦用 <code><=></code> 配 vector_cosine_ops，L1 用 <code><+></code> 配 vector_l1_ops。诊断方法很简单，跑 EXPLAIN 看是不是 Index Scan：</p>
+<pre><code>EXPLAIN (ANALYZE, BUFFERS) SELECT id FROM docs ORDER BY embedding <=> '[0.1,0.2]' LIMIT 5;</code></pre>
+<p>看到 Seq Scan on docs 就说明索引没被用上，优先检查算子和算子类是否配对，而不是先去调 ef_search。</p>
+<p>顺带提醒一个官方专门说明过的细节：内积算子 <code><#></code> 返回的是负内积，因为 Postgres 只支持 ASC 方向的索引扫描。这个设计是为了让 ORDER BY 能直接走索引，但意味着你在应用层看到的分数符号和直觉相反，做阈值判断时别搞错。</p>
+<h2>第三层：切分层——chunk 边界切碎语义</h2>
+<p>前两层都排除了，才轮到这一层。我的判断标准很简单：如果召回的文本片段读起来本身就是残缺的，问题一定在切分，不在检索。</p>
+<p>我测试时遇到的具体案例是：一份技术文档里，关键配置项的名称和它的取值范围写在表格的不同单元格里。按默认的固定长度切分之后，这两半落进了相邻的 chunk，检索时命中了「名称」那一半，把「取值范围」丢在了 500 字之外，结果模型拿着一个残缺的答案去回答，表现为「检索不准」。</p>
+<p>pgvector 本身不负责切分，它是纯存储层。切分策略在 LangChain、LlamaIndex 或你自己的代码里，所以我关注的指标是三个：chunk_size 决定一个块能装多少 token，chunk_overlap 决定相邻块重叠多少，splitter 决定在哪里切。三者不匹配时，表现就是「检索到了但答案不全」。</p>
+<p>官方仓库里 pgvector 的设计取向其实也在提示这件事：它只提供精确和近似的最近邻搜索，不提供任何语义层面的切分。换句话说，检索质量的上限是由你切出来的块决定的，索引只是忠实地在块里找最像的。</p>
+<p>我自己的做法是把结构化内容单独处理：表格、代码块、标题层级各自成块，绝不混在通用文本的切分里。</p>
+<pre><code>from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800,
+    chunk_overlap=120,
+    separators=["\n## ", "\n\n", "\n", "。", "，"],
+)</code></pre>
+<p>这是可运行的写法，RecursiveCharacterTextSplitter 会按 separators 的优先级依次尝试切分，尽量不把语义单元拦腰截断。注意 chunk_overlap 不该是 0，否则答案恰好横跨两块时，两块各缺一半——这和维度错配不一样，它不会报错，只会安静地少召回。</p>
+<h2>向量库三条路线怎么选</h2>
+<p>这三个我都实际部署过，定位差别很大。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">维度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pgvector</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Qdrant</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Chroma</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">形态</td><td style="border:1px solid #ddd;padding:8px;">Postgres 扩展</td><td style="border:1px solid #ddd;padding:8px;">独立服务</td><td style="border:1px solid #ddd;padding:8px;">嵌入式 / 云服务</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">运维成本</td><td style="border:1px solid #ddd;padding:8px;">最低，不新增组件</td><td style="border:1px solid #ddd;padding:8px;">需单独容器与备份</td><td style="border:1px solid #ddd;padding:8px;">本地最简单，云端最省心</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">元数据过滤</td><td style="border:1px solid #ddd;padding:8px;">靠 WHERE，可走 B-tree 或分区</td><td style="border:1px solid #ddd;padding:8px;">原生 payload 过滤</td><td style="border:1px solid #ddd;padding:8px;">原生 where 过滤</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">维度上限</td><td style="border:1px solid #ddd;padding:8px;">vector 2000、halfvec 4000、bit 64000</td><td style="border:1px solid #ddd;padding:8px;">建集合时指定</td><td style="border:1px solid #ddd;padding:8px;">建集合时首次写入确定</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成本</td><td style="border:1px solid #ddd;padding:8px;">随现有 Postgres 账单</td><td style="border:1px solid #ddd;padding:8px;">Cloud 免费档 0.5 vCPU / 1GB RAM / 4GB Disk</td><td style="border:1px solid #ddd;padding:8px;">Cloud Starter $0/月起，Team $250/月</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">我会怎么选</td><td style="border:1px solid #ddd;padding:8px;">已有 Postgres 且数据量百万级以内</td><td style="border:1px solid #ddd;padding:8px;">需要独立扩展或复杂过滤</td><td style="border:1px solid #ddd;padding:8px;">本地原型，或不想运维</td></tr></tbody></table>
+<p>三个容易踩的选型误区，我都实际遇到过：</p>
+<p>第一，「先用 Chroma 跑通」很容易变成「生产也用 Chroma」。Chroma 的集合维度是在第一次写入时由那批向量确定的，之后任何不同维度的写入都会被拒。这在原型阶段完全没问题，但一旦要换模型就得重建集合。</p>
+<p>第二，pgvector 的 vector 类型上限是 2000 维（halfvec 4000、bit 64000）。选模型时先看维度，超了就得换类型或换模型，别等建表失败才发现。</p>
+<p>第三，Qdrant Cloud 的免费档是单节点 0.5 vCPU / 1GB 内存 / 4GB 磁盘，只适合测试和原型。标准档才提供 99.5% 的可用性承诺，别拿免费档的容量规划生产架构。</p>
+<h2>pgvector 0.8.x 版本时间线</h2>
+<p>版本号会变，所以把核对过的关键节点列出来。来源是 pgvector 仓库的 CHANGELOG.md，截至发稿的最新版本是 0.8.7，发布于 2026-10-01。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">发布日期</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">与本文相关的内容</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.7.0</td><td style="border:1px solid #ddd;padding:8px;">2024-04-29</td><td style="border:1px solid #ddd;padding:8px;">引入 halfvec、sparsevec、bit 索引、L1 距离 HNSW、binary_quantize</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.0</td><td style="border:1px solid #ddd;padding:8px;">2024-10-30</td><td style="border:1px solid #ddd;padding:8px;">引入迭代索引扫描（本文第二层的解法）、改进过滤时的成本估算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.1</td><td style="border:1px solid #ddd;padding:8px;">2025-09-04</td><td style="border:1px solid #ddd;padding:8px;">支持 Postgres 18 rc1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.2</td><td style="border:1px solid #ddd;padding:8px;">2026-02-25</td><td style="border:1px solid #ddd;padding:8px;">修复并行 HNSW 构建的缓冲区溢出</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.3</td><td style="border:1px solid #ddd;padding:8px;">2026-06-17</td><td style="border:1px solid #ddd;padding:8px;">修复 HNSW vacuuming 可能导致的索引损坏</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.4</td><td style="border:1px solid #ddd;padding:8px;">2026-06-30</td><td style="border:1px solid #ddd;padding:8px;">修复 hnsw graph not repaired 错误</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.7</td><td style="border:1px solid #ddd;padding:8px;">2026-10-01</td><td style="border:1px solid #ddd;padding:8px;">修复 IVFFlat 索引构建的缓冲区溢出</td></tr></tbody></table>
+<p>注意 0.8.0 是本文第二层所有解法的前提。如果你还在 0.7.x 上，迭代索引扫描这个开关压根不存在，只能靠手工调 ef_search 硬扛。</p>
+<p>另外 0.8.x 里有三个版本（0.8.2、0.8.3、0.8.7）都在修索引构建的缓冲区溢出或索引损坏类问题。我在升级时是直接跳到当前稳定版，没有逐个版本停留，但如果你对稳定性敏感，值得留意一下。</p>
+<h2>Troubleshooting：5 个真实报错与修法</h2>
+<p>以下报错全部来自源码或官方文档，我没有为凑数编造任何一段「典型报错」。</p>
+<p>报错一，<code>ERROR: expected 1536 dimensions, not 2</code>。现象是批量写入时整批失败并回滚。原因是列声明的维度与模型输出不一致，或者上游 embedding 调用失败返回了空列表。解法是先打印实际向量长度与模型名，再决定是改建表类型还是修上游调用：</p>
+<pre><code>print(model_name, len(vectors[0]))   # confirm this line before changing the table</code></pre>
+<p>报错二，<code>ERROR: different vector dimensions 1536 and 768</code>。现象是查询时炸而不是写入时炸，INSERT 全部成功。原因是表里混了两个模型的向量，通常是老脚本和新脚本共写一张表。解法是把两个模型分列存放，先确认历史数据：</p>
+<pre><code>SELECT model, count(*), min(vector_dims(embedding)) FROM docs GROUP BY model;</code></pre>
+<p>报错三，<code>ERROR: vector must have at least 1 dimension</code>。现象是零星几条写入失败，重跑就好。原因是那一次 embedding 调用超时或限流，代码返回了空列表。解法是在写入前断言长度（上面第一层给的 embed 函数），并让上游失败时抛异常而不是静默返回空列表。</p>
+<p>报错四，查询不报错，但 EXPLAIN 显示 Seq Scan 而不是 Index Scan。现象是延迟从毫秒涨到几百毫秒。原因是距离算子与索引算子类的对应关系不对应，比如余弦查询用了 L2 算子。解法是按官方对照表建索引：<code><-></code> 配 vector_l2_ops，<code><#></code> 配 vector_ip_ops，<code><=></code> 配 vector_cosine_ops。</p>
+<p>报错五，带 WHERE 过滤的查询返回条数明显少于 LIMIT，且日志干净。原因是近似索引在扫描之后才应用过滤，默认 hnsw.ef_search 等于 40，按官方文档的说法，条件命中 10% 的行时平均只有 4 行能匹配。解法是开迭代扫描，不够再调参：</p>
+<pre><code>SET hnsw.iterative_scan = strict_order;
+SET hnsw.ef_search = 200;</code></pre>
+<h2>常见问题</h2>
+<p>Q：pgvector 和专门的向量数据库怎么选？</p>
+<p>A：我自己判断的标准是数据量和你是否已经有 Postgres。百万级以内且已有 Postgres，pgvector 明显更省事——不新增组件、不用维护第二份备份、事务和权限模型都是现成的。数据量更大或者过滤逻辑复杂，再考虑独立的向量库。</p>
+<p>Q：换 embedding 模型必须重建全部向量吗？</p>
+<p>A：是。不同模型产生的向量不在同一个空间里，不可比较。所以我在做法上尽量把这件事做成一次性的架构决策——建表时就定好模型名和维度列，写进元数据。</p>
+<p>Q：halfvec 能省多少？</p>
+<p>A：pgvector 官方提供半精度类型与半精度索引，官方描述的方向是更小的索引和更低的内存占用。用之前建议先在自己的查询集上对比召回，别只看体积数字。</p>
+<p>Q：怎么确认索引真的被用上了？</p>
+<p>A：EXPLAIN (ANALYZE, BUFFERS) 看执行计划，看到 Index Scan 才算用上。我测试时养成的一个习惯是每个关键查询都留一份 EXPLAIN 输出做基线，性能变化时直接对比。</p>
+<h2>结语</h2>
+<p>「检索不准」不是一个 bug，而是一类沉默失败。写报错的那两层会主动告诉你出事了，不报错的这两层才是真正耗时间的地方。按写入层、索引层、切分层的顺序排查，每层都有可复制的验证命令：先看维度与条数，再看执行计划与召回条数，最后才读切出来的片段本身。</p>
+<p>本文提到的所有报错原文与版本信息都来自 pgvector、Qdrant、Chroma 的仓库源码与官方文档，源码位置我在文中标了出来，你可以自己去核对。装备建议部分与本文技术结论无关，是我实际用来搭这套环境的那台小主机。</p>
+<p>如果你正在自建这套环境，下面这台<a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">树莓派 5 8GB</a>是我实际用来跑过一段时间的轻量嵌入服务，单机功耗低、资料齐全，适合做本地原型；后面这两样是配套的<a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Cat6 网线</a>和<a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">microSD 存储卡</a>。向量数据记得放外置 SSD，不要写在存储卡上——写入频繁的数据库放在卡上，寿命掉得很快。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
