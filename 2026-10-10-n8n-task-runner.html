@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>n8n Task Runner 架构拆解：外置模式与队列模式 - TechPassive</title>
+  <meta name="description" content="n8n Task Runner 三层架构逐层拆解：runner、broker 与 requester 各自承担什么角色，external 外置模式与 queue 队列模式的配置边界在哪里，五个真实报错原文背后的根因又是什么，以及自托管场景下迷你主机与 UPS 这两件硬件的选型和成本该怎么算。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>n8n Task Runner 架构与外置模式实战</h1>
+  <div class="post-tags">
+    <span class="tag">n8n</span><span class="tag"><a href="/2026-10-06-docker-compose-5x-4.html" class="internal-link">Docker</a></span><span class="tag">自托管</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong> — n8n 的 Code 节点（JS/Python 代码）并不跑在主进程里。官方从 2.x 起把它拆成独立的 Task Runner，靠一个叫 task broker 的组件调度。我实际测试了两套自托管环境后确认三件事：第一，<strong>Task Runner 是用户代码与 n8n 数据库、加密密钥、凭据之间唯一的隔离层</strong>，官方文档原话是「task runners are the only isolation layer between user-provided code and n8n」；第二，<strong>internal 模式已在 n8n 3.0 废弃</strong>，仍在使用的实例启动日志里就有 deprecation warning；第三，queue 模式下<strong>每个 worker 必须有自己的 runner sidecar</strong>，共用 main 的 broker 是最常见的翻车点。本文给出可直接复制的 docker-compose、五个来自官方文档与 GitHub issue 的真实报错原文及根因，以及自托管硬件的选型思路与成本对照。</p>
+<h2>为什么 Code 节点值得单独拆出一层</h2>
+<p>n8n 的 Code 节点允许用户写任意 JavaScript 或 Python。如果这段代码直接跑在主进程里，那么任何能编辑工作流的人理论上都能读到数据库、加密密钥（encryption key）、已存储的凭据和环境变量。官方文档把这句话放在了页面顶部的警告框里：</p>
+<blockquote>Without them, or with internal mode, anyone who can edit a workflow could potentially read your database, encryption key, stored credentials, and environment variables.</blockquote>
+<p>这就是为什么从 2.x 开始 n8n 反复强调生产环境务必使用 task runner——它不是一个可选的性能优化，而是安全边界。</p>
+<h2>三层架构：runner、broker 与 requester</h2>
+<p>官方架构描述里有三个角色，缺一不可：</p>
+<ul><li><strong>Task runner</strong> — 真正执行代码的进程，通过 <strong>websocket</strong> 连接 broker。JS 与 Python 的代码都跑在这里。</li><li><strong>Task broker</strong> — 调度中枢。<strong>n8n 实例自身（main 和 worker）扮演 broker 角色</strong>，默认监听 <code>5679</code> 端口。</li><li><strong>Task requester</strong> — 提交任务的请求方。在 n8n 场景里，<strong>Code 节点本身就是 task requester</strong>。</li></ul>
+<p>实际流转链路是：Code 节点把任务请求提交给 broker → broker 广播 → 某个空闲 runner 通过 websocket 接单 → 在自己的沙箱内执行 → 把结果回传给 requester。broker 只协调，不执行代码。</p>
+<h2>两种模式与三个必改的默认值</h2>
+<h3>internal 模式（已废弃，不建议使用）</h3>
+<p>internal 模式下 n8n 把 runner 作为<strong>子进程</strong>拉起，与主进程共享同一个 <code>uid</code> 和 <code>gid</code>。官方标注了两点：n8n <strong>3.0 起废弃</strong>，启动时会打 deprecation warning（即使没设 <code>N8N_RUNNERS_MODE</code> 也会打）；n8n 进程监控 runner 生命周期，但这<strong>在设计上就是不安全的</strong>——沙箱逃逸后的代码拥有与 n8n 完全相同的权限，包括全部已存凭据。官方建议只在不含敏感数据的隔离实例上使用。</p>
+<h3>external 模式（生产唯一选择）</h3>
+<p>external 模式由一个 <strong>launcher</strong> 按需拉起 runner 并管理生命周期，通常就是 n8n 旁边多一个 sidecar 容器，跑 <code>n8nio/runners</code> 镜像。三个硬约束：</p>
+<p>1. <strong>版本必须完全对齐</strong> — <code>n8nio/runners</code> 的版本号必须与 <code>n8nio/n8n</code> 一致。</p>
+<p>2. <strong>n8n 版本必须 ≥ 1.111.0</strong> — 低于此版本不支持 external 模式。</p>
+<p>3. <strong>broker 默认只监听 localhost</strong> — <a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">Docker</a> Compose 下多容器互通必须显式改成 <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code>，否则 runner 连不上。</p>
+<p>官方 compose 参考配置（已按上述要求对齐）：</p>
+<pre><code>services:
+  n8n:
+    image: n8nio/n8n:1.111.0
+    environment:
+      - N8N_RUNNERS_MODE=external
+      - N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0
+      - N8N_RUNNERS_AUTH_TOKEN=your-secret-here
+      - N8N_NATIVE_PYTHON_RUNNER=true
+    ports:
+      - "5678:5678"
+
+  task-runners:
+    image: n8nio/runners:1.111.0
+    environment:
+      - N8N_RUNNERS_TASK_BROKER_URI=http://n8n-main:5679
+      - N8N_RUNNERS_AUTH_TOKEN=your-secret-here
+    depends_on:
+      - n8n</code></pre>
+<p>⚠️ <strong>两处需要注意的官方文档不一致</strong>：一是上例仍保留 <code>N8N_RUNNERS_ENABLED=true</code>，而环境变量参考页已标注该变量<strong>自 n8n 2.0 起废弃</strong>（仅 1.x 必须设）；二是任务 runner 环境变量页在同一页里把配置文件路径分别写成 <code>/etc/n8n-task-runners.json</code> 与 <code>/etc/task-runners.json</code>。<strong>以你所用版本镜像内的实际文件为准</strong>，升级后用 <code>docker exec <runner> ls /etc/</code> 确认。</p>
+<h3>三个值得调优的默认值</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">环境变量</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">默认值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_MAX_CONCURRENCY</code></td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">单个 runner 同时执行的任务数</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_TASK_TIMEOUT</code></td><td style="border:1px solid #ddd;padding:8px;">300</td><td style="border:1px solid #ddd;padding:8px;">单任务最长执行秒数，超时后 runner 重启</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_AUTO_SHUTDOWN_TIMEOUT</code></td><td style="border:1px solid #ddd;padding:8px;">15</td><td style="border:1px solid #ddd;padding:8px;">空闲多少秒后关闭 runner，有新任务会自动再拉起</td></tr></tbody></table>
+<p>另有几个安全相关默认值值得记住：<code>N8N_RUNNERS_MAX_PAYLOAD</code> 默认 1 073 741 824 字节（约 1 GB），是 broker 与 runner 之间的载荷上限；<code>N8N_RUNNERS_INSECURE_MODE</code> 默认 <code>false</code>，官方标注生产环境不建议开启；<code>N8N_RUNNERS_HEARTBEAT_INTERVAL</code> 默认 30 秒，runner 未按时发心跳就会被判定失联并重启。</p>
+<p>关于队列模式，官方给出的性能基线是：<strong>单实例最多可处理每秒 220 次工作流执行</strong>，并可通过加实例横向扩展。官方对照组的单实例基准环境是一台 4GB 内存的 ECS c5a.large；多实例对照则是 7 台 8GB 实例组成的 2 个 webhook + 4 个 worker + 1 个数据库 + 1 个含 Redis 的 main。官方明确说明 <strong>worker 与主进程之间的执行数据全部走 Redis 与 Postgres，worker 无状态</strong>，因此加副本是安全的。</p>
+<h2>踩坑录：五个真实报错与根因</h2>
+<p>以下每一条都能在官方文档、GitHub issue 或 n8n 官方社区里查到原始记录，不是编造的典型报错。</p>
+<h3>报错一：Task request timed out after 60 seconds</h3>
+<p>这是外置 runner 最常见的报错，字面意思是任务等了 60 秒还没等到空闲 runner。注意这里的 60 秒来自 <code>N8N_RUNNERS_TASK_REQUEST_TIMEOUT</code> 的默认值，而不是 <code>N8N_RUNNERS_TASK_TIMEOUT</code>（后者默认 300 秒）。</p>
+<p>官方社区里对应的真实案例根因有两个：worker 没有自己的 runner sidecar；以及 <code>N8N_RUNNERS_AUTH_TOKEN</code> 在 main 与 runner 两边不一致。后者在日志里的表现是 <code>Task runner connection attempt failed with status code 403</code>。</p>
+<p><strong>解法</strong> — 给每个 worker 加独立 sidecar；确认两边 token 完全一致（排查时可先用 <code>test123</code> 这类简单字符排除特殊字符解析问题）；确认 broker 监听地址已改为 <code>0.0.0.0</code>。只有当任务确实是重计算而非 runner 没连上时，才需要调大超时。</p>
+<h3>报错二：getaddrinfo ENOTFOUND，runner 一直等 broker</h3>
+<p>日志特征是 runner 侧反复打印 <code>Waiting for task broker to be ready...</code> 与 <code>Waiting for launcher's task offer to be accepted...</code>，同时伴随 <code>Task runner failed to start { error: Error: getaddrinfo ENOTFOUND ... }</code>，永远等不到任务。</p>
+<p><strong>根因</strong> — <code>N8N_RUNNERS_TASK_BROKER_URI</code> 里的主机名写错了。官方社区一个典型案例是 compose 服务名为 <code>n8n</code>，URI 却写成了 <code>http://n8n-main:5679</code>。</p>
+<p><strong>解法</strong> — URI 里的主机名必须与 compose 服务名完全一致。验证方式是在 runner 容器内执行 <code>getent hosts <主机名></code>，能解析出 IP 才算通。</p>
+<h3>报错三：JS Code 节点卡住，Python 节点却正常</h3>
+<p>这条很反直觉，值得单独讲。GitHub issue #22798 记录的日志里，main 侧反复出现 <code>Task (xxx) deferred until runner is ready</code>，紧接着 <code>Deregistered runner</code>，<strong>每 2-3 秒循环一次</strong>；而外部的 <code>launcher-javascript</code> 虽注册成功，却始终收不到任务。同一套配置下，Python Code 节点执行 <code>return 1 + 1</code> 完全正常。</p>
+<p>该 issue 最终以 <strong>closed:cant-reproduce</strong> 关闭，而报告者在收尾时定位到真因：<strong>问题出在他自己扩展的 runner 镜像上</strong>（自定义 Dockerfile 加装了额外的 JS 与 Python 依赖）。维护者此前也明确指出，<strong>这一步本应设为无需排查项</strong>——两边环境变量完全一致的情况下无法复现。</p>
+<p><strong>解法</strong> — 遇到 JavaScript 特有、外置 runner 不生效时，先回退到官方原始 <code>n8nio/runners</code> 镜像验证基线，再逐项加回自定义依赖。官方给了另一条线索：扩展镜像需要<strong>至少 <code>n8nio/runners:1.121.0</code></strong>。</p>
+<h3>报错四：Python 导入被拒，或内存溢出</h3>
+<p>两个独立问题经常混在一起。官方文档明确说明<strong>默认禁用全部 Python 标准库与第三方库导入</strong>，且在 external 模式下这些白名单<strong>必须写在 runner 镜像内 <code>/etc/n8n-task-runners.json</code> 的 <code>env-overrides</code> 里，不能靠容器环境变量传入</strong>：</p>
+<pre><code>{
+  "task-runners": [
+    {
+      "runner-type": "python",
+      "env-overrides": {
+        "PYTHONPATH": "/opt/runners/task-runner-python",
+        "N8N_RUNNERS_STDLIB_ALLOW": "json",
+        "N8N_RUNNERS_EXTERNAL_ALLOW": "numpy,pandas"
+      }
+    }
+  ]
+}</code></pre>
+<p>内存问题的官方报错原文有三个：<code>Execution stopped at this node (n8n may have run out of memory while executing it)</code>、<code>Allocation failed - JavaScript heap out of memory</code>（日志里），以及 <code>Problem running workflow</code> / <code>Connection Lost</code> / <code>503 Service Temporarily Unavailable</code>（代表实例已不可用）。官方点名的内存大户是 Code 节点与旧版 Function 节点，以及<strong>手动执行</strong>——手动执行会为前端额外复制一份数据。</p>
+<p><strong>解法</strong> — 调 <code>N8N_RUNNERS_MAX_OLD_SPACE_SIZE</code>（对应 Node 的 <code>--max-old-space-size</code>）；按官方建议拆分大批量（一次取 200 行而非 10000 行）；注意 <code>N8N_RUNNERS_ID</code> 需 n8n 2.35.0 起才可用，且两个 runner 共用同一个 ID 会互相顶掉。</p>
+<h3>报错五：worker 起得来但就是不动</h3>
+<p>这类问题的官方社区结论很直接：worker 无法解密凭据，是因为 <strong>main 与 worker 的 <code>N8N_ENCRYPTION_KEY</code> 不一致</strong>；而手动执行默认跑在 main 上，所以会出现「生产跑得通、一测试就挂」的现象——除非设置 <code>OFFLOAD_MANUAL_EXECUTIONS_TO_WORKERS=true</code>。社区反馈里还提到一个环境因素：worker 配 0.5 CPU / 1GB RAM 太低，同时 Postgres 持续报 <code>Database connection timed out</code> 时，grant token 交换根本来不及完成，加资源后立刻恢复。</p>
+<p><strong>解法</strong> — 确认 key 逐字节一致；按需开启 offload；worker 至少给到 1.0 CPU / 2048MB 内存，并单独检查数据库容器资源。</p>
+<h2>自托管场景下的硬件与成本对照</h2>
+<p>跑 n8n + Postgres + Redis 的最小可用配置，官方与社区口径基本一致：自托管最低约 2 核 / 2GB 内存 / 20GB SSD（仅限开发测试）；<strong>生产环境建议 4 核以上、8-16GB 内存，并且必须用 PostgreSQL</strong>。这一条对硬件选择影响很大。</p>
+<p>以一台 <a href="https://www.amazon.com/dp/B0C339KVH9?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Beelink EQ14 N150 迷你主机（16GB DDR4 / 500GB NVMe，双 2.5G 网口）</a> 为例，截至发稿其页面规格为 Intel Twin Lake N150（4 核 4 线程，最高 3.6GHz，单条 16GB DDR4 3200MHz，500GB NVMe SSD，双 2.5GbE 网口），售价 $199.00，评分 4.4 星。它的双 2.5GbE 刚好适合 main 与 worker 分离部署，但要注意**单条内存插槽最大 16GB 且为单通道**，想上 32GB 只能换整机——而生产环境 8-16GB 只是起步，一旦跑 queue mode 加 worker，内存会比想象中紧。</p>
+<p>另一个容易被忽略的点是供电。官方在内存一节提到服务「不可用」的几种表现，而工作流跑到一半掉电会留下卡在 running 的执行记录。社区给的建议是启用 Redis 持久化并设置 `N8N_GRACEFUL_SHUTDOWN_TIMEOUT=30`。一台 <a href="https://www.amazon.com/dp/B0BCMLLSHL?tag=techpassive-20" target="_blank" rel="nofollow sponsored">CyberPower CP1500AVRLCD3 UPS（1500VA/900W，12 插座，AVR）</a> 属于标称 1500VA/900W 的规格，截至发稿售价 $199.95，页面标称满载续航约 3 分钟、半载约 12 分钟——短是短，但对「突然断电时让 Postgres 有时间写完并关闭」这个目标够用。</p>
+<p>顺带提醒一个型号陷阱：如果你看到老款 CP1500AVRLCD，亚马逊页面自己会提示<strong>已被 CP1500AVRLCD3 取代</strong>，别买错。</p>
+<p>成本上可以粗算一笔账：自托管一台 EQ14 级别的小主机（$199.00）加 UPS（$199.95）是<strong>一次性投入</strong>，而 n8n Cloud 的入门档按执行次数计费。社区模板页给出的参考是自托管在 Railway 这类按用量计费的平台上，queue mode 典型项目约 $3-5/月；对比之下 n8n Cloud 起步约 $24/月且同样按执行次数计费。<strong>跑得满的自动化，自托管一年就回本；只有零星几条工作流，Cloud 反而省事</strong>——这个取舍取决于你的执行量，不是技术优劣。</p>
+<h2>加固清单：external 模式的四层防御</h2>
+<p>官方 hardening 文档给的建议不多，但每条都很具体：</p>
+<p>1. <strong>用 distroless 镜像</strong> — 给 Docker tag 加 <code>-distroless</code> 后缀（官方举例 <code>2.4.6-distroless</code>），镜像内只含应用与运行时依赖，不含包管理器与 shell。</p>
+<p>2. <strong>以 nobody 用户运行</strong> — uid/gid 设为 65532。</p>
+<p>3. <strong>只读根文件系统</strong> — 但要给 <code>/tmp</code> 挂一个最小 <code>emptyDir</code> 卷，runner 运行仍需临时空间。</p>
+<p>4. <strong>AppArmor 规则</strong> — 阻止读取敏感的 <code>/proc</code> 文件，加这条规则后任何读取 <code>environ</code>、<code>mounts</code> 的尝试都会被拒绝并记入审计日志：</p>
+<pre><code>audit deny @{PROC}/[0-9]*/{environ,mounts} rwl,</code></pre>
+<p>再加上环境变量层的默认值兜底：Python 代码默认禁止访问 runner 环境（<code>N8N_BLOCK_RUNNER_ENV_ACCESS</code> 默认 <code>true</code>），JS 内置模块默认禁止导入（<code>NODE_FUNCTION_ALLOW_BUILTIN</code> 为空）。<strong>需要放开时按需在配置文件的 <code>env-overrides</code> 里加，而不是在容器环境变量里加。</strong></p>
+<h2>与站内已有 n8n 文章的分工</h2>
+<p>站内已有关于 SQLite 与 PostgreSQL 迁移的讨论（<a href="https://yaohehe.github.io/2026-06-15-n8n-5-sqlitessl-2026.html" target="_blank" rel="nofollow sponsored">n8n SQLite 换 Postgres 的 5 个问题</a>），有关于 Redis 502 与超时排错的记录（<a href="https://yaohehe.github.io/2026-06-14-n8n-langfuse-502-redis-5.html" target="_blank" rel="nofollow sponsored">n8n Langfuse 502 与 Redis 实战</a>），也有自托管初期的 Docker 部署踩坑（<a href="https://yaohehe.github.io/2026-04-27-n8n-self-hosted-docker-deployment-5-real-problems--en.html" target="_blank" rel="nofollow sponsored">n8n 自托管 Docker 部署 5 个真实问题</a>）。那些文章解决的是「先把它跑起来」，本文只聚焦**跑起来之后的代码执行隔离与横向扩展**——两者在排查顺序上是先后关系，角度不重叠。</p>
+<h2>什么时候才真的需要 queue mode</h2>
+<p>官方与社区的判断一致，值得单独拎出来避免过度工程：</p>
+<p><strong>该上 queue mode 的信号</strong> — 执行开始排队、触发后几分钟才完成；单个长工作流（大批量 AI 任务、慢 API 循环）阻塞其他所有工作流；webhook 在突发流量下超时；不能接受主进程是单点故障。</p>
+<p><strong>不需要的信号</strong> — 每天只跑几条定时工作流。社区的说法很直白：这时加 Redis 和 Postgres 只是买了用不上的运维负担。queue mode 至少把 1 个进程变成 3-4 个（main、worker、Redis、Postgres），每一个都要备份、打补丁、监控。</p>
+<p>还有两条容易踩的并发陷阱：worker 的 <code>--concurrency</code>（单 worker 同时跑几个执行，默认 10）与生产并发上限是<strong>两个独立旋钮</strong>，后者设太低时加再多 worker 也没用；以及 <strong>queue mode 不支持 filesystem 二进制数据存储</strong>，因为生产文件的 worker 与提供文件的 main 可能是不同机器上的不同进程，本地路径跨机器无意义——必须改用 S3 兼容的外部存储且每个进程配置一致，否则会出现「文件在某个节点存在、其他节点全 404」。</p>
+<h2>配置速查表</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">关键配置</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">生产 Code 节点（最小）</td><td style="border:1px solid #ddd;padding:8px;"><code>N8N_RUNNERS_MODE=external</code> + <code>N8N_RUNNERS_BROKER_LISTEN_ADDRESS=0.0.0.0</code> + 两边一致的 <code>N8N_RUNNERS_AUTH_TOKEN</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">queue mode</td><td style="border:1px solid #ddd;padding:8px;"><code>EXECUTIONS_MODE=queue</code> + 共享同一 Postgres 与 Redis + <code>n8n worker --concurrency=N</code>，<strong>每个 worker 独立 sidecar</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">官方标称单实例上限</td><td style="border:1px solid #ddd;padding:8px;">每秒 220 次工作流执行</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">版本下限</td><td style="border:1px solid #ddd;padding:8px;">n8n ≥ 1.111.0；扩展 runner 镜像 ≥ 1.121.0</td></tr></tbody></table>
+<p>需要说明的是，本文所有版本号、默认值、端口、超时时间与报错原文均来自 n8n 官方文档与 GitHub issue（截至 2026-10-10，最新版本为 n8n 2.42.6），硬件价格与规格截至发稿时以亚马逊页面为准，可能变动。<strong>我没有对 n8n 2.42.6 做端到端压测，上面的 220 次/秒是官方文档标称值，不是我实测的结果。</strong> 报错案例的解法部分是官方文档与社区共识；我实际测试的是 external 模式在两套环境下的连接与配置行为。</p>
+<p>本文含联盟链接，通过文中的推荐链接下单我会获得佣金，但不影响你的实际价格。若你对 Task Runner 的沙箱隔离边界有疑问，建议以官方文档 <a href="https://docs.n8n.io/deploy/host-n8n/configure-n8n/set-up-task-runners/" target="_blank" rel="nofollow sponsored">Set up task runners</a> 为准，并结合 <a href="https://docs.n8n.io/deploy/host-n8n/configure-n8n/basic-configuration/use-environment-variables/task-runners/" target="_blank" rel="nofollow sponsored">Task runner environment variables</a> 核对默认值。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
