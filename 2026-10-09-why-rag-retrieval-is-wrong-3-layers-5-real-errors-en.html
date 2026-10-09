@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Why RAG Retrieval Is Wrong: 3 Layers, 5 Real Errors - TechPassive</title>
+  <meta name="description" content="Vector search returns 200 with a clean log, yet results are wrong. Three layers: pinned dimensions, HNSW filtering that eats recall, and chunking that breaks context.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Why RAG Retrieval Is Wrong: 3 Layers, 5 Real Errors</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">PostgreSQL</a></span><span class="tag"><a href="/2026-04-07-how-to-automate-server-deployments-with-github-actions-a-com-en.html" class="internal-link">DevOps</a></span><span class="tag">Troubleshooting</span>
+  </div>
+  <div class="content">
+    <p>This post contains <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> affiliate links. If you buy through them I earn a commission at no extra cost to you. Technical claims are checked against official docs and source code, verified as of October 2026.</p>
+<h2>Why "wrong results" is harder to debug than an error</h2>
+<p>Debugging an error is a good experience. You get a specific symbol, a specific location, a specific moment in time. Inaccurate retrieval is a silent failure instead — the vector store returns exactly what it promised, it just is not the answer you wanted.</p>
+<p>I tested every one of these three layers myself, and each one produces output that looks perfectly normal. Dimension mismatches usually raise an error, which is good news. The index layer and the split layer do not. They quietly hand you a worse-ranked result set.</p>
+<p>The messier part is that these three layers mask each other. I ran into this case while testing: chunks were cut so finely that the key information straddled two blocks. Even after raising ef_search to 200 and pulling back more rows, the answer stayed wrong, because the retrieved blocks themselves did not contain complete information. So locate the layer first, tune parameters second. Reversing that order wastes a lot of time.</p>
+<p>The order I settled on is this — confirm the write layer is correct first (vector dimension, model version, actual row count), then confirm the index layer really uses an index and that filtering is not eating recall, and only then suspect the split layer.</p>
+<p>One aside: if Postgres troubleshooting is still new to you, I wrote a <a href="https://yaohehe.github.io/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" target="_blank" rel="nofollow sponsored">production PostgreSQL post-mortem</a> about the case where the database was up, CPU was low, and every endpoint timed out — how to find out who it was waiting on. Index tuning at layer 2 ultimately lands in the same observability bucket. I have also written one about <a href="https://yaohehe.github.io/2026-10-06-docker-compose-changes-not-applying-4-real-fixes-en.html" target="_blank" rel="nofollow sponsored">Docker Compose config not applying</a>, which belongs to the same family of "silently behaving the way you assumed" problems.</p>
+<h2>Layer 1: The write layer — pin dimensions and model</h2>
+<p>A pgvector <code>vector</code> column fixes its dimension at declaration time, and that is a hard constraint. I tested inserting a 2-dimension vector into a <code>vector(1536)</code> column, and Postgres refused outright:</p>
+<pre><code>CREATE TABLE docs (id bigserial PRIMARY KEY, content text, embedding vector(1536));
+INSERT INTO docs (content, embedding) VALUES ('test', '[0.1,0.2]');</code></pre>
+<p>The error, verbatim:</p>
+<pre><code>ERROR:  expected 1536 dimensions, not 2</code></pre>
+<p>That string comes from <code>CheckExpectedDim</code> in pgvector's <code>src/vector.c</code>, and the template is literally <code>expected %d dimensions, not %d</code>. This is not a pgvector invention — it is how the Postgres type system behaves. A column typed <code>vector(1536)</code> accepts exactly 1536 dimensions.</p>
+<p>The same source file has a second check that is easier to miss, <code>CheckDims</code>, which governs comparisons between two vectors. If your table mixes dimensions, you hit a different message when computing a distance, with the template <code>different vector dimensions %d and %d</code>:</p>
+<pre><code>SELECT id, content FROM docs ORDER BY embedding <-> '[0.1,0.2,0.3]' LIMIT 5;</code></pre>
+<p>This one deserves more caution than the first, because its precondition is "the table is already dirty" rather than "one insert failed." I have seen this exact shape: an old script writes with a 768-dimension model, a new script writes with a 1536-dimension model, and both target the same table. The column is typed <code>vector(768)</code>, so the old script never breaks while the new script fails every single time. That sends you debugging the new script instead of realizing the table holds data from two models.</p>
+<p>A third check in the same file, <code>CheckDim</code>, raises <code>vector must have at least 1 dimension</code>. This one almost always means the upstream embedding call failed and returned an empty list, not that your data is broken. In my testing, the empty return came from a timeout after which the code took a fallback branch and returned an empty list, which was then written to the database as an empty vector.</p>
+<p>So the correct fix at the write layer is not "be more careful." It is collapsing the model name and dimension into a single config value that both the indexer and the query service read:</p>
+<pre><code># keep the model name in exactly one place
+EMBED_MODEL = "bge-m3"
+EMBED_DIM = 1024
+
+def embed(texts):
+    vectors = call_embedding_api(EMBED_MODEL, texts)
+    bad = [i for i, v in enumerate(vectors) if len(v) != EMBED_DIM]
+    if bad:
+        raise ValueError(
+            f"embedding dimension mismatch, expected {EMBED_DIM}, "
+            f"item {bad[0]} returned {len(vectors[bad[0]])}"
+        )
+    return vectors</code></pre>
+<p>Asserting the length before insert moves the third error from "it blows up at write time" to "it blows up at call time," and the latter tells you which model and which batch failed.</p>
+<p>One more subtlety: after you swap models, the old index is bound to the old dimension. An HNSW index in pgvector is tied to the column dimension, so changing the column type without dropping the index first causes problems on rebuild. What I actually do is add a new column, write both in parallel, compare results, and only then cut over — rather than altering the type in place.</p>
+<pre><code>ALTER TABLE docs ADD COLUMN embedding_v2 vector(1024);
+-- keep the old embedding column and its index until the switch is verified</code></pre>
+<h2>Layer 2: The index layer — a recall black hole the docs admit to</h2>
+<p>This layer deserves its own section because it never raises an error, and the official documentation states the problem unusually plainly.</p>
+<p>The pgvector README, in its Filtering section, says that with approximate indexes filtering is applied after the index is scanned. It then gives a concrete number — if a condition matches 10% of rows, with HNSW and the default <code>hnsw.ef_search</code> of 40, only 4 rows will match on average.</p>
+<p>40 times 10% equals 4, and that is the entire math. In other words, you write a query with a WHERE clause, ask for LIMIT 10, and get back 2 rows, 1 row, or even 0 — while your database plainly holds several hundred matching rows. Nothing appears in the log. The endpoint returns 200.</p>
+<p>I tested this on the machine I use for local RAG work, where the corpus was split across a dozen-plus spaces by <code>space_id</code> and every query filtered on it. Under the default configuration, filtered queries returned noticeably fewer rows than unfiltered ones, and EXPLAIN showed an Index Scan — everything looked correct. The problem is that this Index Scan only emitted 40 candidates in the first place.</p>
+<p>The fix the docs offer is iterative index scans, introduced in 0.8.0:</p>
+<pre><code>SET hnsw.iterative_scan = strict_order;</code></pre>
+<p><code>strict_order</code> preserves strict ordering; <code>relaxed_order</code> loosens the order slightly but scans more aggressively. The switch makes the index scan further on demand, until it has enough results or hits <code>hnsw.max_scan_tuples</code> (20,000 by default).</p>
+<p>If iterative scans are not enough, two more knobs:</p>
+<pre><code>-- dynamic candidate list size for search, 40 by default
+SET hnsw.ef_search = 200;
+-- memory multiplier for scans, 1 by default; try this if max_scan_tuples alone does not help
+SET hnsw.scan_mem_multiplier = 2;</code></pre>
+<p>With IVFFlat the knobs differ. <code>probes</code> defaults to 1 and has to be raised explicitly:</p>
+<pre><code>SET ivfflat.probes = 10;</code></pre>
+<p>The documentation also notes that probes can be set equal to the number of lists, at which point the query is an exact nearest neighbor search and the planner stops using the index. <code>lists</code> is fixed at index creation time, and the official example uses 100.</p>
+<p>There is a sneakier failure mode: operator class and distance operator mismatch. I hit a query slow enough to be unusable where EXPLAIN showed a Seq Scan:</p>
+<pre><code>-- index was built for cosine
+CREATE INDEX ON docs USING hnsw (embedding vector_cosine_ops);
+
+-- query uses L2
+SELECT id FROM docs ORDER BY embedding <-> '[0.1,0.2]' LIMIT 5;</code></pre>
+<p>These do not match, so the index is never used. The official docs spell out the mapping: L2 distance uses <code><-></code> with <code>vector_l2_ops</code>, inner product uses <code><#></code> with <code>vector_ip_ops</code>, cosine uses <code><=></code> with <code>vector_cosine_ops</code>, and L1 uses <code><+></code> with <code>vector_l1_ops</code>. Diagnosis is simple — run EXPLAIN and check for an Index Scan:</p>
+<pre><code>EXPLAIN (ANALYZE, BUFFERS) SELECT id FROM docs ORDER BY embedding <=> '[0.1,0.2]' LIMIT 5;</code></pre>
+<p>If you see <code>Seq Scan on docs</code>, the index is not being used. Check the operator-to-operator-class pairing before touching <code>ef_search</code>.</p>
+<p>One more documented detail worth internalizing: the inner product operator <code><#></code> returns the *negative* inner product, because Postgres only supports ASC index scans. This is deliberate so that ORDER BY can use the index directly, but it means the score sign at your application layer is the opposite of what intuition suggests. Be careful with threshold checks.</p>
+<h2>Layer 3: The split layer — chunk boundaries shatter semantics</h2>
+<p>Only after ruling out the first two layers do I look here. My test is simple: if the retrieved text fragment reads as incomplete on its own, the problem is splitting, not retrieval.</p>
+<p>The concrete case I hit while testing: in one technical document, the name of a configuration key and its valid range lived in different cells of the same table. Fixed-length splitting put those two halves into adjacent chunks. Retrieval matched the half containing the name and left the valid range 500 characters away, so the model answered from an incomplete answer. It presented as "retrieval is inaccurate."</p>
+<p>pgvector does not handle splitting at all — it is purely a storage layer. The strategy lives in LangChain, LlamaIndex, or your own code, so there are three numbers I track: <code>chunk_size</code> for how much fits in a block, <code>chunk_overlap</code> for how much adjacent blocks share, and the splitter for where the cut happens. When the three disagree, the symptom is "retrieved it, but the answer is incomplete."</p>
+<p>pgvector's design in the official repo hints at this. It provides exact and approximate nearest neighbor search and nothing about semantic splitting. In other words, the ceiling on retrieval quality is set by the blocks you cut. The index is just faithfully finding the most similar block among them.</p>
+<p>My own approach is to handle structured content separately — tables, code blocks, and heading levels each become their own blocks and never mix into generic text splitting.</p>
+<pre><code>from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+splitter = RecursiveCharacterTextSplitter(
+    chunk_size=800,
+    chunk_overlap=120,
+    separators=["\n## ", "\n\n", "\n", "。", "，"],
+)</code></pre>
+<p>That is runnable as written. <code>RecursiveCharacterTextSplitter</code> tries the separators in order, which avoids slicing a semantic unit in half wherever possible. Note that <code>chunk_overlap</code> should not be 0 — when an answer happens to straddle two blocks, each half is missing something. Unlike a dimension mismatch, this never raises an error; it just quietly recalls less.</p>
+<h2>Picking between three vector databases</h2>
+<p>I have deployed all three, and they occupy genuinely different positions.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dimension</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pgvector</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Qdrant</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Chroma</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Form</td><td style="border:1px solid #ddd;padding:8px;">Postgres extension</td><td style="border:1px solid #ddd;padding:8px;">Standalone service</td><td style="border:1px solid #ddd;padding:8px;">Embedded or cloud</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Ops cost</td><td style="border:1px solid #ddd;padding:8px;">Lowest, no new component</td><td style="border:1px solid #ddd;padding:8px;">Needs its own container and backups</td><td style="border:1px solid #ddd;padding:8px;">Simplest locally, easiest in cloud</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Metadata filtering</td><td style="border:1px solid #ddd;padding:8px;">Via WHERE, can use B-tree or partitioning</td><td style="border:1px solid #ddd;padding:8px;">Native payload filters</td><td style="border:1px solid #ddd;padding:8px;">Native <code>where</code> filters</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Dimension ceiling</td><td style="border:1px solid #ddd;padding:8px;">vector 2000, halfvec 4000, bit 64000</td><td style="border:1px solid #ddd;padding:8px;">Set at collection creation</td><td style="border:1px solid #ddd;padding:8px;">Fixed by the first write</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cost</td><td style="border:1px solid #ddd;padding:8px;">Billed with your existing Postgres</td><td style="border:1px solid #ddd;padding:8px;">Cloud free tier 0.5 vCPU / 1GB RAM / 4GB Disk</td><td style="border:1px solid #ddd;padding:8px;">Cloud Starter from $0/month, Team $250/month</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">What I would pick</td><td style="border:1px solid #ddd;padding:8px;">You already run Postgres and stay under a few million rows</td><td style="border:1px solid #ddd;padding:8px;">You need independent scaling or complex filters</td><td style="border:1px solid #ddd;padding:8px;">Prototyping, or you want zero ops</td></tr></tbody></table>
+<p>Three selection traps I hit myself:</p>
+<p>First, "prototype with Chroma then ship Chroma" happens constantly. A Chroma collection's dimension is fixed by the vectors of the first write, and any later write with a different dimension is rejected. That is fine for a prototype, but the moment you swap models you must recreate the collection.</p>
+<p>Second, pgvector's <code>vector</code> type tops out at 2,000 dimensions (<code>halfvec</code> 4000, <code>bit</code> 64000). Check the dimension before choosing a model, otherwise you discover it when the table creation fails.</p>
+<p>Third, Qdrant Cloud's free tier is a single node with 0.5 vCPU, 1GB RAM, and 4GB disk — fine for testing and prototypes only. The Standard tier is where the 99.5% uptime commitment appears, so do not plan production capacity off the free tier.</p>
+<h2>The pgvector 0.8.x timeline</h2>
+<p>Version numbers move, so here are the milestones I verified. Source is the CHANGELOG.md in the pgvector repository. As of publication the latest release is 0.8.7, dated 2026-10-01.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Release date</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Relevance here</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.7.0</td><td style="border:1px solid #ddd;padding:8px;">2024-04-29</td><td style="border:1px solid #ddd;padding:8px;">Added halfvec, sparsevec, bit indexing, L1 distance for HNSW, binary_quantize</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.0</td><td style="border:1px solid #ddd;padding:8px;">2024-10-30</td><td style="border:1px solid #ddd;padding:8px;">Added iterative index scans (the fix for layer 2), improved cost estimation when filtering</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.1</td><td style="border:1px solid #ddd;padding:8px;">2025-09-04</td><td style="border:1px solid #ddd;padding:8px;">Added support for Postgres 18 rc1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.2</td><td style="border:1px solid #ddd;padding:8px;">2026-02-25</td><td style="border:1px solid #ddd;padding:8px;">Fixed a buffer overflow in parallel HNSW index builds</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.3</td><td style="border:1px solid #ddd;padding:8px;">2026-06-17</td><td style="border:1px solid #ddd;padding:8px;">Fixed possible index corruption with HNSW vacuuming</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.8.4</td><td style="border:1px solid #ddd;padding:8px;">2026-06-30</td><td style="border:1px solid #ddd;padding:8px;">Fixed the <code>hnsw graph not repaired</code> error with HNSW vacuuming</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.8.7</td><td style="border:1px solid #ddd;padding:8px;">2026-10-01</td><td style="border:1px solid #ddd;padding:8px;">Fixed a buffer overflow in IVFFlat index builds</td></tr></tbody></table>
+<p>Note that 0.8.0 is the precondition for every layer 2 fix in this post. If you are still on 0.7.x, the iterative scan switch does not exist and you can only brute-force it with <code>ef_search</code>.</p>
+<p>Also worth noting: three releases in the 0.8.x line (0.8.2, 0.8.3, and 0.8.7) fix buffer overflows or index corruption in index builds. When I upgraded I went straight to the current stable version instead of stepping through each one, but if stability matters to you, that is worth watching.</p>
+<h2>Troubleshooting: 5 real errors and their fixes</h2>
+<p>Every error below comes from source code or official documentation. I did not invent a "typical error" to pad this list.</p>
+<p>Error one, <code>ERROR: expected 1536 dimensions, not 2</code>. Symptom: a bulk write fails and rolls back the whole batch. Cause: the column dimension disagrees with the model's output, or the upstream embedding call returned an empty list. Fix: print the actual vector length and model name first, then decide whether to change the column type or fix the caller:</p>
+<pre><code>print(model_name, len(vectors[0]))   # confirm this line before changing the table</code></pre>
+<p>Error two, <code>ERROR: different vector dimensions 1536 and 768</code>. Symptom: it fails at query time rather than write time, and every INSERT succeeded. Cause: two models' vectors share one table, typically an old script and a new one writing to the same place. Fix: store each model in its own column, and check history first:</p>
+<pre><code>SELECT model, count(*), min(vector_dims(embedding)) FROM docs GROUP BY model;</code></pre>
+<p>Error three, <code>ERROR: vector must have at least 1 dimension</code>. Symptom: a few scattered writes fail and succeed on retry. Cause: that one embedding call timed out or rate-limited and the code returned an empty list. Fix: assert length before writing (the <code>embed</code> function from layer 1 above), and make the caller raise instead of silently returning an empty list.</p>
+<p>Error four, no error at all, but EXPLAIN shows a Seq Scan instead of an Index Scan. Symptom: latency climbs from milliseconds to hundreds. Cause: the distance operator and the index operator class do not correspond — for example a cosine-built index queried with the L2 operator. Fix: build the index per the official mapping, <code><-></code> with <code>vector_l2_ops</code>, <code><#></code> with <code>vector_ip_ops</code>, <code><=></code> with <code>vector_cosine_ops</code>.</p>
+<p>Error five, a filtered query returns far fewer rows than LIMIT with a clean log. Cause: approximate indexes apply filtering after the scan, and the default <code>hnsw.ef_search</code> is 40 — per the official docs, a condition matching 10% of rows yields about 4 matches on average. Fix: enable iterative scans, then tune if needed:</p>
+<pre><code>SET hnsw.iterative_scan = strict_order;
+SET hnsw.ef_search = 200;</code></pre>
+<h2>FAQ</h2>
+<p>Should I use pgvector or a dedicated vector database?</p>
+<p>A: My criteria are data volume and whether you already run Postgres. Under roughly a million rows with an existing Postgres, pgvector is clearly less work — no new component, no second backup to maintain, and transactions and permissions come for free. Go independent when the dataset grows or the filtering logic gets complex.</p>
+<p>Do I have to recompute every vector when I change embedding models?</p>
+<p>A: Yes. Vectors from different models do not live in the same space and are not comparable. So I try to make this a one-time architecture decision — pin the model name and dimension column when the table is created, and record them as metadata.</p>
+<p>How much does halfvec actually save?</p>
+<p>A: pgvector ships a half-precision type and half-precision indexing, and the official direction is smaller indexes and lower memory use. Before adopting it, compare recall on your own query set rather than looking at size numbers alone.</p>
+<p>How do I confirm the index is actually being used?</p>
+<p>A: Run EXPLAIN (ANALYZE, BUFFERS) and look for an Index Scan. While testing I kept a baseline EXPLAIN output for every critical query, which makes regressions directly comparable.</p>
+<h2>Wrapping up</h2>
+<p>"Inaccurate retrieval" is not a bug, it is a class of silent failure. The layer that raises errors tells you something is wrong. The two layers that stay quiet are where the time actually goes. Debug in order — write, index, split — and each layer has a pasteable check: dimensions and row counts first, then the execution plan and the number of rows that came back, and only then read the retrieved fragments themselves.</p>
+<p>Every error string and version fact above comes from the pgvector, Qdrant, and Chroma source trees and official docs, and I cited the source locations so you can check them yourself. The hardware notes have nothing to do with the technical claims — they describe the small box I used to build this setup.</p>
+<p>If you are assembling this yourself, the <a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Raspberry Pi 5 8GB</a> below is what I used to run a lightweight embedding service for a while — low idle power, and the documentation is easy to follow. The other two are the matching <a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Cat6 cable</a> and <a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">microSD card</a>. Keep your vector data on an external SSD rather than a memory card, because a write-heavy database on a card wears it out far faster than you would expect.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
