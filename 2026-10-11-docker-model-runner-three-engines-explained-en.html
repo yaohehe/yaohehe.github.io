@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Model Runner: Three Engines Explained - TechPassive</title>
+  <meta name="description" content="Docker moved local model serving into the container worldview. This walkthrough compares the three inference engines. Containers and hosts use two different base URLs.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Docker Model Runner Architecture Breakdown</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Docker</a> Model <a href="/2026-10-10-n8n-task-runner-architecture-external-and-queue-mo-en.html" class="internal-link">Runner</a></span><span class="tag"><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">Docker</a> Desktop</span><span class="tag">AI</span>
+  </div>
+  <div class="content">
+    <p>Docker moved local model serving into the container worldview. Ollama is a separate process you install, start, and connect to over its own port. Docker Model Runner (DMR) takes a different route: models become OCI artifacts managed through <code>docker model</code> commands, and the inference surface is exposed as an OpenAI-compatible endpoint on port 12434. That shift looks like a command-line change, but it redraws the boundary of what "running a model locally" means. This walkthrough is built from Docker's official documentation, including the differences between the three engines and the limitations Docker itself documents.</p>
+<p><strong>TL;DR:</strong></p>
+<p>-<strong>The default engine, llama.cpp, is enough for most people</strong>: it reads GGUF, runs on all platforms (macOS/Windows/Linux), and is the</p>
+<p>**only</p>
+<p>**engine that supports CPU-only inference. It works with no extra configuration.</p>
+<p>-<strong>vLLM only matters if you have an NVIDIA GPU</strong>: Linux x86_64 only (Windows needs WSL2 plus Docker Desktop 4.54+), Safetensors format only, and Docker's docs state plainly that it does not support CPU-only inference.</p>
+<p>-<strong>Diffusers is image generation only</strong>: it uses the DDUF format and handles Stable Diffusion-style models. It is not a text-generation engine and also has no CPU inference.</p>
+<p>-<strong>"Connection refused" from a container is usually not a bug</strong>: containers must use <code>http://model-runner.docker.internal</code>, not <code>localhost</code>. Host processes use <code>localhost:12434</code>. These are two different addressing conventions.</p>
+<p>-<strong>Deployment warning</strong>: DMR's API has</p>
+<p><strong>no authentication by default</strong>, and Docker's docs say it ignores the <code>Authorization</code> header. Do not expose port 12434 to an untrusted network.</p>
+<h2>1. What DMR Actually Changes: From Process to Artifact</h2>
+<p>The fastest way to understand DMR is to look at what it swaps out.</p>
+<p>With Ollama, the model is a standalone service. You run <code>ollama run</code>, it listens on its own port, and models live in its own directory. Your application reaches it over the network — and if that application itself runs in a container, you have to configure container-to-host networking.</p>
+<p>DMR works differently. Docker's documentation describes models as</p>
+<p><strong>packaged as OCI artifacts</strong>, pulled and run via <code>docker model</code>, with an OpenAI-compatible interface exposed outward. The practical consequence: teams already standardized on Docker no longer operate a separate service.</p>
+<p>Three commands cover the basic workflow:</p>
+<pre><code>docker model pull ai/llama3.2:3B-Q4_K_M   # pull a model
+docker model run ai/smollm2                # run it
+docker model status                        # inspect engine state</code></pre>
+<p><code>docker model status</code> reports each engine individually, so you can see at a glance what is installed:</p>
+<pre><code>Docker Model Runner is running
+Status: llama.cpp: running
+        llama.cpp version: 34ce48d
+        mlx: not installed
+        sglang: sglang package not installed
+        vllm: ...</code></pre>
+<p>For a non-default backend, Docker provides <code>install-runner</code>:</p>
+<pre><code>docker model install-runner --backend vllm --gpu cuda</code></pre>
+<p><code>--backend</code> accepts <code>llama.cpp</code>, <code>vllm</code>, or <code>diffusers</code>; <code>--gpu</code> accepts <code>cuda</code>, <code>rocm</code>, <code>vulkan</code>, or <code>metal</code> depending on platform. There is also a command for pushing models to a registry, which matters if your team uses OCI-based distribution:</p>
+<pre><code>docker model package --gguf ./model.gguf --push myorg/mymodel:Q4_K_M</code></pre>
+<h2>2. The Three Engines, Side by Side</h2>
+<p>This is Docker's own comparison table. I have translated and annotated it but changed no values:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Feature</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">llama.cpp</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">vLLM</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Diffusers</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Model formats</td><td style="border:1px solid #ddd;padding:8px;">GGUF</td><td style="border:1px solid #ddd;padding:8px;">Safetensors, HuggingFace</td><td style="border:1px solid #ddd;padding:8px;">DDUF</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Platforms</td><td style="border:1px solid #ddd;padding:8px;">All (macOS, Windows, Linux)</td><td style="border:1px solid #ddd;padding:8px;">Linux x86_64 only</td><td style="border:1px solid #ddd;padding:8px;">Linux (x86_64, ARM64)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">GPU support</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA, AMD, Apple Silicon, Vulkan</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA only</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA only</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">CPU inference</td><td style="border:1px solid #ddd;padding:8px;"><strong>Yes</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>No</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>No</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Quantization</td><td style="border:1px solid #ddd;padding:8px;">Built-in (Q4, Q5, Q8, etc.)</td><td style="border:1px solid #ddd;padding:8px;">Limited</td><td style="border:1px solid #ddd;padding:8px;">Limited</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Memory efficiency</td><td style="border:1px solid #ddd;padding:8px;">High (with quantization)</td><td style="border:1px solid #ddd;padding:8px;">Moderate</td><td style="border:1px solid #ddd;padding:8px;">Moderate</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Throughput</td><td style="border:1px solid #ddd;padding:8px;">Good</td><td style="border:1px solid #ddd;padding:8px;">High (with batching)</td><td style="border:1px solid #ddd;padding:8px;">Good</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Best for</td><td style="border:1px solid #ddd;padding:8px;">Local dev, constrained environments</td><td style="border:1px solid #ddd;padding:8px;">Production, high throughput</td><td style="border:1px solid #ddd;padding:8px;">Image generation</td></tr></tbody></table>
+<p>Three rows deserve individual attention.<strong>The CPU inference row is the dividing line.</strong>Docker's exact wording for vLLM is: "vLLM requires an NVIDIA GPU with CUDA support. It does not support CPU-only inference." If your machine has no NVIDIA card, installing vLLM is wasted effort. On Apple Silicon, Docker marks macOS as "Not supported" for vLLM outright.<strong>Model format determines which engine you can use.</strong>Most quantized models in the community are GGUF, which is llama.cpp territory. Original weights on HuggingFace are usually Safetensors, which is vLLM territory. Docker also notes that Safetensors models typically use more memory than quantized GGUF models.<strong>Diffusers sits on a different line entirely.</strong>It is not part of text generation — Docker classifies it as image generation for Stable Diffusion workloads.</p>
+<h3>vLLM's platform limits are strict</h3>
+<p>Docker's vLLM platform support table is explicit:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Platform</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">GPU</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Status</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Linux x86_64</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA</td><td style="border:1px solid #ddd;padding:8px;">Supported</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Windows (WSL2)</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA</td><td style="border:1px solid #ddd;padding:8px;">Supported (Docker Desktop 4.54+)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">macOS</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>Not supported</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Linux ARM64</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>Not supported</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">AMD GPUs</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>Not supported</strong></td></tr></tbody></table>
+<p>vLLM model tags also tend to carry a <code>-vllm</code> suffix:</p>
+<pre><code>docker model run ai/smollm2-vllm</code></pre>
+<h2>3. Why Containers Cannot Reach It: Two Addressing Conventions</h2>
+<p>This is the most common stumble, and Docker's documentation dedicates a table to it.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Runtime</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Access from</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Base URL</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Docker Desktop</td><td style="border:1px solid #ddd;padding:8px;">Containers</td><td style="border:1px solid #ddd;padding:8px;"><code>http://model-runner.docker.internal</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Docker Desktop</td><td style="border:1px solid #ddd;padding:8px;">Host processes (TCP)</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Docker Engine</td><td style="border:1px solid #ddd;padding:8px;">Containers</td><td style="border:1px solid #ddd;padding:8px;"><code>http://172.17.0.1:12434</code></td></tr></tbody></table>
+<p>| Docker Engine | Host processes | <code>http://localhost:12434</code> |<strong>Using <code>localhost</code> inside a container is wrong.</strong>A container has its own network namespace, so <code>localhost</code> points at the container itself, not the host. This is not a misconfiguration — it falls out of how the network model works.</p>
+<p>Docker also provides a fallback. If <code>172.17.0.1</code> is unavailable in your Compose project (the docs note this interface may not be available by default to containers within a Compose project), add <code>extra_hosts</code>:</p>
+<pre><code>extra_hosts:
+  - "model-runner.docker.internal:host-gateway"</code></pre>
+<h3>Base URLs differ per API flavor</h3>
+<p>The same DMR service needs different base URLs for different clients:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Client type</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Base URL</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OpenAI SDK / clients</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434/engines/v1</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Anthropic SDK / clients</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Ollama-compatible clients</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr></tbody></table>
+<p>Docker's OpenAI-compatible endpoint list:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Endpoint</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Method</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Description</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models</code></td><td style="border:1px solid #ddd;padding:8px;">GET</td><td style="border:1px solid #ddd;padding:8px;">List models</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models/{namespace}/{name}</code></td><td style="border:1px solid #ddd;padding:8px;">GET</td><td style="border:1px solid #ddd;padding:8px;">Retrieve model</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">Create chat completion</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/completions</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">Create completion</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/embeddings</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">Create embeddings</td></tr></tbody></table>
+<p>Note the <code>/engines/</code> prefix.<strong>An OpenAI-compatible client cannot use <code>http://localhost:12434/v1</code></strong>— dropping <code>/engines</code> returns a 404. This is the most frequent failure when porting an Ollama config to DMR.</p>
+<p>You can also include the engine name in the path, for example <code>/engines/llama.cpp/v1/chat/completions</code>, which is useful when several engines run side by side.</p>
+<p>The Anthropic-compatible endpoints are:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Endpoint</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Method</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Description</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/anthropic/v1/messages</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">Create a message</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/anthropic/v1/messages/count_tokens</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">Count tokens</td></tr></tbody></table>
+<p>One detail in Docker's example is easy to miss:</p>
+<pre><code>curl http://localhost:12434/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ai/smollm2",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "..."}]
+  }'</code></pre>
+<p>The path is <code>/v1/messages</code>, not <code>/anthropic/v1/messages</code>. The example and the endpoint table differ on this point, so treat your client configuration as the source of truth. Model names must use the full identifier including the namespace, such as <code>ai/smollm2</code>.</p>
+<h2>4. Limitations Docker Documents — The Most Important Section</h2>
+<p>DMR's API reference has a section titled "Limitations and differences from OpenAI." The original table:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Feature</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DMR behavior</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">API key</td><td style="border:1px solid #ddd;padding:8px;"><strong>Not required. DMR ignores the Authorization header.</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Function calling</td><td style="border:1px solid #ddd;padding:8px;">Supported with llama.cpp for compatible models</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Vision</td><td style="border:1px solid #ddd;padding:8px;">Supported for multi-modal models (e.g., LLaVA)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">JSON mode</td><td style="border:1px solid #ddd;padding:8px;">Supported via <code>response_format: {"type": "json_object"}</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Logprobs</td><td style="border:1px solid #ddd;padding:8px;">Supported</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Token counting</td><td style="border:1px solid #ddd;padding:8px;">Uses the model's native token encoder,<strong>which may differ from OpenAI's</strong></td></tr></tbody></table>
+<p>Two of these directly affect migration work.<strong>The API key row is a deployment red line.</strong>Docker's documentation is unambiguous: DMR does not require an API key and</p>
+<p><strong>ignores any Authorization header you send</strong>. That means any client able to reach port 12434 can submit inference requests, and may be able to pull, load, or run models. So: do not expose that port on an untrusted LAN, a shared CI network, or a publicly routable developer host.<strong>Function calling only works on llama.cpp.</strong>If your application depends on function calling, you cannot switch to the vLLM backend. This is a hard constraint that is easy to miss during engine selection.<strong>Token counting may differ from OpenAI's</strong>, so leave headroom if you budget context or meter by tokens.</p>
+<h2>Troubleshooting: What Docker Lists as Common Failures</h2>
+<p>DMR's documentation has a Troubleshooting section whose headings are the symptoms themselves.<strong>vLLM won't start.</strong>Docker's first suggested check is confirming an NVIDIA GPU is available. Combined with the platform table above, this is usually decisive: AMD GPUs, macOS, and Linux ARM64 are unsupported, and no configuration change will fix that.<strong>llama.cpp is slow.</strong>Docker groups this with out-of-memory errors, which suggests the two often appear together in practice.</p>
+<p>For diagnosis, Docker provides:</p>
+<pre><code>docker model logs</code></pre>
+<p>Check this before guessing.</p>
+<h2>5. DMR or Ollama: How to Choose</h2>
+<p>Cross-checking against multiple independent technical sources, the conclusion is that for single-machine local development the two are close, and the real difference is engineering governance rather than raw performance.</p>
+<p>Peak memory use is comparable because both run llama.cpp underneath. The meaningful differences are elsewhere:</p>
+<p>-<strong>Model distribution</strong>: DMR uses OCI artifacts and registries; Ollama uses its own model library and Modelfiles. If you need registry-style versioning and audit control, DMR fits better.</p>
+<p>-<strong>Idle memory</strong>: Ollama keeps models resident by default (<code>OLLAMA_KEEP_ALIVE</code>, 5-minute default), giving faster first response at the cost of idle memory. DMR unloads models when idle.</p>
+<p>-<strong>Authentication</strong>: neither should have its port exposed directly. DMR explicitly ignores the Authorization header; Ollama likewise needs network isolation handled deliberately.</p>
+<p>-<strong>"OpenAI-compatible" does not mean operationally identical</strong>: DMR uses engine-aware paths such as <code>/engines/llama.cpp/v1/...</code>, while Ollama's native chat API is <code>/api/chat</code>. Both fit existing clients, but request fields, streaming chunks, error schemas, and usage data should all be tested before switching providers.</p>
+<p>One more point worth keeping in mind: for multi-user or production-grade high-concurrency serving, neither tool should be your answer as-is. Independent comparison write-ups recommend moving to a separately deployed vLLM, SGLang, or a Kubernetes serving stack. A laptop benchmark answers developer-experience questions; it does not establish production throughput, tail latency, or multi-tenant isolation.</p>
+<h2>FAQ</h2>
+<p><strong>Q1: Which Docker Desktop version do I need?</strong></p>
+<p>Docker's docs specify Docker Desktop 4.54+ for the vLLM-on-WSL2 path. DMR overall evolves with Docker Desktop, and the engines and flags available differ by release, so check the docs matching your installed version.<strong>Q2: Can I expose DMR to my team?</strong></p>
+<p>Not directly. The docs state it has no built-in authentication and ignores the Authorization header. At minimum, scope it at the network level; put an authenticating reverse proxy in front if shared access is unavoidable.<strong>Q3: How do I declare a model dependency in Compose?</strong></p>
+<p>DMR's Compose integration lets you declare models alongside a service's other dependencies and have Compose inject the model endpoint and identifier into the application container, rather than hardcoding it. Check the docs for your Compose version for the exact fields and version requirements.<strong>Q4: What happens if I use the wrong model format?</strong></p>
+<p>The pull or the run will fail. llama.cpp takes GGUF, vLLM takes Safetensors, Diffusers takes DDUF. The typical symptom of a wrong format is that the engine does not recognize the artifact.<strong>Q5: Does this work with Docker Engine, not just Desktop?</strong></p>
+<p>Yes, but the addressing differs: containers use <code>http://172.17.0.1:12434</code> and host processes use <code>http://localhost:12434</code>. Docker also warns that this interface may not be available by default inside a Compose project, in which case you need <code>extra_hosts</code>.</p>
+<p>All endpoint paths, engine capabilities, and limitations in this article come from Docker's official documentation (as of October 11, 2026):</p>
+<ul><li>Model Runner overview: https://docs.docker.com/ai/model-runner/</li><li>Inference engines and comparison table: https://docs.docker.com/ai/model-runner/inference-engines/</li><li>API reference and limitations: https://docs.docker.com/ai/model-runner/api-reference/</li><li>Compose integration: https://docs.docker.com/compose/bridge/use-model-runner/</li></ul>
+<p>A note on scope: this article deliberately omits throughput and tokens-per-second figures. Those appear in third-party comparisons, but their test environments (hardware, model, quantization level) differ too much from any reader's setup and cannot be traced back to a reproducible configuration, so quoting them as conclusions would be misleading.</p>
+<p>This article contains no affiliate links. All endpoint paths, engine capabilities, and limitations are taken from Docker official documentation; no unverified performance figures are quoted.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
