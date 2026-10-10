@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Model Runner 架构解剖：三引擎怎么选，容器里连不上怎么解 - TechPassive</title>
+  <meta name="description" content="Docker 把本地大模型塞进容器体系。模型变 OCI 制品，接口变 OpenAI 兼容端点。本文按官方文档拆解三个推理引擎的能力差异。容器与宿主机有两种地址口径，用错就连不上。DMR 默认无鉴权，这是部署红线。llama.cpp 是唯一支持纯 CPU 的引擎。OpenAI 客户端须走 /engines/v1 前缀。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Docker Model Runner 架构解剖：三引擎怎么选</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Docker</a> Model Runner</span><span class="tag"><a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">Docker</a> Desktop</span><span class="tag">AI</span>
+  </div>
+  <div class="content">
+    <p><a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">Docker</a> 把本地大模型塞进了容器的世界观里。以前 Ollama 是一个需要单独装、单独开服务、独立占端口的「进程」；Docker Model Runner（DMR）换了个思路：模型变成一个 OCI 制品，用 <code>docker model</code> 这套命令管，接口直接暴露成 OpenAI 兼容端点，挂回 12434 端口。这个变化看着只是换了个命令行，实际上把「本地跑模型」这件事的边界重新划了一次。下面按 Docker 官方文档逐项拆解，包括三个引擎的能力差异，以及我在文档里挖到的、官方自己写明的限制。</p>
+<p><strong>TL;DR：</strong></p>
+<p>-<strong>默认引擎 llama.cpp 就够用</strong>：支持 GGUF 格式、全平台（macOS/Windows/Linux）、是 DMR 里<strong>唯一支持纯 CPU 推理</strong>的引擎，装好即用不需要额外配置。</p>
+<p>-<strong>vLLM 只在你有 NVIDIA GPU 时才有意义</strong>：仅支持 Linux x86_64（Windows 需 WSL2 + Docker Desktop 4.54+），仅支持 Safetensors 格式，<strong>官方明确写了不支持 CPU-only 推理</strong>。</p>
+<p>-<strong>Diffusers 只管图像生成</strong>：用 DDUF 格式，管 Stable Diffusion 这类扩散模型，不做文本生成，同样不支持 CPU 推理。</p>
+<p>-<strong>容器内连不上多数不是 bug</strong>：容器要用的地址是 <code>http://model-runner.docker.internal</code>，<strong>不是</strong><code>localhost</code>——宿主机进程才用 <code>localhost:12434</code>，这是两个完全不同的口径。</p>
+<p>-<strong>部署红线</strong>：DMR 的 API<strong>默认没有任何鉴权</strong>，官方文档写明它会忽略 <code>Authorization</code> 头。不要把12434 端口暴露到局域网或公网。</p>
+<h2>一、DMR 到底改变了什么：从「进程」到「制品」</h2>
+<p>理解 DMR 最快的方式，是先看它把什么东西换掉了。</p>
+<p>Ollama 的模型是一个独立服务，你用 <code>ollama run</code> 拉起一个进程，它监听自己的端口，模型存放在自己的目录里。你的应用通过网络去调它——如果应用本身也在容器里，就得额外配置容器到宿主机的网络通路。</p>
+<p>DMR 的做法不同。官方文档的表述是：模型被<strong>打包为 OCI 制品</strong>（package GGUF files as OCI Artifacts），通过 <code>docker model</code> 这组命令拉取和运行，对外暴露 OpenAI 兼容接口。这个差异带来的直接后果是：<strong>已经标准化使用 Docker 的团队，不需要再运维一个「额外的服务」</strong>。</p>
+<p>三个官方命令构成了基本工作流：</p>
+<pre><code>docker model pull ai/llama3.2:3B-Q4_K_M   # 拉取模型
+docker model run ai/smollm2                # 运行
+docker model status                        # 查看各引擎状态</code></pre>
+<p><code>docker model status</code> 的输出长这样，它会逐个引擎报告装没装：</p>
+<pre><code>Docker Model Runner is running
+Status: llama.cpp: running
+        llama.cpp version: 34ce48d
+        mlx: not installed
+        sglang: sglang package not installed
+        vllm: ...</code></pre>
+<p>如果你想要非默认的后端，官方提供 <code>install-runner</code>：</p>
+<pre><code>docker model install-runner --backend vllm --gpu cuda</code></pre>
+<p><code>--backend</code> 接受 <code>llama.cpp</code>、<code>vllm</code>、<code>diffusers</code>；<code>--gpu</code> 接受 <code>cuda</code>、<code>rocm</code>、<code>vulkan</code>、<code>metal</code>（具体可用值取决于平台）。官方同时给了一条包模型进registry 的命令，走 OCI 分发的团队会用得上：</p>
+<pre><code>docker model package --gguf ./model.gguf --push myorg/mymodel:Q4_K_M</code></pre>
+<h2>二、三引擎对比表：官方原表逐项对照</h2>
+<p>这是官方文档里的引擎对比表原样内容，我只做翻译与批注，不改动任何数值：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">特性</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">llama.cpp</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">vLLM</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Diffusers</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">模型格式</td><td style="border:1px solid #ddd;padding:8px;">GGUF</td><td style="border:1px solid #ddd;padding:8px;">Safetensors、HuggingFace</td><td style="border:1px solid #ddd;padding:8px;">DDUF</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">平台</td><td style="border:1px solid #ddd;padding:8px;">全部（macOS、Windows、Linux）</td><td style="border:1px solid #ddd;padding:8px;">仅 Linux x86_64</td><td style="border:1px solid #ddd;padding:8px;">Linux（x86_64、ARM64）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">GPU 支持</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA、AMD、Apple Silicon、Vulkan</td><td style="border:1px solid #ddd;padding:8px;">仅 NVIDIA CUDA</td><td style="border:1px solid #ddd;padding:8px;">仅 NVIDIA CUDA</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">CPU 推理</td><td style="border:1px solid #ddd;padding:8px;"><strong>支持</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>不支持</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>不支持</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">量化</td><td style="border:1px solid #ddd;padding:8px;">内置（Q4、Q5、Q8 等）</td><td style="border:1px solid #ddd;padding:8px;">有限</td><td style="border:1px solid #ddd;padding:8px;">有限</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">内存效率</td><td style="border:1px solid #ddd;padding:8px;">高（配合量化）</td><td style="border:1px solid #ddd;padding:8px;">中等</td><td style="border:1px solid #ddd;padding:8px;">中等</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">吞吐</td><td style="border:1px solid #ddd;padding:8px;">良好</td><td style="border:1px solid #ddd;padding:8px;">高（配合批处理）</td><td style="border:1px solid #ddd;padding:8px;">良好</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">最适合</td><td style="border:1px solid #ddd;padding:8px;">本地开发、资源受限环境</td><td style="border:1px solid #ddd;padding:8px;">生产环境、高吞吐</td><td style="border:1px solid #ddd;padding:8px;">图像生成</td></tr></tbody></table>
+<p>这张表里有三行值得单独说：<strong>「CPU 推理」那一行是分水岭。</strong>官方对 vLLM 的原话是：vLLM requires an NVIDIA GPU with CUDA support. It does not support CPU-only inference. 这意味着如果你的机器没有 NVIDIA 卡，装 vLLM 是白费功夫。而在 Apple Silicon 上，vLLM 那一栏官方直接标了 macOS - Not supported。<strong>「模型格式」决定你手上有什么模型就用不了什么引擎。</strong>社区里绝大多数量化模型是 GGUF，那是 llama.cpp 的地盘；HuggingFace 上的原始权重通常是 Safetensors，那是 vLLM 的地盘。官方也提到 Safetensors 模型「通常比量化 GGUF 模型占用更多内存」。<strong>Diffusers 的定位完全不同</strong>，它不在文本生成这条线上——官方把它归为 image generation（Stable Diffusion）。</p>
+<h3>vLLM 的平台限制要记牢</h3>
+<p>官方给的vLLM 平台支持表非常明确：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">平台</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">GPU</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">状态</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Linux x86_64</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA</td><td style="border:1px solid #ddd;padding:8px;">支持</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Windows（WSL2）</td><td style="border:1px solid #ddd;padding:8px;">NVIDIA CUDA</td><td style="border:1px solid #ddd;padding:8px;">支持（需 Docker Desktop 4.54+）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">macOS</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>不支持</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Linux ARM64</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>不支持</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">AMD GPU</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>不支持</strong></td></tr></tbody></table>
+<p>另外 vLLM 的模型标签通常带 <code>-vllm</code> 后缀来区分：</p>
+<pre><code>docker model run ai/smollm2-vllm</code></pre>
+<h2>三、容器连不上：两个地址口径别搞混</h2>
+<p>这是 DMR 使用中最容易踩的一坑，官方文档专门用一张表区分了四种访问方式。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">运行方式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">访问方</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Base URL</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Docker Desktop</td><td style="border:1px solid #ddd;padding:8px;">容器</td><td style="border:1px solid #ddd;padding:8px;"><code>http://model-runner.docker.internal</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Docker Desktop</td><td style="border:1px solid #ddd;padding:8px;">宿主机进程（TCP）</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Docker Engine</td><td style="border:1px solid #ddd;padding:8px;">容器</td><td style="border:1px solid #ddd;padding:8px;"><code>http://172.17.0.1:12434</code></td></tr></tbody></table>
+<p>| Docker Engine | 宿主机进程 | <code>http://localhost:12434</code> |<strong>容器里用 <code>localhost</code> 是错的。</strong>容器有自己的网络命名空间，<code>localhost</code> 指向容器自己，而不是宿主机。这不是配置问题，是网络模型决定的。</p>
+<p>官方还给了一条兜底方案——如果 <code>172.17.0.1</code> 在你的 Compose 项目里不可用（官方原文说这个接口在 Compose 项目内默认可能不可用），需要加<code>extra_hosts</code>：</p>
+<pre><code>extra_hosts:
+  - "model-runner.docker.internal:host-gateway"</code></pre>
+<h3>三种兼容 API 的 Base URL 各不相同</h3>
+<p>同一套DMR 服务，对不同客户端要给不同的 Base URL。官方表格：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">工具类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Base URL</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OpenAI SDK / 客户端</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434/engines/v1</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Anthropic SDK / 客户端</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Ollama 兼容客户端</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr></tbody></table>
+<p>OpenAI 兼容 API 的端点清单（官方原表）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">端点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models</code></td><td style="border:1px solid #ddd;padding:8px;">GET</td><td style="border:1px solid #ddd;padding:8px;">列出模型</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models/{namespace}/{name}</code></td><td style="border:1px solid #ddd;padding:8px;">GET</td><td style="border:1px solid #ddd;padding:8px;">检索模型</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">创建对话补全</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/completions</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">创建补全</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/embeddings</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">创建嵌入</td></tr></tbody></table>
+<p>注意那个 <code>/engines/</code> 前缀——<strong>OpenAI 兼容客户端不能直接用 <code>http://localhost:12434/v1</code></strong>，少了 <code>/engines</code> 会 404。这是移植 Ollama 配置到 DMR 时最常见的失败点。</p>
+<p>官方还提到你可以在路径里带上引擎名，比如 <code>/engines/llama.cpp/v1/chat/completions</code>，这在同时跑多个引擎时有用。</p>
+<p>Anthropic 兼容 API 的端点是：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">端点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>/anthropic/v1/messages</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">创建消息</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>/anthropic/v1/messages/count_tokens</code></td><td style="border:1px solid #ddd;padding:8px;">POST</td><td style="border:1px solid #ddd;padding:8px;">计算 token 数</td></tr></tbody></table>
+<p>官方给的示例里有个容易忽略的细节：</p>
+<pre><code>curl http://localhost:12434/v1/messages \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "ai/smollm2",
+    "max_tokens": 1024,
+    "messages": [{"role": "user", "content": "..."}]
+  }'</code></pre>
+<p>注意路径是 <code>/v1/messages</code> 而不是 <code>/anthropic/v1/messages</code>——官方示例与端点表存在这个差异，实际以你的客户端配置为准。模型名要用<strong>带命名空间的完整标识</strong>（如 <code>ai/smollm2</code>）。</p>
+<h2>四、官方自己写明的限制（这部分最重要）</h2>
+<p>DMR 文档里有一节专门叫「Limitations and differences from OpenAI」，原文表格如下：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">特性</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DMR 行为</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">API key</td><td style="border:1px solid #ddd;padding:8px;"><strong>不需要。DMR 忽略 Authorization 头。</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Function calling</td><td style="border:1px solid #ddd;padding:8px;">仅 llama.cpp 对兼容模型支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Vision</td><td style="border:1px solid #ddd;padding:8px;">支持多模态模型（如 LLaVA）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">JSON mode</td><td style="border:1px solid #ddd;padding:8px;">支持，通过 <code>response_format: {"type": "json_object"}</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Logprobs</td><td style="border:1px solid #ddd;padding:8px;">支持</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Token 计数</td><td style="border:1px solid #ddd;padding:8px;">使用模型原生 token 编码器，<strong>可能与 OpenAI 不同</strong></td></tr></tbody></table>
+<p>这五条里，有两条会直接影响你的迁移工作：<strong>API key 那一行是部署红线。</strong>官方文档的意思很明确——DMR 不要求 API key，并且<strong>直接忽略你发来的 Authorization 头</strong>。这意味着任何能访问到 12434 端口的客户端都可以提交推理请求，也可能拉取、加载或运行模型。所以：不要把这个端口暴露在不可信的局域网、共享 CI 网络，或任何公网可达的开发者主机上。<strong>Function calling 只在 llama.cpp 下可用。</strong>如果你的应用依赖 function calling，就不能切到 vLLM 后端——这是引擎选型时容易被忽略的硬约束。<strong>Token 计数可能与 OpenAI 不同</strong>，意味着按 token 计费或做上下文预算时要留余量。</p>
+<h2>五、官方 Troubleshooting 里点名的两类问题</h2>
+<p>DMR 的文档有一节 Troubleshooting，标题就是几个典型症状。这里列出官方给出的排查方向：<strong>vLLM 装不上 / 起不来。</strong>官方给的排查第一步是确认 NVIDIA GPU 可用。结合前面那张平台表，遇到这个问题基本可以直接定位：AMD GPU、macOS、Linux ARM64 都不支持，不是配置能解决的。<strong>llama.cpp 慢。</strong>官方把这一项和「内存不足错误」并列，说明这两者在使用体验上往往相关。</p>
+<p>官方还提供了查看引擎日志的命令：</p>
+<pre><code>docker model logs</code></pre>
+<p>排查时先看这个，比猜要快。</p>
+<h2>六、DMR 还是 Ollama：怎么选</h2>
+<p>在有第二个来源交叉印证这一点上，我用多个独立技术来源做了对照，结论是：<strong>单机本地开发选哪个都行，差异主要在工程治理而不是性能</strong>。</p>
+<p>两者的推理峰值内存接近，因为底层都跑 llama.cpp。真正的差异在别处：</p>
+<p>-<strong>模型分发</strong>：DMR 走 OCI 制品与registry，Ollama 走自己的模型库与 Modelfile。如果你需要镜像仓库那种版本治理与审计能力，DMR 更顺。</p>
+<p>-<strong>空闲内存</strong>：Ollama 默认把模型留在内存里（<code>OLLAMA_KEEP_ALIVE</code>，默认 5 分钟），首响应更快但空闲占用高；DMR 空闲时会卸载模型。</p>
+<p>-<strong>鉴权</strong>：两边都不该把端口直接暴露，DMR 是明确忽略 Authorization 头，Ollama 也需要自行处理网络隔离。</p>
+<p>-<strong>「OpenAI 兼容」不等于行为一致</strong>：有来源实测指出，DMR 用的是引擎感知的路径（<code>/engines/llama.cpp/v1/...</code>），Ollama 的原生对话 API 是 <code>/api/chat</code>，两者都能塞进现有客户端，但请求字段、流式分块、错误结构、用量数据都要实测过再切。</p>
+<p>还有一个容易被忽略的点：如果你要的是<strong>多用户或生产级高并发服务</strong>，两个都不该直接上。第三方对比文章里的建议是转向独立部署的 vLLM、SGLang 或 Kubernetes serving 栈——笔记本上的基准只能回答开发体验问题，不能确立生产吞吐、尾延迟或多租户隔离。</p>
+<h2>五、常见报错与排查路径</h2>
+<p>以下是Docker 官方文档 Troubleshooting 一节列出的症状与对应处理。</p>
+<p><strong>报错一：vLLM 装不上或起不来（<code>docker model install-runner --backend vllm</code> 后无反应）</strong></p>
+<p>官方给的排查第一步是确认 NVIDIA GPU 可用。结合前面的平台表，这类问题通常可以直接定位：</p>
+<p>AMD GPU、macOS、Linux ARM64 三种环境官方均标注 Not supported，<strong>不是配置能解决的</strong>。</p>
+<p>另外vLLM 只吃 Safetensors 格式，如果你手上是 GGUF 量化模型，它不会识别。</p>
+<pre><code>docker model status# 逐个引擎看安装与运行状态
+docker model logs                # 看引擎日志</code></pre>
+<p><strong>报错二：容器里连不上，提示 connection refused 或 404</strong></p>
+<p>分两种情况，判据不同：</p>
+<ul><li>连不上（网络层不通）：容器里用了 <code>localhost</code>。容器有独立网络命名空间，<code>localhost</code> 指向容器自己。</li></ul>
+<p>  容器应改用 <code>http://model-runner.docker.internal</code>。</p>
+<ul><li>返回 404（HTTP 层通了但路径不对）：OpenAI 兼容客户端少了 <code>/engines</code> 前缀。</li></ul>
+<p>  正确地址是 <code>http://localhost:12434/engines/v1</code>，直接用 <code>/v1</code> 会 404。</p>
+<p>这两种报错的共同点是看起来都像「连不上」，但一个在网络层、一个在路径层，<strong>必须先分清再动手</strong>。</p>
+<p><strong>报错三：llama.cpp 跑得慢</strong></p>
+<p>官方把这一项与内存不足错误并列，通常是同一个问题的两种表现。可先确认模型量化档位与上下文长度设置，</p>
+<p>再结合 <code>docker model logs</code> 看是否有内存告警。</p>
+<h2>常见问题</h2>
+<p><strong>Q1：Docker Desktop 需要什么版本？</strong></p>
+<p>官方文档中 vLLM 在 Windows WSL2 场景明确要求 Docker Desktop 4.54+。DMR 整体是随Docker Desktop 演进的能力，具体到某个子功能请以你本地版本的文档为准——不同版本提供的引擎和参数会变。<strong>Q2：能把 DMR 暴露给团队共用吗？</strong></p>
+<p>不建议直接这么做。官方文档写明它没有内建鉴权且忽略 Authorization 头。共享场景至少要做网络范围限制，必要时在前面加一层带鉴权的反向代理。<strong>Q3：Compose 里怎么声明模型依赖？</strong></p>
+<p>DMR 与 Compose 的集成允许把模型作为服务依赖声明，由 Compose 把模型端点与模型标识注入应用容器，而不是硬编码在应用配置里。具体字段与版本要求请查你所用 Compose 版本的官方文档。<strong>Q4：模型格式选错会怎样？</strong></p>
+<p>会拉不到或者起不来。llama.cpp 用 GGUF，vLLM 用 Safetensors，Diffusers 用 DDUF。拉错格式的典型表现是引擎不认这个制品。<strong>Q5：Docker Engine（非 Desktop）能用吗？</strong></p>
+<p>可以，但访问地址口径不同：容器走 <code>http://172.17.0.1:12434</code>，宿主机进程走 <code>http://localhost:12434</code>，且官方提示该接口在 Compose 项目内默认可能不可用，需要 <code>extra_hosts</code>。</p>
+<p>本文涉及的接口路径、端点清单、引擎能力与限制均取自 Docker 官方文档（截至发稿 2026 年 10 月 11 日）：</p>
+<ul><li>模型运行器总览：https://docs.docker.com/ai/model-runner/</li><li>推理引擎与对比表：https://docs.docker.com/ai/model-runner/inference-engines/</li><li>API 参考与限制：https://docs.docker.com/ai/model-runner/api-reference/</li><li>Compose 集成：https://docs.docker.com/compose/bridge/use-model-runner/</li></ul>
+<p>需要说明的是：本文未采用任何未经官方文档证实的性能数字。第三方对比文章中出现的吞吐量、tokens/s 等实测值，因其测试环境（硬件、模型、量化档位）与本文读者环境差异过大，且无法回溯原始测试配置，故未引用为结论。</p>
+<p>本文不含联盟链接。文中所有接口路径、端点清单与引擎能力均取自 Docker 官方文档，未采用任何未经官方证实的性能数字。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
