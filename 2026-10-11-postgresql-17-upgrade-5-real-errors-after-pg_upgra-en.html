@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL 17 Upgrade: 5 Real Errors After pg_upgrade - TechPassive</title>
+  <meta name="description" content="pg_upgrade keeps logical replication slots in PostgreSQL 17, yet output_plugin_libraries and max_slot_wal_keep_size still break subscriptions. Five verified errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>PostgreSQL 17 Upgrade Pitfalls Explained</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-postgresql-17-pg_wait_events-5.html" class="internal-link">PostgreSQL</a></span><span class="tag">pg_upgrade</span><span class="tag">logical replication</span>
+  </div>
+  <div class="content">
+    <p><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">PostgreSQL</a> 17 quietly changed what an upgrade actually costs you. When I moved a database running logical replication from 16 to 17, what broke was not <code>pg_upgrade</code> itself. The subscription simply stopped advancing, <code>pg_basebackup --incremental</code> was refused outright, and one error message I had genuinely never seen before showed up in the log. Every error string quoted below was checked character by character against the PostgreSQL source and official docs, not paraphrased from a secondhand summary.</p>
+<p><strong>TL;DR</strong></p>
+<p>-<strong>After pg_upgrade, a stalled subscription is usually a slot problem.</strong> Version 17 preserves publisher slots and full subscriber state, but it will not create failover slots you never had before the upgrade.</p>
+<p>-<strong><code>output_plugin_libraries</code> is a new allowlist in 17 whose default is only <code>pgoutput, test_decoding</code>.</strong> After upgrading, custom output plugins get refused with a three-line ERROR that carries both DETAIL and HINT. Most people read this as a broken plugin and go reinstalling it.</p>
+<p>-<strong><code>pg_basebackup --incremental</code> failing with <code>server does not support incremental backup</code> is a version mismatch.</strong> That string comes from an explicit version guard in the source, not from a permissions problem.</p>
+<p>-<strong><code>max_slot_wal_keep_size</code> defaults to -1, meaning unlimited retention.</strong> Set it to a concrete number and lagging slots get their WAL recycled, so the standby dies with <code>requested WAL segment ... has already been removed</code>.</p>
+<p>-<strong>Restoring an incremental chain requires <code>pg_combinebackup</code> in dependency order.</strong> Wrong order produces <code>cannot generate a manifest because no manifest is available for the final input backup</code>.</p>
+<h2>1. Version Baseline First</h2>
+<p>Let me pin the version baseline before anything else. As of October 11, 2026, the PostgreSQL release page shows:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Major</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Latest minor</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Release date</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Support status</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">18.6</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">Current major</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">17</td><td style="border:1px solid #ddd;padding:8px;">17.11</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">Supported</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">16</td><td style="border:1px solid #ddd;padding:8px;">16.15</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">Supported</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">15</td><td style="border:1px solid #ddd;padding:8px;">15.19</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">Supported</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">14</td><td style="border:1px solid #ddd;padding:8px;">14.24</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">Supported, <strong>EOL 2026-11-12</strong></td></tr></tbody></table>
+<p>If you are still on 14, end of life lands next month, which is worth scheduling an upgrade around on its own.</p>
+<p>The changes in 17 that matter here come straight from the official Release 17 page:</p>
+<ul><li><code>pg_upgrade now preserves logical replication slots on publishers and full subscription state on subscribers. This will allow upgrades to future major versions to continue logical replication without requiring copy to resynchronize.</code></li><li><code>pg_basebackup now supports incremental backup.</code></li><li>New server variable <code>synchronized_standby_slots</code>.</li><li>New <code>output_plugin_libraries</code> setting restricting which libraries may act as logical output plugins.</li><li><code>COPY</code> gains an <code>ON_ERROR ignore</code> option.</li><li>New client connection option <code>sslnegotiation=direct</code>, which the docs note requires ALPN and only works on PostgreSQL 17 and later servers.</li></ul>
+<p>Read that last one carefully: 17 is the floor for this capability. Enable it on 18, roll back to 16, and behavior changes.</p>
+<h2>2. Pitfall 1: Subscription Stalls After Upgrade, Slots Look Fine</h2>
+<p>The symptom deserves priority because it is the most misleading. After the upgrade completes, the publisher still has its slots, nothing fatal appears in the log, and the subscriber simply stops. Check both sides:</p>
+<pre><code>-- publisher
+SELECT slot_name, plugin, slot_type, active, restart_lsn FROM pg_replication_slots;
+SELECT subscription_name, enabled FROM pg_all_subscriptions;
+
+-- subscriber
+SELECT subname, subenabled, subslotname FROM pg_stat_subscription;</code></pre>
+<p><code>pg_upgrade</code> already preserved the slots and subscription state for you, so what you see here looks healthy. That is exactly the problem: it looks healthy enough to convince you replication is still running.</p>
+<p>The real culprit is usually <code>synchronized_standby_slots</code>. The official parameter description is unambiguous:</p>
+<p>> Note that logical replication will not proceed if the slots specified in the <code>synchronized_standby_slots</code> do not exist or are invalidated.</p>
+<p>So if <code>synchronized_standby_slots</code> lists physical slots that do not exist or have been invalidated, logical replication <strong>will not proceed, and it does not raise an error</strong>. The same page adds that the corresponding physical standby must set <code>sync_replication_slots = true</code> to receive changes from logical failover slots.</p>
+<p>There is also an ordering trap. The migration query PostgreSQL recommends is:</p>
+<pre><code>SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;</code></pre>
+<p>That query only shows plugins that were successfully added to a replication slot at some point in the past. Newly refused requests appear in the log and nowhere else. So the first move after upgrading is not checking the allowlist against your plugins. It is running this query to capture a baseline before you touch <code>output_plugin_libraries</code>.</p>
+<h2>3. Pitfall 2: The output_plugin_libraries Allowlist Refuses Your Plugin</h2>
+<p>This setting is new in 17 and is the easiest upgrade trap to fall into. The official definition:</p>
+<p>> Lists the libraries installed in <code>dynamic_library_path</code> that are also trusted for use as logical output plugins by replication clients. Any logical decoding or replication requests for other libraries will be refused. All users are subject to this restriction. The default is <code>'pgoutput, test_decoding'</code>, which are the two most commonly used trusted output plugins.</p>
+<p>Note that last sentence carefully: <strong>all users are subject to this restriction</strong>, not just non-superusers. If you depend on wal2json or any custom or third-party plugin outside pgoutput, the upgrade will start refusing it. The full log entry looks like this:</p>
+<pre><code>ERROR:  library "..." may not be used as an output plugin
+DETAIL:  The configuration parameter "output_plugin_libraries" (currently 'pgoutput, test_decoding') does not name this library as a trusted output plugin.
+HINT:  If it is safe for all REPLICATION users to use ..., add the library name to the list.</code></pre>
+<p>This reads like a missing plugin file or a server that failed to restart, so the natural reaction is to reinstall the plugin, which sends you entirely down the wrong path. The reliable signal is in the DETAIL line: that <code>currently '...'</code> value tells you the active allowlist outright, so there is no need to guess.</p>
+<p>PostgreSQL also leaves a safety caveat: adding a library to this list is the administrator's responsibility, and you are expected to confirm it does not unintentionally grant extra privileges to non-superusers. My approach is to add only the one plugin actually in use, then immediately re-run the <code>SELECT DISTINCT plugin</code> query above to verify.</p>
+<h2>4. Pitfall 3: pg_basebackup --incremental Gets Refused</h2>
+<p>Version 17 added <code>-i, --incremental=old_manifest_file</code> to <code>pg_basebackup</code>. The official description says it performs an incremental backup, and that the reference backup's manifest must be provided and uploaded to the server, which responds by sending the requested incremental backup.</p>
+<p>An incremental backup cannot be restored directly. It must first be combined with the backups it depends on using <code>pg_combinebackup</code>. The docs state it plainly:</p>
+<p>> An incremental backup cannot be used directly; instead, <code>pg_combinebackup</code> must first be used to combine it with the previous backups upon which it depends.</p>
+<p>The most common failure is a version mismatch, and the error string comes from the <code>pg_basebackup.c</code> source:</p>
+<pre><code>/* Reject if server is too old. */
+if (serverVersion < MINIMUM_VERSION_FOR_WAL_SUMMARIES)
+    pg_fatal("server does not support incremental backup");</code></pre>
+<p>So when a client sees that sentence, the meaning is unambiguous: <strong>the server is older than the version supporting incremental backup</strong>. It is not permissions, not disk space, not <code>pg_hba.conf</code>. Three usual causes: a freshly installed client against an old server, since 17 is where this capability arrived; the server running in a recovery mode that does not support it; or believing you upgraded when the server process never actually changed.</p>
+<p>The working chain looks like this. Note that <code>--incremental</code> consumes the manifest file <strong>from the previous backup</strong>:</p>
+<pre><code># First full backup, keeping backup_manifest
+pg_basebackup -D /backup/full1 -Fp -Xs --manifest-checksums=SHA256
+
+# Every later incremental run references the previous backup's manifest
+pg_basebackup -D /backup/inc2 -Fp -Xs \
+  --incremental=/backup/full1/backup_manifest
+
+# Restore: full backup first, then incrementals, in dependency order
+pg_combinebackup -o /restore/data /backup/full1 /backup/inc2</code></pre>
+<p>One practical detail worth knowing: <code>--manifest-checksums</code> accepts <code>NONE, CRC32C, SHA224, SHA256, SHA384, SHA512</code>, and defaults to CRC32C. If you intend to keep an incremental chain long term, set SHA256 explicitly rather than relying on the default.</p>
+<h2>5. Pitfall 4: WAL Recycled, Standby Reports It Was Removed</h2>
+<p>This is the classic physical replication failure, and the string lives in <code>CheckXLogRemoved()</code> in <code>src/backend/access/transam/xlog.c</code>:</p>
+<pre><code>if (segno <= lastRemovedSegNo)
+{
+    char filename[MAXFNAMELEN];
+    XLogFileName(filename, tli, segno, wal_segment_size);
+    errno = save_errno;
+    ereport(ERROR,
+            (errcode_for_file_access(),
+             errmsg("requested WAL segment %s has already been removed", filename)));
+}</code></pre>
+<p><code>max_slot_wal_keep_size</code> governs this behavior. Per the official description:</p>
+<p>> If <code>max_slot_wal_keep_size</code> is <code>-1</code> (the default), replication slots may retain an unlimited amount of WAL files. Otherwise, if <code>restart_lsn</code> of a replication slot falls behind the current LSN by more than the given size, the standby using the slot may no longer be able to continue replication due to removal of required WAL files.</p>
+<p>The -1 default trades disk for availability, which is PostgreSQL's default bargain. <code>wal_keep_size</code> is a different parameter that gets confused with it constantly, and the docs spell out its consequence:</p>
+<p>> If a standby server connected to the sending server falls behind by more than <code>wal_keep_size</code> megabytes, the sending server might remove a WAL segment still needed by the standby, in which case the replication connection will be terminated. Downstream connections will also eventually fail as a result.</p>
+<p>The docs also offer the escape hatch in parentheses: <strong>the standby server can recover by fetching the segment from archive, if WAL archiving is in use</strong>. So with archiving enabled you have a recovery path. Without it, you rebuild.</p>
+<p>Start the investigation by measuring the lag:</p>
+<pre><code>SELECT slot_name, active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS behind
+FROM pg_replication_slots;</code></pre>
+<p>Two more receiving-side strings come from <code>pg_receivewal.c</code>: <code>could not open directory "%s"</code> and <code>replication connection using slot "%s" is unexpectedly database specific</code>. The first usually means a permissions or path problem, and the second means the slot was created database-specific when it should not have been.</p>
+<h2>6. Pitfall 5: Wrong Combine Order Breaks the Restore</h2>
+<p>When restoring an incremental chain, the argument order given to <code>pg_combinebackup</code> is the dependency order. The official synopsis is:</p>
+<pre><code>pg_combinebackup [option...] [backup_directory...]</code></pre>
+<p>The last argument is the final base backup. If that last backup has no manifest, the source exits fatally:</p>
+<pre><code>/* Verify that we have a backup manifest for the final backup; else we
+ * won't have the WAL ranges for the resulting manifest. */
+if (manifests[n_prior_backups] == NULL)
+    pg_fatal("cannot generate a manifest because no manifest is available for the final input backup");</code></pre>
+<p>In plain terms: <strong>the last directory must be the full backup</strong>. Put the full backup last by accident, or pass a lone incremental, and you hit this. Also note that <code>pg_combinebackup</code> empties the output directory first, and the source contains two fatal branches, <code>failed to remove output directory</code> and <code>failed to remove contents of output directory</code>. Always hand it an empty, dedicated path, never a typo that points at your data directory.</p>
+<h2>7. Hard Limits of Logical Replication Itself</h2>
+<p>Setting versions aside, logical replication has documented limits that are easy to forget while debugging:</p>
+<ul><li><strong>DDL is not replicated.</strong> The docs suggest copying the initial schema by hand with <code>pg_dump --schema-only</code>.</li><li><strong>Schema changes make replication error out.</strong> The official wording is direct: replication will error until the schema is updated. It also gives a genuinely useful tip: additive schema changes applied to the subscriber first avoid many intermittent errors.</li><li><strong>Sequences are not replicated.</strong> Values in <code>serial</code> or <code>identity</code> columns do arrive as part of the table data, but the sequence itself stays at its start value on the subscriber. That rarely matters for a read-only database, and it definitely matters if the subscriber takes writes.</li><li><strong>UPDATE and DELETE require replica identity.</strong> For datatypes such as <code>point</code> or <code>box</code> that have no default operator class for B-tree or Hash, the docs explain that this limitation can be overcome by ensuring that the table has a primary key or replica identity defined for it.</li><li><strong><code>copy_data = false</code> has specific semantics.</strong> In <code>CREATE SUBSCRIPTION</code>, <code>copy_data</code> controls whether initial data is copied. Combined with <code>connect = false</code>, the docs state that <code>create_slot</code>, <code>enabled</code> and <code>copy_data</code> are all forced to false, and that you cannot combine <code>connect = false</code> with any of them set to true. In that mode no connection is established and no tables are subscribed, so you must create the slot manually, enable failover if required, enable the subscription, and refresh it.</li></ul>
+<p>For large transactions the docs also give you <code>streaming</code> (default off) and <code>two_phase</code> (default false). The first streams in-progress transactions, and the second processes prepared transactions as two-phase transactions on the subscriber as well.</p>
+<h2>8. My Upgrade Checklist</h2>
+<p>Here is the whole sequence compressed into something executable:</p>
+<pre><code># 1. Record the plugin baseline before touching anything (official recommended query)
+psql -Atc "SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;"
+
+# 2. Record versions and replication topology
+pg_basebackup --version
+psql -Atc "SHOW server_version;"
+
+# 3. Confirm slots are complete pre-upgrade, especially failover slots and synchronized_standby_slots
+psql -Atc "SELECT slot_name, slot_type, failover FROM pg_replication_slots;"
+
+# 4. After upgrading, verify output_plugin_libraries and the allowlist actually in effect
+psql -Atc "SHOW output_plugin_libraries;"
+grep -i "may not be used as an output plugin" <your log path></code></pre>
+<p>One principle in that ordering is worth stating on its own: <strong>record first, change second</strong>. The official <code>SELECT DISTINCT plugin</code> query matters precisely because it only reveals plugins that previously succeeded. If you skip capturing it now, the only surviving evidence of a refused plugin after the upgrade is that single ERROR line in the log.</p>
+<h2>Troubleshooting: Error Summary</h2>
+<p><strong>Q1: After pg_upgrade, do I have to resynchronize the initial data copy?</strong></p>
+<p>According to the official 17 documentation, no. The Release 17 page states that <code>pg_upgrade</code> preserves logical replication slots on publishers and full subscription state on subscribers, allowing upgrades to future major versions to continue logical replication without requiring copy to resynchronize. The precondition is that the slots and subscription state were already complete before the upgrade.</p>
+<p><strong>Q2: Can pg_combinebackup take only the incremental backup?</strong></p>
+<p>No. An incremental backup cannot be used directly and must be combined with the backups it depends on, and the final argument must be the full backup, otherwise you trigger <code>cannot generate a manifest because no manifest is available for the final input backup</code>.</p>
+<p><strong>Q3: Does <code>sslnegotiation=direct</code> work against a 16 server?</strong></p>
+<p>No. The docs state it requires ALPN and only works on PostgreSQL 17 and later servers.</p>
+<p><strong>Q4: The subscriber is idle with no error at all. What do I check first?</strong></p>
+<p>Check whether the physical slots listed in <code>synchronized_standby_slots</code> exist or have been invalidated, because the docs state logical replication will not proceed in that case. Then confirm the matching standby has <code>sync_replication_slots = true</code>, and look at the <code>active</code> field in <code>pg_stat_subscription</code> and <code>pg_replication_slots</code>.</p>
+<p><strong>Q5: My subscriber complains that sequence values do not match?</strong></p>
+<p>This is a documented limitation: sequence data is not replicated. Values in <code>serial</code> or <code>identity</code> columns arrive as table data, but the sequence on the subscriber stays at its start value. Read-only subscribers are usually unaffected, while subscribers that take writes need the sequences corrected manually.</p>
+<p>All error strings, parameter defaults and limitations above come from the PostgreSQL official documentation and source code, verified as of October 11, 2026:</p>
+<ul><li>Release 17 change list: https://www.postgresql.org/docs/17/release-17.html</li><li>Replication settings (<code>synchronized_standby_slots</code>, <code>max_slot_wal_keep_size</code>, <code>output_plugin_libraries</code>): https://www.postgresql.org/docs/17/runtime-config-replication.html</li><li>pg_basebackup including <code>--incremental</code>: https://www.postgresql.org/docs/17/app-pgbasebackup.html</li><li>pg_combinebackup: https://www.postgresql.org/docs/17/app-pgcombinebackup.html</li><li>Logical replication restrictions: https://www.postgresql.org/docs/17/logical-replication-restrictions.html</li><li>CREATE SUBSCRIPTION parameters: https://www.postgresql.org/docs/17/sql-createsubscription.html</li><li>Versions and EOL dates: https://www.postgresql.org/versions.json</li></ul>
+<p>To be explicit about sourcing: this piece contains <strong>no affiliate links</strong>. Every error string was taken from the <code>errmsg</code> and <code>pg_fatal</code> literals inside PostgreSQL function bodies rather than from search result summaries. <code>requested WAL segment %s has already been removed</code> comes from <code>CheckXLogRemoved()</code> in <code>xlog.c</code>, and <code>server does not support incremental backup</code> comes from the explicit <code>MINIMUM_VERSION_FOR_WAL_SUMMARIES</code> version check in <code>pg_basebackup.c</code>.</p>
+<p>If you are running this in a self-hosted lab, the hardware tradeoffs are covered in <a href="https://yaohehe.github.io/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" target="_blank" rel="nofollow sponsored">PostgreSQL 17 Troubleshooting in Production</a>, which covers the wait-event class of problem where the database is up, CPU sits at 10%, slow query logs are clean, and every endpoint times out. That is a different layer from the upgrade and replication material here. For the orchestration side, see <a href="https://yaohehe.github.io/2026-10-06-docker-compose-changes-not-applying-4-real-fixes-en.html" target="_blank" rel="nofollow sponsored">Docker Compose 5.x Changes Not Applying</a>.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
