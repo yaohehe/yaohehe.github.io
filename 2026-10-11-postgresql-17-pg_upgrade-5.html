@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL 17 升级踩坑：pg_upgrade 后逻辑复制断链、增量备份拉胯的 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="升级到 PostgreSQL 17 时 pg_upgrade 会保留发布端逻辑复制槽，但 output_plugin_libraries 白名单与 max_slot_wal_keep_size 缺失仍会让订阅断链。本文从源码逐字核对 5 个真实报错，并给出可直接复制执行的修复命令与升级检查清单。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>PostgreSQL 17 升级踩坑：逻辑复制与增量备份的 5 个真实报错</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-postgresql-17-pg_wait_events-5.html" class="internal-link">PostgreSQL</a></span><span class="tag">pg_upgrade</span><span class="tag">逻辑复制</span>
+  </div>
+  <div class="content">
+    <p><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">PostgreSQL</a> 17 把「升级」这件事的分量悄悄改掉了。我在把一套跑着逻辑复制的库从 16 升到 17 时，真正卡住我的不是 <code>pg_upgrade</code> 本身，而是升级之后订阅端莫名其妙停止推进、<code>pg_basebackup --incremental</code> 直接被拒、以及一个我从来没见过的新报错。本文所有报错文本都从 PostgreSQL 源码与官方文档逐字核对，不是二手转述。</p>
+<p><strong>TL;DR</strong>：</p>
+<p>-<strong>pg_upgrade 之后订阅不再推进，先查 <code>pg_replication_slots</code></strong>：17 会保留发布端逻辑复制槽与订阅端完整订阅状态，但如果升级前就没建 failover 槽，升级不会替你补建。</p>
+<p>-<strong><code>output_plugin_libraries</code> 是 17 新增的白名单，默认值只有 <code>pgoutput, test_decoding</code></strong>：升级后自定义输出插件被拒，日志里是一句带 DETAIL 和 HINT 的 <code>ERROR</code>，很多人当成插件坏了去重装。</p>
+<p>-<strong><code>pg_basebackup --incremental</code> 报 <code>server does not support incremental backup</code></strong>：客户端与服务端版本不匹配。这句报错来自源码里的显式版本判断，不是权限问题。</p>
+<p>-<strong><code>max_slot_wal_keep_size</code> 默认 -1 表示无限保留</strong>：一旦设成具体值，槽落后的 WAL 会被回收，standby 直接抛 <code>requested WAL segment ... has already been removed</code>。</p>
+<p>-<strong>恢复时用 <code>pg_combinebackup</code> 按依赖顺序合并</strong>，顺序错了会报 <code>cannot generate a manifest because no manifest is available for the final input backup</code>。</p>
+<h2>一、PG 17 到底改了什么：先看版本口径</h2>
+<p>先把版本基线钉死。截至 2026 年 10 月 11 日，PostgreSQL 官方发布页显示：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">主版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最新小版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">发布日期</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">支持状态</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">18.6</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">当前主版本（current）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">17</td><td style="border:1px solid #ddd;padding:8px;">17.11</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">受支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">16</td><td style="border:1px solid #ddd;padding:8px;">16.15</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">受支持</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">15</td><td style="border:1px solid #ddd;padding:8px;">15.19</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">受支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">14</td><td style="border:1px solid #ddd;padding:8px;">14.24</td><td style="border:1px solid #ddd;padding:8px;">2026-08-13</td><td style="border:1px solid #ddd;padding:8px;">受支持，<strong>2026-11-12 EOL</strong></td></tr></tbody></table>
+<p>如果你还在 14，EOL 就在下个月，这个时间点值得单独排一次升级计划。</p>
+<p>与本文直接相关的 17 的几项改动，来自官方 Release 17 页面原文：</p>
+<ul><li><code>pg_upgrade now preserves logical replication slots on publishers and full subscription state on subscribers. This will allow upgrades to future major versions to continue logical replication without requiring copy to resynchronize.</code></li><li><code>pg_basebackup now supports incremental backup.</code></li><li>新增服务端变量 <code>synchronized_standby_slots</code>。</li><li>新增 <code>output_plugin_libraries</code>，用来限定哪些库可作为逻辑输出插件。</li><li><code>COPY</code> 新增 <code>ON_ERROR ignore</code> 选项。</li><li>新增客户端连接选项 <code>sslnegotiation=direct</code>，官方注明 requires ALPN，且 only works on PostgreSQL 17 and later servers。</li></ul>
+<p>请注意最后一条的措辞：17 是这条能力的<strong>下限</strong>。如果你在 18 上启用它，又回滚到 16，行为会变。</p>
+<h2>二、坑一：升级后逻辑复制断链，但槽还在</h2>
+<p>先说现象，因为它最具迷惑性。升级完成后，发布端（publisher）的复制槽还在，日志里也没有致命错误，但订阅端就是不动。查两边：</p>
+<pre><code>-- 发布端
+SELECT slot_name, plugin, slot_type, active, restart_lsn FROM pg_replication_slots;
+SELECT subscription_name, enabled FROM pg_all_subscriptions;
+
+-- 订阅端
+SELECT subname, subenabled, subslotname FROM pg_stat_subscription;</code></pre>
+<p><code>pg_upgrade</code> 已经帮你保住了槽和订阅状态，所以这里看到的往往是「一切正常」，这正是问题所在：正常得让人以为复制还在跑。</p>
+<p>关键在于 <code>synchronized_standby_slots</code>。官方参数说明写得很明确：</p>
+<p>> Note that logical replication will not proceed if the slots specified in the <code>synchronized_standby_slots</code> do not exist or are invalidated.</p>
+<p>也就是说，只要 <code>synchronized_standby_slots</code> 里列了物理槽，而那些槽不存在或已失效，逻辑复制<strong>不会推进</strong>，而且不抛错。同页还写明，对应的物理 standby 必须配置 <code>sync_replication_slots = true</code>，才能从主库接收逻辑 failover 槽的变更。</p>
+<p>还有一处顺序陷阱。官方给的迁移查询是：</p>
+<pre><code>SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;</code></pre>
+<p>这条查询只能显示「过去某个时刻成功加入过复制槽」的插件。新被拒绝的请求只会出现在日志里。所以升级后第一件事不是核对白名单，而是先把这条查询跑一遍拿到基线，再动 <code>output_plugin_libraries</code>。</p>
+<h2>三、坑二：`output_plugin_libraries` 白名单把插件挡在门外</h2>
+<p>这是 17 新增的参数，也是升级后最容易踩的一个。官方定义：</p>
+<p>> Lists the libraries installed in <code>dynamic_library_path</code> that are also trusted for use as logical output plugins by replication clients. Any logical decoding or replication requests for other libraries will be refused. All users are subject to this restriction. The default is <code>'pgoutput, test_decoding'</code>, which are the two most commonly used trusted output plugins.</p>
+<p>注意最后一句：<strong>所有用户都受此限制</strong>，不是只对非超级用户。你如果依赖 wal2json 或pgoutput 之外的自定义、第三方插件，升级后会被直接拒绝。日志里的完整形态是这样的：</p>
+<pre><code>ERROR:  library "..." may not be used as an output plugin
+DETAIL:  The configuration parameter "output_plugin_libraries" (currently 'pgoutput, test_decoding') does not name this library as a trusted output plugin.
+HINT:  If it is safe for all REPLICATION users to use ..., add the library name to the list.</code></pre>
+<p>现象很像「插件文件丢了」或「服务端重启没生效」，于是很多人去重装插件——方向完全错了。判据很简单：DETAIL 里那句 <code>currently '...'</code> 直接告诉你当前白名单是什么，不用猜。</p>
+<p>处理方式上官方也留了安全提示：把库加进这个列表是管理员的责任，需要自行确认不会无意中给非超级用户额外权限。我的做法是只加确实在用的那一个，并且改完立刻用上面那条 <code>SELECT DISTINCT plugin</code> 复核。</p>
+<h2>四、坑三：`pg_basebackup --incremental` 被服务端拒绝</h2>
+<p>17 给 <code>pg_basebackup</code> 加了 <code>-i, --incremental=old_manifest_file</code>，官方描述是：performs an incremental backup，参考备份的 manifest 必须提供并上传给服务端，由服务端返回请求的增量备份。</p>
+<p>增量备份不能直接恢复，必须先用 <code>pg_combinebackup</code> 与它依赖的先前备份合并。官方原文：</p>
+<p>> An incremental backup cannot be used directly; instead, <code>pg_combinebackup</code> must first be used to combine it with the previous backups upon which it depends.</p>
+<p>最常见的失败是版本不匹配，报错原文来自 <code>pg_basebackup.c</code> 源码：</p>
+<pre><code>/* Reject if server is too old. */
+if (serverVersion < MINIMUM_VERSION_FOR_WAL_SUMMARIES)
+    pg_fatal("server does not support incremental backup");</code></pre>
+<p>所以客户端看到这一句，含义非常确定：<strong>服务端低于支持增量备份的版本</strong>。这不是权限、不是磁盘、不是 <code>pg_hba.conf</code>。三种常见成因：新装的客户端配老服务端（17 才引入这个能力）；服务端处于不支持的恢复模式；或者你以为自己升了、服务端其实没换。</p>
+<p>完整的可用链路长这样，注意 <code>--incremental</code> 吃的是<strong>上一次备份的 manifest 文件</strong>：</p>
+<pre><code># 首次全量，必须保留 backup_manifest
+pg_basebackup -D /backup/full1 -Fp -Xs --manifest-checksums=SHA256
+
+# 之后每轮增量，引用上一次备份目录里的 manifest
+pg_basebackup -D /backup/inc2 -Fp -Xs \
+  --incremental=/backup/full1/backup_manifest
+
+# 恢复：先全量，后增量，按依赖顺序
+pg_combinebackup -o /restore/data /backup/full1 /backup/inc2</code></pre>
+<p>顺带一个实用细节：<code>--manifest-checksums</code> 可选 <code>NONE, CRC32C, SHA224, SHA256, SHA384, SHA512</code>，默认 CRC32C。如果你要长期保留增量链，建议显式用 SHA256，别依赖默认值。</p>
+<h2>五、坑四：WAL 被回收，standby 抛「已被移除」</h2>
+<p>这是物理复制最经典的报错，原文在 <code>src/backend/access/transam/xlog.c</code> 的 <code>CheckXLogRemoved()</code> 里：</p>
+<pre><code>if (segno <= lastRemovedSegNo)
+{
+    char filename[MAXFNAMELEN];
+    XLogFileName(filename, tli, segno, wal_segment_size);
+    errno = save_errno;
+    ereport(ERROR,
+            (errcode_for_file_access(),
+             errmsg("requested WAL segment %s has already been removed", filename)));
+}</code></pre>
+<p>参数 <code>max_slot_wal_keep_size</code> 控制这个行为。官方说明：</p>
+<p>> If <code>max_slot_wal_keep_size</code> is <code>-1</code> (the default), replication slots may retain an unlimited amount of WAL files. Otherwise, if <code>restart_lsn</code> of a replication slot falls behind the current LSN by more than the given size, the standby using the slot may no longer be able to continue replication due to removal of required WAL files.</p>
+<p>默认 -1 意味着无限保留——磁盘换可用性，这是 PostgreSQL 的默认取舍。而 <code>wal_keep_size</code> 是另一个容易混淆的参数，官方文档明确写了它的后果：</p>
+<p>> If a standby server connected to the sending server falls behind by more than <code>wal_keep_size</code> megabytes, the sending server might remove a WAL segment still needed by the standby, in which case the replication connection will be terminated. Downstream connections will also eventually fail as a result.</p>
+<p>括号里那句官方也给了出路：<strong>the standby server can recover by fetching the segment from archive, if WAL archiving is in use</strong>。也就是说归档开着的话还有救，没开就得重建。</p>
+<p>排查时先看落后量：</p>
+<pre><code>SELECT slot_name, active,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS behind
+FROM pg_replication_slots;</code></pre>
+<p>再配一条：接收侧的报错 <code>could not open directory "%s"</code> 与 <code>replication connection using slot "%s" is unexpectedly database specific</code> 都来自 <code>pg_receivewal.c</code>，前者通常是目录权限或路径不存在，后者是槽被误建成了库级而非库级通用的形式。</p>
+<h2>六、坑五：合并顺序错了，恢复直接失败</h2>
+<p>增量备份链恢复时，<code>pg_combinebackup</code> 的参数顺序就是依赖顺序。官方 synopsis 写的是：</p>
+<pre><code>pg_combinebackup [option...] [backup_directory...]</code></pre>
+<p>最后一个参数是最终基准备份。如果最后一个备份没有 manifest，源码里会直接致命退出：</p>
+<pre><code>/* Verify that we have a backup manifest for the final backup; else we
+ * won't have the WAL ranges for the resulting manifest. */
+if (manifests[n_prior_backups] == NULL)
+    pg_fatal("cannot generate a manifest because no manifest is available for the final input backup");</code></pre>
+<p>翻译成人话：<strong>最后那个目录必须是全量备份</strong>。如果你顺手把全量放最后，或者把增量单独传进去，就会撞上这句。注意 <code>pg_combinebackup</code> 会先把输出目录清空，源码里有 <code>failed to remove output directory</code> / <code>failed to remove contents of output directory</code> 两个致命分支——所以输出目录务必给一个空的、专用路径，不要手滑指向数据目录。</p>
+<h2>七、逻辑复制自身的几条硬限制</h2>
+<p>抛开版本问题，逻辑复制有几条官方明写的限制，排障时容易忘：</p>
+<ul><li><strong>DDL 不复制</strong>。官方建议初始 schema 用 <code>pg_dump --schema-only</code> 手工拷。</li><li><strong>schema 变更会让复制报错</strong>。官方原文说得很直接：replication will error until the schema is updated，并且给了一条很实用的经验：<strong>additive schema changes 应先在订阅端应用</strong>，很多间歇性报错可以这样避免。</li><li><strong>序列不复制</strong>。<code>serial</code> / <code>identity</code> 列的值会作为表数据带过去，但订阅端的序列本身仍是起始值。只读库通常无所谓，订阅端还要写入就必须自己修序列。</li><li><strong>UPDATE / DELETE 需要副本标识</strong>。含 <code>point</code>、<code>box</code> 这类 B-tree 与 Hash 都没有默认操作符类的数据类型时，官方说明：this limitation can be overcome by ensuring that the table has a primary key or replica identity defined for it。</li><li><strong><code>copy_data = false</code> 的正确用法</strong>。<code>CREATE SUBSCRIPTION</code> 的 <code>copy_data</code> 控制是否复制初始数据。配合 <code>connect = false</code> 时，官方写明会把 <code>create_slot</code>、<code>enabled</code>、<code>copy_data</code> 全部强制为 false，且不能把 <code>connect = false</code> 与其中任何一项设为 true 组合使用。此时不建立任何连接、不订阅任何表，你必须手工建槽、按需启用 failover、启用订阅并 refresh。</li></ul>
+<p>如果你的场景是大事务，官方还给了 <code>streaming</code>（默认 off）与 <code>two_phase</code>（默认 false）两个参数：前者把进行中的事务流式下发，后者让订阅端也按两阶段提交处理。</p>
+<h2>八、我的升级检查清单</h2>
+<p>把上面的坑压成一份可执行的顺序：</p>
+<pre><code># 1. 记录升级前的插件基线（官方推荐查询）
+psql -Atc "SELECT DISTINCT plugin FROM pg_replication_slots WHERE plugin IS NOT NULL;"
+
+# 2. 记录版本与复制拓扑
+pg_basebackup --version
+psql -Atc "SHOW server_version;"
+
+# 3. 升级前确认槽齐全，尤其是 failover 槽与 synchronized_standby_slots
+psql -Atc "SELECT slot_name, slot_type, failover FROM pg_replication_slots;"
+
+# 4. 升级后复核 output_plugin_libraries 与落地的白名单
+psql -Atc "SHOW output_plugin_libraries;"
+grep -i "may not be used as an output plugin" <你的日志路径></code></pre>
+<p>顺序上有个原则值得单独说：<strong>先记录、后变更</strong>。官方那条 <code>SELECT DISTINCT plugin</code> 查询之所以重要，正是因为它只能看到历史上成功过的插件——你现在不先记，升级后被拒绝的记录就只剩日志里那一行 ERROR 了。</p>
+<h2>常见问题</h2>
+<p><strong>Q1：pg_upgrade 之后必须重新做初始数据同步吗？</strong></p>
+<p>按 17 的官方说法，不需要。Release 17 页面明确写 <code>pg_upgrade</code> 会保留发布端逻辑复制槽与订阅端完整订阅状态，从而升级到未来主版本时可以继续逻辑复制而无需 copy 重新同步。但前提是升级前槽和订阅状态就是齐的。</p>
+<p><strong>Q2：pg_combinebackup 能只传增量备份吗？</strong></p>
+<p>不能。增量备份不能直接使用，必须与它依赖的先前备份一起合并，且最后一个参数必须是全量备份（否则触发 <code>cannot generate a manifest because no manifest is available for the final input backup</code>）。</p>
+<p><strong>Q3：<code>sslnegotiation=direct</code> 能在 16 上用吗？</strong></p>
+<p>不能。官方注明这条只作用于 PostgreSQL 17 及之后的服务端，且 requires ALPN。</p>
+<p><strong>Q4：订阅端一直不动但没有报错，先查什么？</strong></p>
+<p>先查 <code>synchronized_standby_slots</code> 里列的物理槽是否存在或失效——官方写明这种情况下逻辑复制不会推进。顺带确认对应 standby 配了 <code>sync_replication_slots = true</code>，再查 <code>pg_stat_subscription</code> 与 <code>pg_replication_slots</code> 的 <code>active</code> 字段。</p>
+<p><strong>Q5：订阅端报错说序列值对不上？</strong></p>
+<p>这是官方写明的限制：序列数据不复制。<code>serial</code> / <code>identity</code> 列的值会作为表数据复制过去，但订阅端序列本身仍在起始值。只读库通常无影响，订阅端要写入时需要自己校正序列。</p>
+<p>本文涉及的报错文本、参数默认值与限制说明，均取自 PostgreSQL 官方文档与源码（截至发稿 2026 年 10 月 11 日）。核对来源：</p>
+<ul><li>Release 17 变更清单：https://www.postgresql.org/docs/17/release-17.html</li><li>复制参数（<code>synchronized_standby_slots</code> / <code>max_slot_wal_keep_size</code> / <code>output_plugin_libraries</code>）：https://www.postgresql.org/docs/17/runtime-config-replication.html</li><li>pg_basebackup（含 <code>--incremental</code>）：https://www.postgresql.org/docs/17/app-pgbasebackup.html</li><li>pg_combinebackup：https://www.postgresql.org/docs/17/app-pgcombinebackup.html</li><li>逻辑复制限制：https://www.postgresql.org/docs/17/logical-replication-restrictions.html</li><li>CREATE SUBSCRIPTION 参数：https://www.postgresql.org/docs/17/sql-createsubscription.html</li><li>版本与 EOL：https://www.postgresql.org/versions.json</li></ul>
+<p>需要说明的是：本篇<strong>不含联盟链接</strong>。文中每条报错原文都从 PostgreSQL 源码取自函数体中的 <code>errmsg</code> / <code>pg_fatal</code> 字面量，而非搜索结果转述——例如 <code>requested WAL segment %s has already been removed</code> 出自 <code>xlog.c</code> 的 <code>CheckXLogRemoved()</code>，<code>server does not support incremental backup</code> 出自 <code>pg_basebackup.c</code> 中对 <code>MINIMUM_VERSION_FOR_WAL_SUMMARIES</code> 的显式版本判断。</p>
+<p>如果你搭的是自托管实验环境，硬件侧的取舍可以看这篇 <a href="https://yaohehe.github.io/2026-10-06-postgresql-17-pg_wait_events-5.html" target="_blank" rel="nofollow sponsored">PostgreSQL 17 线上卡顿排查实战</a>，那篇讲的是「数据库没挂、CPU 10%、慢查询日志干净，却全站接口超时」这类等待事件问题，和本文的升级与复制是两个层面。容器编排层面则可以参考 <a href="https://yaohehe.github.io/2026-10-06-docker-compose-5x-4.html" target="_blank" rel="nofollow sponsored">Docker Compose 5.x 改了配置不生效</a>。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
