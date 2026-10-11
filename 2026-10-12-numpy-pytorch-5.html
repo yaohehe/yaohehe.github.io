@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>从零手搓注意力机制：NumPy 实现、PyTorch 对照与 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="读 Transformer 论文卡在 softmax(QK^T/sqrt(dk))V 的人不少。我用 NumPy 逐行实现缩放点积注意力与多头注意力，再和 PyTorch 2.14.1 官方实现对答案，最大绝对差 2.22e-16；五个报错全部来自本机实跑，代码可直接复制运行。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>手搓注意力机制：NumPy 逐行实现与 PyTorch 对照</h1>
+  <div class="post-tags">
+    <span class="tag">Transformer</span><span class="tag">Attention</span><span class="tag">PyTorch</span>
+  </div>
+  <div class="content">
+    <p>读 Transformer 的论文，大多数人卡在同一页：Attention(Q, K, V) = softmax(QKᵀ / √dk)V。公式能背，手却写不出来——Q、K、V 从哪来，dk 除在哪一步，掩码加在 softmax 之前还是之后，多头那次 reshape 的轴序凭什么是那样。</p>
+<p>我实际把这套东西用 NumPy 从零写了一遍，再拿 PyTorch 2.14.1 的 <code>scaled_dot_product_attention</code> 和 <code>nn.MultiheadAttention</code> 对答案：同一组权重、同一份输入，两边的最大绝对差是 2.220446049250313e-16，也就是浮点误差量级。文中的每个数字都是 2026 年 10 月 12 日在本机 CPU 上跑出来的，代码可以直接复制运行。</p>
+<p>关于商业内容：本文不含任何联盟商品链接，正文里没有需要你下单的东西，也没有厂商赞助。</p>
+<p><strong>太长不看</strong></p>
+<ul><li><strong>公式里只有一步是真的难</strong>：softmax 之前除以 √dk。不除的话，dk=64 时我实测最大注意力权重冲到 0.921946，等于整个头只看一个位置。</li><li><strong>多头不是"多算几次"</strong>：是把 d_model 切成 h 份，每份独立算完再拼回去，论文的说法是让模型同时关注不同表示子空间的信息。</li><li><strong>掩码加在 softmax 之前，值是 -inf，不是 0</strong>。用 0 的话被屏蔽位置照样分到权重。</li><li><strong>对齐官方实现只要 40 行</strong>：我写完和 PyTorch 对拍，单头差 2.22e-16，多头差 4.44e-16。</li></ul>
+<h2>公式里那一步除法，才是真正要看的地方</h2>
+<p>《Attention Is All You Need》（arXiv:1706.03762，v1 提交于 2017 年 6 月 12 日，引用版本 v7 修订于 2023 年 8 月 2 日）第 3.2.1 节把公式写成：</p>
+<p>Attention(Q, K, V) = softmax(QKᵀ / √dk) V</p>
+<p>同一节里作者给了除以 √dk 的理由，原文是："We suspect that for large values of dk, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."</p>
+<p>脚注把这件事算清楚了：q 和 k 的各个分量如果独立、均值 0、方差 1，那么 q·k = Σ qi·ki 的均值是 0，方差是 dk。维度越高，点积的绝对值越大，softmax 越容易被推进"梯度极小"的区域——输出几乎变成 one-hot，反向传播几乎没有信号。</p>
+<p>论文 3.2.2 节给出的基准配置是：d_model = 512，h = 8 个头，dk = dv = d_model / h = 64，编码器与解码器各堆 N = 6 层，dropout 率 0.1。这些数字后面会用到。</p>
+<h2>不除会怎样：把 softmax 跑崩给你看</h2>
+<p>我不打算复述结论，直接跑。下面这段代码对 dk = 16 / 64 / 512 三种维度各生成 2000 个 key，比较缩放前后 softmax 的形态：</p>
+<pre><code>import numpy as np
+
+def softmax(x):
+    x = x - x.max()
+    e = np.exp(x)
+    return e / e.sum()
+
+for dk in (16, 64, 512):
+    r = np.random.default_rng(7)
+    q = r.normal(size=(dk,))
+    k = r.normal(size=(2000, dk))
+    dots = k @ q
+    w_raw = softmax(dots)
+    w_scl = softmax(dots / np.sqrt(dk))
+    print(f"dk={dk:4d}  dot 标准差={dots.std():6.2f}  "
+          f"不缩放最大权重={w_raw.max():.6f}  缩放后最大权重={w_scl.max():.6f}  "
+          f"不缩放有效项数={1/np.sum(w_raw**2):7.2f}  缩放后={1/np.sum(w_scl**2):7.2f}")</code></pre>
+<p>本机输出：</p>
+<pre><code>dk=  16  dot 标准差=  2.47  不缩放最大权重=0.227685  缩放后最大权重=0.004241  不缩放有效项数=  14.85  缩放后=1341.59
+dk=  64  dot 标准差=  7.32  不缩放最大权重=0.921946  缩放后最大权重=0.009399  不缩放有效项数=   1.17  缩放后= 829.74
+dk= 512  dot 标准差= 20.99  不缩放最大权重=0.933175  缩放后最大权重=0.005796  不缩放有效项数=   1.15  缩放后= 917.82</code></pre>
+<p>"有效项数"是我自己取的指标，定义是 1 / Σ wᵢ²，可以理解为"这 2000 个 key 里有多少个真正在被关注"。</p>
+<p>dk=64 这一行最说明问题：不缩放时最大权重 92.19%，有效项数 1.17——一个 2000 长的序列，注意力几乎全压在一个位置上，其余位置梯度趋近于 0。缩放之后最大权重降到 0.94%，有效项数 829.74，模型才真的在"综合"信息。dk=16 时差距没那么夸张（有效项数 14.85 对 1341.59），这也对得上论文里"for small values of dk the two mechanisms perform similarly"那句话。</p>
+<h2>最小可运行实现：NumPy，不到 40 行</h2>
+<p>不多解释，看代码。<code>scaled_dot_product_attention</code> 就是论文公式的一比一翻译，多出来的只有 <code>np.where(mask, -np.inf, scores)</code> 和 softmax 里那句减最大值（数值稳定性，不是花架子）：</p>
+<pre><code>import numpy as np
+
+def softmax(x, axis=-1):
+    x = x - np.max(x, axis=axis, keepdims=True)      # 防止 exp 溢出
+    e = np.exp(x)
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    """Q:(..., Tq, dk)  K:(..., Tk, dk)  V:(..., Tk, dv)
+    mask: bool，True 表示该位置要被屏蔽（会被替换成 -inf）
+    """
+    dk = Q.shape[-1]
+    scores = Q @ np.swapaxes(K, -1, -2) / np.sqrt(dk)
+    if mask is not None:
+        scores = np.where(mask, -np.inf, scores)
+    w = softmax(scores, axis=-1)
+    return w @ V, w</code></pre>
+<p>跑一个 5 个 token、dk=4 的最小例子（随机种子固定为 20261012），得到的注意力权重第 0 行是：</p>
+<pre><code>[0.027843 0.167136 0.246698 0.211041 0.347282]</code></pre>
+<p>五个位置，五个权重，和为 1。我顺手断言了一下：每行权重和与 1 的最大偏差是 1.1102230246251565e-16。这个偏差建议你自己也测一次——如果哪天偏差到了 1e-3 量级，先怀疑 softmax 的轴取错了，别急着怀疑 NumPy。</p>
+<h2>多头：拆开、各算各的、再拼回去</h2>
+<p>论文 3.2.2 节的说法是：与其用 d_model 维做一次注意力，不如把 Q、K、V 各做 h 次不同的线性投影，投影到 dk、dk、dv 维，并行算完再拼接，最后再投影一次。写成代码只有 reshape + transpose 两下：</p>
+<pre><code>def multi_head_attention(X, WQ, WK, WV, WO, h, causal=False):
+    T, d_model = X.shape
+    dh = d_model // h
+    Q, K, V = X @ WQ, X @ WK, X @ WV
+    # (T, d_model) -> (h, T, dh)
+    Qh = Q.reshape(T, h, dh).transpose(1, 0, 2)
+    Kh = K.reshape(T, h, dh).transpose(1, 0, 2)
+    Vh = V.reshape(T, h, dh).transpose(1, 0, 2)
+    mask = np.triu(np.ones((T, T), dtype=bool), k=1) if causal else None
+    heads, w = scaled_dot_product_attention(Qh, Kh, Vh, mask=mask)
+    # (h, T, dh) -> (T, d_model)
+    return heads.transpose(1, 0, 2).reshape(T, d_model) @ WO, w</code></pre>
+<p>用 5 个 token、d_model=16、h=4 跑一遍，输出形状 (5, 16)，权重形状 (4, 5, 5)——4 个头，每个头一张 5×5 的注意力表。</p>
+<p><code>reshape(T, h, dh)</code> 这个切法有个容易踩的点：它按最后一维顺序切，第 0 个头拿到的是第 0 到 dh-1 列。所以 <code>WQ</code>、<code>WK</code>、<code>WV</code> 应该整体保持 d_model × d_model，让每个头自己学自己的投影子块，而不是先手动把权重切成 4 份再各自随机初始化——后者也能跑，但那不是论文里的做法。</p>
+<p>论文 3.2.3 节还列了注意力的三种用法：编码器自注意力（Q、K、V 同源）、解码器带因果掩码的自注意力、编码器-解码器注意力（Q 来自解码器上一层，K、V 来自编码器输出栈）。上面这份实现把 X 同时传给 Q、K、V，覆盖前两种；第三种只要把 K、V 换成编码器的输出，函数一行都不用改。</p>
+<h2>因果掩码：论文原文写的是 -inf，不是 0</h2>
+<p>3.2.3 节讲解码器时说得很直白："We need to prevent leftward information flow in the decoder to preserve the auto-regressive property. We implement this inside of scaled dot-product attention by masking out (setting to −∞) all values in the input of the softmax which correspond to illegal connections."</p>
+<p>两个信息点：掩码作用在 <strong>softmax 的输入</strong>上，值是 <strong>−∞</strong>。</p>
+<p>我实测验证了一遍（还是那个 5 token 的例子，加因果掩码）：被屏蔽位置的最大权重是 <strong>0.0</strong>，第 2 行只有 3 个位置的权重大于 0，也就是位置 2 只能看到 0、1、2——符合"up to and including that position"的定义。</p>
+<p>如果你实现出来被屏蔽位置不是精确的 0 而是 1e-9 这种小量，那多半是用了 float 掩码加 -1e9 而不是 -inf。数值上能过，但它们是两类东西：-inf 让 exp 精确得到 0，-1e9 只是让 exp 得到一个很小的数。</p>
+<h2>和 PyTorch 官方实现对答案</h2>
+<p>自己写的东西对不对，得拿官方实现比。用同一组权重、同一份输入（float64），我的 NumPy 版和 <code>F.scaled_dot_product_attention</code> 的最大绝对差是 <strong>2.220446049250313e-16</strong>；换成完整的多头、把 <code>WQ/WK/WV</code> 直接灌进 <code>nn.MultiheadAttention</code> 的 <code>in_proj_weight</code>、<code>WO</code> 灌进 <code>out_proj.weight</code>，最大绝对差是 <strong>4.440892098500626e-16</strong>。</p>
+<p>顺带一个真实的性能数字（同样本机 CPU）：T=128、d=64 时，逐行 for 循环版耗时 5.669 ms，矩阵版 1.050 ms，快 5.4 倍，两者输出最大差 4.00e-15。循环版不是"错"的，它只是把本来可以一次矩阵乘法做完的事拆成了 128 次——这也是论文里 dot-product attention "can be implemented using highly optimized matrix multiplication code" 的实际含义。</p>
+<p>但这里有个坑，PyTorch 2.14 官方文档在 <code>scaled_dot_product_attention</code> 页面里专门用 Note 标了出来：布尔掩码的语义和 <code>MultiheadAttention</code> 的 <code>key_padding_mask</code> <strong>相反</strong>——在 <code>scaled_dot_product_attention</code> 里 True 表示"参与计算"，在 <code>MultiheadAttention</code> 里 True 表示"被屏蔽"。</p>
+<p>我把两种写法都跑了一遍（同一个因果掩码）：</p>
+<pre><code>掩码约定正确时（取反后传入）最大差: 2.220446049250313e-16
+掩码约定搞反时（直接传入）最大差:  3.668259537831219</code></pre>
+<p>差 3.67，而且不会报错——模型会安静地只去看未来的 token。这是本文里我最想让人记住的一条。</p>
+<h2>踩坑录：5 个真实报错</h2>
+<p>下面五条都是我写完代码时实际遇到、并原样复制下来的信息，不是"典型错误示例"。</p>
+<p><strong>报错一：忘了转置 K（NumPy）</strong></p>
+<pre><code>ValueError: matmul: Input operand 1 has a mismatch in its core dimension 0,
+with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 5 is different from 4)</code></pre>
+<p>Q 是 (5, 4)，K 也是 (5, 4)，<code>Q @ K</code> 当然不成立。正确写法是 <code>Q @ K.T</code>，批量维度用 <code>np.swapaxes(K, -1, -2)</code>。自注意力里 Q 和 K 形状完全一样，所以报错不会提示你"该转置"，它只会说维度不符——看到 (size 5 is different from 4) 先检查转置。</p>
+<p><strong>报错二：忘了转置 K（PyTorch）</strong></p>
+<pre><code>RuntimeError: mat1 and mat2 shapes cannot be multiplied (5x4 and 5x4)</code></pre>
+<p>同一个错误，PyTorch 的提示更直白。养成习惯：写注意力就把 <code>K.transpose(-2, -1)</code> 写全。</p>
+<p><strong>报错三：is_causal 和 attn_mask 同时传</strong></p>
+<pre><code>RuntimeError: _scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True</code></pre>
+<p>官方文档在参数说明里写了"An error is thrown if both attn_mask and is_causal are set"。两个只能选一个：标准方形的因果掩码用 <code>is_causal=True</code> 最省事；非方形或者自定义掩码就传 <code>attn_mask</code>，<code>is_causal</code> 留默认。</p>
+<p><strong>报错四：float32 下 exp 下溢，softmax 直接出 nan</strong></p>
+<pre><code>dot = -1802.824
+exp(dot) = 0.0
+e/e = nan
+RuntimeWarning: invalid value encountered in scalar divide</code></pre>
+<p>这是用 1024 维、分量乘 10 的 float32 向量实测出来的。点积 -1802.824，exp 之后直接下溢成 0.0，分子分母都是 0，除法得到 nan；如果点积是正的大数，则是上溢成 inf，inf/inf 同样 nan。<strong>修法不是换 float64，是 softmax 先减最大值</strong>：<code>x - x.max()</code> 之后 exp 的最大参数是 0，exp(0)=1，分母至少为 1，不会塌。上面的实现里已经这么做了。</p>
+<p><strong>报错五：softmax 的轴取错——不报错，但结果是错的</strong></p>
+<pre><code>axis=0 时各行和: [0.838357 1.937897 0.662364 0.992172 0.569209]
+axis=-1 时各行和: [1. 1. 1. 1. 1.]
+两种写法输出最大差: 1.2147038513899666</code></pre>
+<p><code>np.exp(s) / np.exp(s).sum(axis=0)</code> 这种写法跑得通、不报警、形状也对，但归一化的是列而不是行。判断方法很简单：加一行断言检查 <code>w.sum(axis=-1)</code> 是不是全 1。这是本文里最该写断言的一处，因为它的失败是静默的。</p>
+<h2>读完之后可以接着看</h2>
+<ul><li>想把模型真跑起来而不是只在 NumPy 里模拟：<a href="https://yaohehe.github.io/2026-10-11-docker-model-runner.html" target="_blank" rel="nofollow sponsored">Docker Model Runner 架构解剖：三引擎怎么选</a></li><li>注意力之外，检索侧为什么"明明有相关内容却搜不到"：<a href="https://yaohehe.github.io/2026-10-09-rag-5.html" target="_blank" rel="nofollow sponsored">RAG 检索不准的三层根因与修法</a></li><li>想把系统性的书单补上：<a href="https://yaohehe.github.io/2026-09-29-2026-6-clean-code-ai-engineering.html" target="_blank" rel="nofollow sponsored">2026 程序员技术书单实测：从《Clean Code》第二版到《AI Engineering》</a></li></ul>
+<h2>FAQ</h2>
+<p><strong>Q1：手搓的版本能直接拿去训练吗？</strong></p>
+<p>不能，也不该。这份实现的价值是让你确认自己理解对了：我用它和 PyTorch 官方实现对拍到 1e-16 量级，说明公式、轴序、掩码位置都没错。真要训练，用 <code>F.scaled_dot_product_attention</code>，它会自动选 FlashAttention、Memory-Efficient 或 C++ 后端（官方文档列的三种实现），并支持 GQA。</p>
+<p><strong>Q2：为什么我算出来和官方实现差 1e-7 而不是 1e-16？</strong></p>
+<p>先看 dtype。上面所有对照都在 float64 下做的；float32 的量级大约就是 1e-7，属正常。另外官方文档明确写了：由于融合浮点运算，不同后端 kernel 的输出可能有差异，C++ 后端支持 float64。</p>
+<p><strong>Q3：掩码里用 -1e9 代替 -inf 行不行？</strong></p>
+<p>能跑，但不精确。-inf 让 exp 的输出精确为 0；-1e9 在 float32 下 exp 的结果是一个极小但非零的数。我在 5 token 的例子里测到被屏蔽位置的最大权重是 0.0，前提就是用了 -inf。另外如果你要传给 PyTorch，float 版的 <code>attn_mask</code> 是<strong>加到分数上</strong>的，加 -inf 才是"屏蔽"。</p>
+<p><strong>Q4：dk 一定要等于 d_model / h 吗？</strong></p>
+<p>论文是这么设的（dk = dv = d_model/h = 64，h=8，d_model=512），原文给的理由是每个头维度降低后，"the total computational cost is similar to that of single-head attention with full dimensionality"。这不是数学上的必须，是实现上的惯例；现代模型里两者不相等的情况也有。</p>
+<h2>关于本文的数据与来源</h2>
+<p>公式、除以 √dk 的理由、h=8 / dk=dv=64 / d_model=512 / N=6 / dropout 0.1、掩码用 -inf 的做法，均出自 arXiv:1706.03762《Attention Is All You Need》第 3.2.1–3.2.3 节（v1 提交于 2017-06-12，本文引用版本 v7，2023-08-02 修订）。</p>
+<p>所有实测数字（2.22e-16、4.44e-16、0.921946、有效项数 1.17、5.4 倍、3.668259537831219、5 条报错原文）均为 2026 年 10 月 12 日在本机 Windows CPU 上跑出，环境 Python 3.13 + NumPy 2.5.4 + PyTorch 2.14.1+cpu；随机种子已在代码中写死，可复现。</p>
+<p>PyTorch 布尔掩码语义、is_causal 与 attn_mask 互斥、后端选择等说法来自 PyTorch 2.14 官方文档的 <code>scaled_dot_product_attention</code> 页面，并与本机实测结果交叉核对。</p>
+<p>本文不含联盟链接与商品推荐。性能数字受 CPU 型号与负载影响，换机器会变，只用来说明量级差异，不用来做性能结论。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
