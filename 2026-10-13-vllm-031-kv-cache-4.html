@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>vLLM 0.31 KV Cache 解剖：分块分配实测与 4 个真实报错 - TechPassive</title>
+  <meta name="description" content="我实际在本机写了两个 KV cache 分配器对拍：连续预分配峰值并发 24，分块按需 157，内部碎片 1.02%。本文拆开 vLLM 0.31 的块表与前缀缓存整块对齐规则，给出四个真实报错的源码出处、按症状索引的调参清单，以及官方已把 PagedAttention 设计文档标注为历史文档这件事。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>vLLM 0.31 的 KV Cache：分块分配到底省在哪</h1>
+  <div class="post-tags">
+    <span class="tag">vllm</span><span class="tag">kv-cache</span><span class="tag">llm-inference</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：分块把并发上限从「按最长序列预留」变成「按实际用量分配」（我实测 24 到 157），前缀缓存让共享前缀按整块复用（默认块 16 时，1,000 token 前缀只丢 0.80%）；四个真实报错全部定位到了源码出处。</p>
+<p>先把三条边界说清楚，免得你照着做却得到别的结果。</p>
+<p>第一，本文所有实测数字来自我自己在 CPU 上跑的分配器模拟脚本（脚本在第三节，纯标准库，可一键复现）。它是<strong>分配器行为的模拟，不是 GPU 上的真实吞吐压测</strong>，我不会把它包装成「vLLM 实测吞吐」。第二，本文是纯技术拆解，正文不含任何商品推荐链接与联盟推广链接，页面底部是站点统一的推广入口。第三，版本号一律取自 GitHub Releases：写作时最新为 <strong>v0.31.0，发布于 2026-10-05</strong>。检索过程中我看到几篇第三方教程把「当前稳定版」分别写成 v0.20.1 与 v0.25.1，彼此不一致，也和官方 Releases 对不上——版本相关的事，请以官方 Releases 与对应版本文档为准。</p>
+<h2>一、最大的坑：官方文档自己声明「已不描述当前代码」</h2>
+<p>绝大多数中文解读 PagedAttention 的文章，源头都是 <code>https://docs.vllm.ai/en/latest/design/paged_attention/</code> 这一页。而这页顶部现在挂着一条 Warning，大意是：这是一份基于 vLLM 原始论文的历史文档，<strong>它描述的已不再是今天 vLLM 的代码</strong>；当前 vLLM 使用的是自己的 multi-head query attention kernel，源码在 <code>csrc/attention/attention_kernels.cu</code>。（页面底部标注的日期是 June 24, 2026。）</p>
+<p>也就是说，你在二手文章里看到的「v1 kernel / v2 kernel 三段循环」那套叙述，官方已经明确打了历史标记。这不代表「块」这个概念过时了——恰恰相反，同一份文档里对 Block 的定义今天依然成立：key 与 value 分开存放，每个块在一个 head 上存固定数量（<code>BLOCK_SIZE</code>）的 token；当 <code>BLOCK_SIZE=16</code>、<code>HEAD_SIZE=128</code> 时，一个 head 的一个块装 16 × 128 = 2048 个元素。</p>
+<p>我把这条放在最前面，是因为它决定你怎么读二手资料：机制可以学，但拿二手文章里的 kernel 细节去对今天的源码，一定对不上。</p>
+<h2>二、块、块表与「逻辑连续、物理离散」</h2>
+<p>分块方案里只有三个概念需要记住。</p>
+<p><strong>块（block）</strong>：KV cache 的最小分配单位，固定 token 数。v0.31.0 源码里 <code>CacheConfig.block_size</code> 字段的默认值是 <code>None</code>，未显式指定时回落到类常量 <code>DEFAULT_BLOCK_SIZE = 16</code>（<code>vllm/config/cache.py</code>）。同一个文件里另外两个常用默认值：<code>gpu_memory_utilization = 0.92</code>，<code>enable_prefix_caching = True</code>。</p>
+<p><strong>块表</strong>：请求到物理块的映射，也就是「逻辑上连续、物理上散落」的那一层。官方前缀缓存文档给出了 v1 的实现骨架（简化版）：一个 Block Pool（<code>KVCacheBlock</code> 列表）、一条用双向链表指针直接穿起来的 Free Block Queue（这样把中间元素挪到队尾是 O(1)）、一张 cache blocks（哈希到 block id）、一张 request blocks（request id 到已分配 block id）。</p>
+<p><strong>启动日志</strong>：vLLM 启动时会打印形如 <code>GPU KV cache size: N tokens, Maximum concurrency for M tokens per request: X.XXx</code> 的一行（<code>vllm/v1/core/kv_cache_utils.py</code>）。这是你判断「这台机器到底能跑多少并发」的第一手依据，比任何二手经验值都准。</p>
+<h2>三、实测：两个分配器对拍</h2>
+<h3>3.1 实验设定（先把边界钉死）</h3>
+<ul><li>容量：100,000 个 token 槽位；块大小 16 时对应 6,250 个块</li><li><code>max_model_len</code>：4,096</li><li>负载：400 个请求，提示长度与输出长度用对数正态采样，随机种子 20261013；总 token 数 276,007，平均 690，最长 2,219</li><li><strong>连续预分配</strong>：每个请求一进来就独占 4,096 个槽位，用完一次性归还（这是分块方案之前的主流做法）</li><li><strong>分块按需</strong>：prefill 时申请 <code>ceil(prompt/16)</code> 个块，decode 每跨过一个块边界再申请 1 个块；申请不到就触发抢占（归还全部块、重新排队），对应 V1 默认的 RECOMPUTE 语义</li></ul>
+<p>不包含的部分：prefill 峰值激活、CUDA graph 显存、模型权重、真实调度器策略。它回答的只有一个问题——同样的容量，换一种分配方式能多塞多少并发。</p>
+<h3>3.2 结果：峰值并发 24 到 157</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">分配方式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">峰值并发</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">跑完 400 个请求（步）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">平均排队（步）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">内部碎片</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">连续预分配（每请求 4,096）</td><td style="border:1px solid #ddd;padding:8px;">24</td><td style="border:1px solid #ddd;padding:8px;">3,524</td><td style="border:1px solid #ddd;padding:8px;">178.9</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">分块按需（块 = 16）</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">1,264</td><td style="border:1px solid #ddd;padding:8px;">180.3</td><td style="border:1px solid #ddd;padding:8px;">1.02%</td></tr></tbody></table>
+<p>同样的池子，峰值并发从 24 抬到 157，跑完同一批负载的步数从 3,524 降到 1,264。代价是 1.02% 的内部碎片——也就是每个请求最后一个块没填满的那点浪费。</p>
+<p>顺带一个容易被忽略的数字：分块方案的峰值块占用是 <strong>6,247 / 6,250，即 99.95%</strong>。池子几乎被打满，这正是后面 4 次抢占的来源。</p>
+<h3>3.3 块大小怎么影响内部碎片</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块大小</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">峰值并发</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">内部碎片率</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">抢占次数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">158</td><td style="border:1px solid #ddd;padding:8px;">0.50%</td><td style="border:1px solid #ddd;padding:8px;">6</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">16</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">1.02%</td><td style="border:1px solid #ddd;padding:8px;">4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">32</td><td style="border:1px solid #ddd;padding:8px;">155</td><td style="border:1px solid #ddd;padding:8px;">2.18%</td><td style="border:1px solid #ddd;padding:8px;">2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">64</td><td style="border:1px solid #ddd;padding:8px;">153</td><td style="border:1px solid #ddd;padding:8px;">4.58%</td><td style="border:1px solid #ddd;padding:8px;">7</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">147</td><td style="border:1px solid #ddd;padding:8px;">9.08%</td><td style="border:1px solid #ddd;padding:8px;">8</td></tr></tbody></table>
+<p>碎片率随块大小近乎线性增长，符合「最后一个块平均浪费 B/2 个 token」的直觉。但抢占次数不是单调的（16 到 32 反而从 4 降到 2，64 又升到 7）：我这轮只有 400 个请求、抢占本身是稀有事件，这几次数值<strong>不足以支撑「块越大越容易抢占」的结论</strong>。这里我只报数字，不下结论。</p>
+<h3>3.4 一个便宜的止损：watermark</h3>
+<p>官方文档把 <code>watermark</code> 定义为「接纳等待队列或被抢占请求时保留的空闲块比例」，默认 0.0，也就是关闭。我在模拟里把它从 0 抬起来：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">watermark</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">峰值并发</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">抢占次数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">跑完 400 个请求（步）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.00</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.01</td><td style="border:1px solid #ddd;padding:8px;">156</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.02</td><td style="border:1px solid #ddd;padding:8px;">154</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.05</td><td style="border:1px solid #ddd;padding:8px;">152</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,265</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.10</td><td style="border:1px solid #ddd;padding:8px;">145</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,279</td></tr></tbody></table>
+<p>代价是一个并发位，换来 4 次抢占归零，总耗时没变。这是这轮我唯一会主动推荐先试的参数——前提是你在日志里确实看到了抢占。</p>
+<h3>3.5 前缀缓存只认整块</h3>
+<p>官方前缀缓存文档里有一句很关键的话：<strong>We only cache full blocks.</strong>（只缓存完整的块。）所以共享前缀的有效缓存长度等于 <code>floor(前缀长度 / 块大小) × 块大小</code>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">共享前缀（token）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块 = 8</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块 = 16</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块 = 32</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块 = 64</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">777</td><td style="border:1px solid #ddd;padding:8px;">776（丢 0.13%）</td><td style="border:1px solid #ddd;padding:8px;">768（丢 1.16%）</td><td style="border:1px solid #ddd;padding:8px;">768（丢 1.16%）</td><td style="border:1px solid #ddd;padding:8px;">768（丢 1.16%）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">1,000（丢 0%）</td><td style="border:1px solid #ddd;padding:8px;">992（丢 0.80%）</td><td style="border:1px solid #ddd;padding:8px;">992（丢 0.80%）</td><td style="border:1px solid #ddd;padding:8px;">960（丢 4.00%）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1,500</td><td style="border:1px solid #ddd;padding:8px;">1,496（丢 0.27%）</td><td style="border:1px solid #ddd;padding:8px;">1,488（丢 0.80%）</td><td style="border:1px solid #ddd;padding:8px;">1,472（丢 1.87%）</td><td style="border:1px solid #ddd;padding:8px;">1,472（丢 1.87%）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">3,000</td><td style="border:1px solid #ddd;padding:8px;">3,000（丢 0%）</td><td style="border:1px solid #ddd;padding:8px;">2,992（丢 0.27%）</td><td style="border:1px solid #ddd;padding:8px;">2,976（丢 0.80%）</td><td style="border:1px solid #ddd;padding:8px;">2,944（丢 1.87%）</td></tr></tbody></table>
+<p>实践含义：system prompt 在 1,000 token 量级时，用默认块大小 16，每次命中最多丢 8 个 token 的重算，基本可以忽略；但如果为了别的原因把块调到 64，同样的前缀要丢 40 个 token（4.00%）。</p>
+<p>同一份文档里还有两条容易被漏掉的信息：</p>
+<ul><li>每个块的哈希由「父块哈希 + 本块 token + 额外哈希（LoRA ID、多模态输入哈希、cache salt）」共同决定。<strong>自 v0.11 起默认算法是 sha256</strong>，可用 <code>--prefix-caching-hash-algo</code> 切到 <code>sha256_cbor</code> / <code>xxhash</code> / <code>xxhash_cbor</code>。官方同时明确提示：使用非密码学安全的哈希会提高碰撞风险，<strong>在多租户环境下可能造成私有信息泄露</strong>。</li><li>多租户共用一个实例时，官方建议给请求加 <code>cache_salt</code>，把它注入第一个块的哈希，让缓存只在同一个 salt 的请求之间复用，从而挡住通过时延差异推断缓存内容的 timing-based attack。</li></ul>
+<h3>3.6 可复现脚本</h3>
+<p>下面就是我这轮实际跑的脚本，纯标准库，复制粘贴即可复现上面所有数字。</p>
+<pre><code>"""vLLM 风格 KV cache 块分配器模拟（纯标准库，可复现）
+对比：连续预分配（pre-allocate max_model_len） vs 分块按需分配（paged）
+"""
+
+import random
+
+B = 16                 # 块大小（token），vLLM 默认
+POOL_TOKENS = 100_000  # KV cache 总容量（token 槽位）
+MAX_LEN = 4096         # max_model_len
+N_REQ = 400            # 请求总数
+SEED = 20261013
+
+
+def gen_workload(n=N_REQ, seed=SEED):
+    rng = random.Random(seed)
+    reqs = []
+    for i in range(n):
+        # 提示长度 60~1800 长尾；输出长度 20~900 长尾
+        p = min(int(rng.lognormvariate(6.0, 0.7)), 1800)
+        o = min(int(rng.lognormvariate(4.8, 0.9)), 900)
+        reqs.append((max(p, 8), max(o, 8)))
+    return reqs
+
+
+# ---------------- 分配器 1：连续预分配 ----------------
+class ContiguousPool:
+    def __init__(self, total):
+        self.free = [(0, total)]   # 空闲区间列表（起始, 长度）
+
+    def alloc(self, size):
+        for i, (start, length) in enumerate(self.free):
+            if length >= size:
+                if length == size:
+                    self.free.pop(i)
+                else:
+                    self.free[i] = (start + size, length - size)
+                return start
+        return None
+
+    def release(self, start, size):
+        self.free.append((start, size))
+        self.free.sort()
+        merged = []
+        for s, l in self.free:
+            if merged and merged[-1][0] + merged[-1][1] == s:
+                merged[-1] = (merged[-1][0], merged[-1][1] + l)
+            else:
+                merged.append((s, l))
+        self.free = merged
+
+    def used(self):
+        return sum(l for _, l in self.free)
+
+
+# ---------------- 分配器 2：分块按需 ----------------
+class PagedPool:
+    def __init__(self, n_blocks):
+        self.n = n_blocks
+        self.free = n_blocks
+
+    def take(self, k):
+        if self.free >= k:
+            self.free -= k
+            return True
+        return False
+
+    def give(self, k):
+        self.free += k
+
+
+def run_contiguous(reqs, total=POOL_TOKENS, max_len=MAX_LEN):
+    pool = ContiguousPool(total)
+    waiting = list(reqs)
+    running = []          # (start, prompt, out, generated, wait)
+    done = 0
+    peak = 0
+    waits = []
+    step = 0
+    while (waiting or running) and step < 200000:
+        step += 1
+        # 尝试接纳（每步最多接纳一个新请求）
+        if waiting:
+            p, o = waiting[0]
+            st = pool.alloc(max_len)
+            if st is not None:
+                waiting.pop(0)
+                running.append([st, p, o, 0, 0])
+        # 推进
+        for r in running:
+            r[3] += 1
+            if r[3] >= r[2]:
+                pool.release(r[0], max_len)
+                waits.append(r[4])
+                r[3] = -1
+        running = [r for r in running if r[3] != -1]
+        done = len(waits)
+        for r in running:
+            r[4] += 1
+        peak = max(peak, len(running))
+        if not waiting and not running:
+            break
+    return {
+        "allocator": "contiguous",
+        "steps": step,
+        "done": done,
+        "peak_concurrency": peak,
+        "avg_wait_steps": round(sum(waits) / max(len(waits), 1), 1),
+        "utilization": round(100 * (1 - pool.used() / total), 1),
+    }
+
+
+def run_paged(reqs, total=POOL_TOKENS, b=B, watermark=0.0):
+    n_blocks = total // b
+    pool = PagedPool(n_blocks)
+    reserve = int(watermark * n_blocks)
+    waiting = [[p, o, 0] for p, o in reqs]
+    running = []          # [prompt, out, stored, blocks, wait]
+    preempt_cnt = 0
+    peak = 0
+    peak_used = 0
+    waits = []
+    internal_waste = 0
+    step = 0
+    while (waiting or running) and step < 200000:
+        step += 1
+        # 接纳：prefill 需要 ceil(prompt/b) 个块
+        if waiting:
+            p = waiting[0][0]
+            nb = -(-p // b)
+            if pool.free - nb >= reserve and pool.take(nb):
+                r = waiting.pop(0)
+                running.append([r[0], r[1], r[0], nb, r[2]])
+        # decode 一步
+        for r in running:
+            r[2] += 1
+            if r[2] % b == 1 and r[2] > r[0]:
+                if pool.take(1):
+                    r[3] += 1
+                else:
+                    # 无可用块 -> 抢占（v1 默认 RECOMPUTE：释放全部块后重排队）
+                    pool.give(r[3])
+                    preempt_cnt += 1
+                    waiting.insert(0, [r[0], r[1], r[4] + 1])
+                    r[2] = -1
+        running = [r for r in running if r[2] != -1]
+        # 完成
+        for r in running:
+            if r[2] - r[0] >= r[1]:
+                internal_waste += (b - r[2] % b) % b
+                pool.give(r[3])
+                waits.append(r[4])
+                r[2] = -2
+        running = [r for r in running if r[2] != -2]
+        for r in running:
+            r[4] += 1
+        peak = max(peak, len(running))
+        peak_used = max(peak_used, n_blocks - pool.free)
+        if not waiting and not running:
+            break
+    total_stored = sum(p + o for p, o in reqs[:len(waits)])
+    return {
+        "allocator": "paged-b%d" % b,
+        "steps": step,
+        "done": len(waits),
+        "peak_concurrency": peak,
+        "peak_blocks_used": peak_used,
+        "total_blocks": n_blocks,
+        "preemptions": preempt_cnt,
+        "avg_wait_steps": round(sum(waits) / max(len(waits), 1), 1),
+        "internal_waste_tokens": internal_waste,
+        "internal_waste_pct": round(100 * internal_waste / max(total_stored, 1), 2),
+    }
+
+
+def block_sweep(reqs):
+    rows = []
+    for b in (8, 16, 32, 64, 128):
+        out = run_paged(reqs, POOL_TOKENS, b)
+        rows.append((b, out["peak_concurrency"], out["preemptions"],
+                     out["internal_waste_pct"], out["done"], out["steps"]))
+    return rows
+
+
+def prefix_granularity(prefix_len, b):
+    full = prefix_len // b
+    cached = full * b
+    return cached, prefix_len - cached, round(100 * (prefix_len - cached) / prefix_len, 2)
+
+
+if __name__ == "__main__":
+    reqs = gen_workload()
+    tot = sum(p + o for p, o in reqs)
+    print("workload: n=%d  total_tokens=%d  avg_len=%.1f  max_len=%d"
+          % (len(reqs), tot, tot / len(reqs), max(p + o for p, o in reqs)))
+    print()
+    print("A. 连续预分配:", run_contiguous(reqs))
+    print()
+    print("B. 分块按需  :", run_paged(reqs))
+    print()
+    print("C. 块大小扫描 (b, peak_concurrency, preemptions, waste_pct, done, steps)")
+    for r in block_sweep(reqs):
+        print("   ", r)
+    print()
+    print("D2. watermark 扫描 (wm, peak_concurrency, preemptions, done, steps)")
+    for wm in (0.0, 0.01, 0.02, 0.05, 0.10):
+        o = run_paged(reqs, POOL_TOKENS, 16, wm)
+        print("    wm=%.2f peak=%d preempt=%d done=%d steps=%d"
+              % (wm, o["peak_concurrency"], o["preemptions"], o["done"], o["steps"]))
+    print()
+    print("D. 前缀缓存粒度损失 (prefix_len, b) -> (cached, lost, lost_pct)")
+    for p in (777, 1000, 1500, 3000):
+        for b in (8, 16, 32, 64):
+            c, l, pct = prefix_granularity(p, b)
+            print("    prefix=%4d b=%2d -> cached=%4d lost=%3d lost_pct=%.2f%%" % (p, b, c, l, pct))</code></pre>
+<h2>四、四个真实报错与根因</h2>
+<h3>报错一：`ValueError: max_num_batched_tokens (X) is smaller than max_model_len (Y)`</h3>
+<p><strong>出处</strong>：v0.31.0 源码 <code>vllm/config/scheduler.py</code> 的 <code>SchedulerConfig.verify_max_model_len()</code>。</p>
+<p><strong>触发条件</strong>：关闭 chunked prefill，且 <code>max_num_batched_tokens < max_model_len</code>。</p>
+<p><strong>原文</strong>（拼接后）：<code>max_num_batched_tokens (X) is smaller than max_model_len (Y). This effectively limits the maximum sequence length to max_num_batched_tokens and makes vLLM reject longer sequences. Please increase max_num_batched_tokens or decrease max_model_len.</code></p>
+<p><strong>为什么你会撞上</strong>：V1 里 chunked prefill 默认开启，这条平时碰不到；但只要你显式关掉它（比如为了复现旧的调度行为），就必须保证 <code>max_num_batched_tokens >= max_model_len</code>。官方 optimization 文档也警告过：chunked prefill 关闭时若 <code>max_num_batched_tokens < max_model_len</code>，vLLM 可能在<strong>服务启动阶段直接崩</strong>。同一个函数里还有一条相邻检查：<code>max_num_batched_tokens</code> 不能小于 <code>max_num_seqs</code>。</p>
+<h3>报错二：`ValueError: To serve at least one request with the model's max seq len (...)`</h3>
+<p><strong>出处</strong>：v0.31.0 源码 <code>vllm/v1/core/kv_cache_utils.py</code>。</p>
+<p><strong>原文大意</strong>：<code>To serve at least one request with the model's max seq len (N), (X GiB KV cache is needed, which is larger than the available KV cache memory (Y GiB). Based on the available memory, the estimated maximum model length is M. Try increasing gpu_memory_utilization (which also controls CPU memory on the CPU backend) or decreasing max_model_len when initializing the engine.</code></p>
+<p><strong>含义</strong>：连一条请求按 <code>max_model_len</code> 算都放不下，池子根本不够开张。</p>
+<p><strong>怎么改</strong>：报错里已经给了 <code>estimated_max_len</code>，照着把 <code>max_model_len</code> 降下来，或提高 <code>gpu_memory_utilization</code>（默认 0.92）。报错末尾直接指向官方的 conserving memory 文档。</p>
+<h3>报错三：`Sequence group N is preempted by PreemptionMode.RECOMPUTE mode because there is not enough KV cache space`</h3>
+<p><strong>出处</strong>：官方 optimization 文档里给出的真实 warning。完整一行形如：<code>WARNING 05-09 00:49:33 scheduler.py:1057 Sequence group 0 is preempted by PreemptionMode.RECOMPUTE mode because there is not enough KV cache space. This can affect the end-to-end performance. Increase gpu_memory_utilization or tensor_parallel_size to provide more KV cache memory. total_cumulative_preemption_cnt=1</code></p>
+<p><strong>语义</strong>：块不够用了，调度器挑一个请求抢占，等有空间再重算（V1 默认 RECOMPUTE 而不是 SWAP，因为 V1 架构下重算开销更低）。</p>
+<p><strong>怎么改</strong>：官方列了四条——加大 <code>gpu_memory_utilization</code>、减小 <code>max_num_seqs</code> 或 <code>max_num_batched_tokens</code>、加大 <code>tensor_parallel_size</code>、加大 <code>pipeline_parallel_size</code>。我的模拟给了第五条更便宜的选项：先把 <code>watermark</code> 抬到 0.01（见 3.4）。</p>
+<p><strong>怎么观测</strong>：官方提示可以设 <code>disable_log_stats=False</code> 记录累计抢占数，也可以看 vLLM 暴露的 Prometheus 指标。</p>
+<h3>报错四：`RuntimeError: Cannot re-initialize CUDA in forked subprocess`</h3>
+<p><strong>出处</strong>：官方 conserving memory 文档的 Warning。</p>
+<p><strong>根因</strong>：在初始化 vLLM 之前就调用了 CUDA 相关函数（文档举的例子是 <code>torch.accelerator.set_device_index</code>），多进程 fork 时 CUDA 无法重新初始化。</p>
+<p><strong>怎么改</strong>：用 <code>CUDA_VISIBLE_DEVICES</code> 环境变量控制可见设备，不要在初始化 vLLM 之前动 CUDA。</p>
+<h2>五、调参清单：按症状找参数</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">症状</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">先看什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">可以调什么</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">启动就报「放不下一条 max_model_len」</td><td style="border:1px solid #ddd;padding:8px;">报错二里的 <code>estimated_max_len</code></td><td style="border:1px solid #ddd;padding:8px;"><code>max_model_len</code> 调小 / <code>gpu_memory_utilization</code> 调大</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">日志里出现抢占</td><td style="border:1px solid #ddd;padding:8px;">累计抢占计数（<code>disable_log_stats=False</code>）</td><td style="border:1px solid #ddd;padding:8px;"><code>watermark</code> 0.01 → <code>max_num_seqs</code> 调小 → TP / PP 调大</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">TTFT 高、长 prompt 拖慢别人</td><td style="border:1px solid #ddd;padding:8px;"><code>max_num_batched_tokens</code></td><td style="border:1px solid #ddd;padding:8px;">官方建议小模型配大卡时大于 8192；禁用 chunked prefill 时该值必须不小于 max_model_len</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">共享前缀没省到</td><td style="border:1px solid #ddd;padding:8px;">前缀长度除以块大小</td><td style="border:1px solid #ddd;padding:8px;">保持默认块 16；确认 <code>enable_prefix_caching=True</code>（v0.31.0 默认已是 True）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">反复重启很慢</td><td style="border:1px solid #ddd;padding:8px;">编译缓存</td><td style="border:1px solid #ddd;padding:8px;">复用 <code>VLLM_CACHE_ROOT</code>（默认 <code>~/.cache/vllm</code>），或用 <code>--kv-cache-memory</code> 跳过显存 profiling；<code>--enforce-eager</code> 启动最快但牺牲稳态 decode 性能</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">优化等级</td><td style="border:1px solid #ddd;padding:8px;"><code>-O0</code> 到 <code>-O3</code></td><td style="border:1px solid #ddd;padding:8px;">官方表格：默认 <code>-O2</code>，<code>-O3</code> 当前等同 <code>-O2</code>，<code>-O0</code> 启动最快、性能最低</td></tr></tbody></table>
+<h2>六、这次没覆盖的边界</h2>
+<p>不写清楚范围的文章容易误导人，这里是我明确没做的部分：</p>
+<ul><li>我没有在 GPU 上跑真实 vLLM 服务。第三节全部是分配器行为的模拟，不含真实 kernel、真实调度与真实显存占用。</li><li>没覆盖 Mamba / 混合 KV cache（官方另有 hybrid KV cache manager 设计文档）、KV offloading，以及 prefill 与 decode 分离式部署。</li><li>没覆盖多卡。TP / PP 只按官方文档口径列了方向，没有实测同步开销——文档自己也提醒 TP 过大会带来过多同步开销、PP 会带来时延损失。</li><li>块大小对真实 kernel 性能的影响（访存合并、warp 分配）不在本文范围，那属于 kernel 层优化，官方 PagedAttention 文档里也只给了高层说明。</li></ul>
+<h2>常见问题</h2>
+<p><strong>Q: 块大小要不要改？</strong></p>
+<p>A: 默认 16 就别动。我的数据里 8 只把碎片从 1.02% 降到 0.50%，换来更长的块表和更多元数据；64 以上碎片率直接跳到 4.58%。</p>
+<p><strong>Q: 前缀缓存是默认开的吗？</strong></p>
+<p>A: 在 v0.31.0 里是。<code>CacheConfig.enable_prefix_caching</code> 默认 <code>True</code>。更早的版本需要显式 <code>--enable-prefix-caching</code>，具体以你所用版本的配置类为准。</p>
+<p><strong>Q: 为什么我的并发上不去？</strong></p>
+<p>A: 先看启动日志那行 <code>GPU KV cache size: N tokens, Maximum concurrency for M tokens per request: X.XXx</code>——那是按 <code>max_model_len</code> 算的理论并发。如果你的真实请求远短于 <code>max_model_len</code>，实际可承载的并发会明显高于它，这正是分块分配在起作用。</p>
+<p><strong>Q: 抢占的代价有多大？</strong></p>
+<p>A: 我给不出通用数字，它取决于被抢占请求已经生成了多少 token。能确定的是语义：V1 默认 RECOMPUTE，被抢占的请求重新拿到块之后会重算，官方文档也明确说明这会损害端到端时延。</p>
+<h2>写在最后</h2>
+<p>如果你只想记住一句话：<strong>分块解决的是「按最长序列预留」这个浪费，前缀缓存解决的是「同一段前缀反复算」这个浪费</strong>，两者都是可以被量化的——我上面跑出来的 24 到 157 与 1.02% 就是这两件事的量化结果。</p>
+<p>延伸阅读，都是本站已经发过的实测向文章：</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
