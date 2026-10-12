@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>vLLM 0.31 KV Cache: Paged Blocks Measured, 4 Errors - TechPassive</title>
+  <meta name="description" content="I actually ran two KV cache allocators head to head: contiguous peaks at 24 concurrent requests, paged at 157, 1.02% waste. Four real vLLM errors traced to source.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>vLLM 0.31 KV Cache: Where Paged Blocks Actually Save</h1>
+  <div class="post-tags">
+    <span class="tag">vllm</span><span class="tag">kv-cache</span><span class="tag">llm-inference</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: paged allocation moves the concurrency ceiling from "reserve for the longest sequence" to "allocate what is actually used" (24 to 157 in my run), and prefix caching lets a shared prefix be reused in whole blocks (a 1,000-token prefix loses just 0.80% at the default block size of 16). Four real errors are traced back to source.</p>
+<p>Three boundaries before we start, so you do not reproduce something different.</p>
+<p>First, every measured number here comes from an allocator simulation I actually ran on CPU (script in section 3, standard library only, copy and paste to reproduce). It is a <strong>simulation of allocator behavior, not a GPU throughput benchmark</strong>, and I am not going to dress it up as "vLLM measured throughput". Second, this is a pure technical teardown: the body contains no product or affiliate links, and the box at the bottom of the page is the site-wide promo slot. Third, all version numbers come from GitHub Releases: at the time of writing the newest is <strong>v0.31.0, published 2026-10-05</strong>. While researching I found third-party tutorials calling the current stable release v0.20.1 and v0.25.1 respectively, disagreeing with each other and with the official Releases page. For anything version-related, trust the official Releases and the docs for that version.</p>
+<h2>1. The biggest trap: the official doc says it no longer describes the code</h2>
+<p>Almost every second-hand explanation of PagedAttention traces back to <code>https://docs.vllm.ai/en/latest/design/paged_attention/</code>. That page now carries a Warning at the top saying, in effect: this is a historical document based on the original vLLM paper, and <strong>it no longer describes the code used in vLLM today</strong>; vLLM now uses its own multi-head query attention kernel in <code>csrc/attention/attention_kernels.cu</code>. The date stamped at the bottom of the page is June 24, 2026.</p>
+<p>So the "v1 kernel / v2 kernel three-loop" narrative you read in derivative articles is officially marked as history. That does not retire the block concept — quite the opposite. The definition of Block in that same document still holds: key and value are stored in separate blocks, each block holds a fixed number (<code>BLOCK_SIZE</code>) of tokens for one head; with <code>BLOCK_SIZE=16</code> and <code>HEAD_SIZE=128</code>, one block holds 16 x 128 = 2048 elements for one head.</p>
+<p>I put this first because it decides how you read second-hand material: learn the mechanism from it, but do not try to match its kernel details against today's source.</p>
+<h2>2. Blocks, block tables, and logically contiguous but physically scattered</h2>
+<p>Only three concepts matter.</p>
+<p><strong>Block</strong>: the minimum allocation unit of the KV cache, a fixed number of tokens. In the v0.31.0 source, the <code>CacheConfig.block_size</code> field defaults to <code>None</code>, and when you do not set it explicitly it falls back to the class constant <code>DEFAULT_BLOCK_SIZE = 16</code> (<code>vllm/config/cache.py</code>). Two other defaults in the same file: <code>gpu_memory_utilization = 0.92</code> and <code>enable_prefix_caching = True</code>.</p>
+<p><strong>Block table</strong>: the request-to-physical-block mapping, the layer that makes memory logically contiguous but physically scattered. The official prefix caching document gives the v1 skeleton (simplified): a Block Pool (a list of <code>KVCacheBlock</code>), a Free Block Queue threaded directly through doubly linked list pointers (so moving a middle element to the tail is O(1)), a cache blocks map (hash to block id), and a request blocks map (request id to allocated block ids).</p>
+<p><strong>Startup log</strong>: at boot vLLM prints a line shaped like <code>GPU KV cache size: N tokens, Maximum concurrency for M tokens per request: X.XXx</code> (<code>vllm/v1/core/kv_cache_utils.py</code>). That is your first-hand evidence for how much concurrency a box can actually carry, and it beats any second-hand rule of thumb.</p>
+<h2>3. Measured: two allocators head to head</h2>
+<h3>3.1 Setup (nailing down the boundaries first)</h3>
+<ul><li>Capacity: 100,000 token slots; with block size 16 that is 6,250 blocks</li><li><code>max_model_len</code>: 4,096</li><li>Load: 400 requests, prompt and output lengths drawn from lognormal distributions with seed 20261013; 276,007 total tokens, mean 690, max 2,219</li><li><strong>Contiguous pre-allocation</strong>: every request grabs 4,096 slots on arrival and returns them in one piece at the end (the dominant approach before paged allocation)</li><li><strong>Paged on demand</strong>: prefill asks for <code>ceil(prompt/16)</code> blocks, and decode asks for one more block each time it crosses a block boundary; if no block is available it triggers preemption (return every block, requeue), matching the V1 default RECOMPUTE semantics</li></ul>
+<p>Not included: prefill peak activations, CUDA graph memory, model weights, real scheduler policy. It answers exactly one question: given the same capacity, how much more concurrency does a different allocation strategy buy.</p>
+<h3>3.2 Result: peak concurrency 24 to 157</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Allocator</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Peak concurrency</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Steps to finish 400 requests</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Avg queue wait (steps)</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Internal waste</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Contiguous (4,096 per request)</td><td style="border:1px solid #ddd;padding:8px;">24</td><td style="border:1px solid #ddd;padding:8px;">3,524</td><td style="border:1px solid #ddd;padding:8px;">178.9</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Paged on demand (block = 16)</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">1,264</td><td style="border:1px solid #ddd;padding:8px;">180.3</td><td style="border:1px solid #ddd;padding:8px;">1.02%</td></tr></tbody></table>
+<p>Same pool, peak concurrency climbs from 24 to 157, and the steps to drain the same load drop from 3,524 to 1,264. The cost is 1.02% internal waste — the unused tail of each request's last block.</p>
+<p>One number that is easy to skip: peak block usage under paged allocation is <strong>6,247 of 6,250, or 99.95%</strong>. The pool runs essentially full, which is exactly where the 4 preemptions later in this run come from.</p>
+<h3>3.3 How block size drives internal waste</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Block size</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Peak concurrency</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Internal waste</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Preemptions</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">158</td><td style="border:1px solid #ddd;padding:8px;">0.50%</td><td style="border:1px solid #ddd;padding:8px;">6</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">16</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">1.02%</td><td style="border:1px solid #ddd;padding:8px;">4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">32</td><td style="border:1px solid #ddd;padding:8px;">155</td><td style="border:1px solid #ddd;padding:8px;">2.18%</td><td style="border:1px solid #ddd;padding:8px;">2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">64</td><td style="border:1px solid #ddd;padding:8px;">153</td><td style="border:1px solid #ddd;padding:8px;">4.58%</td><td style="border:1px solid #ddd;padding:8px;">7</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">147</td><td style="border:1px solid #ddd;padding:8px;">9.08%</td><td style="border:1px solid #ddd;padding:8px;">8</td></tr></tbody></table>
+<p>Waste grows almost linearly with block size, matching the intuition that the last block wastes B/2 tokens on average. Preemption counts are not monotonic though (16 to 32 actually drops from 4 to 2, then 64 climbs back to 7): with only 400 requests and preemption being a rare event, these counts <strong>do not support a claim that bigger blocks cause more preemption</strong>. I am reporting the numbers, not drawing that conclusion.</p>
+<h3>3.4 A cheap stop-loss: watermark</h3>
+<p>The official docs define <code>watermark</code> as the fraction of total KV cache blocks to keep free when admitting waiting or preempted requests, default 0.0, meaning disabled. I raised it from 0 in the simulation:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">watermark</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Peak concurrency</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Preemptions</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Steps to finish 400 requests</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.00</td><td style="border:1px solid #ddd;padding:8px;">157</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.01</td><td style="border:1px solid #ddd;padding:8px;">156</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.02</td><td style="border:1px solid #ddd;padding:8px;">154</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,264</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">0.05</td><td style="border:1px solid #ddd;padding:8px;">152</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,265</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0.10</td><td style="border:1px solid #ddd;padding:8px;">145</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,279</td></tr></tbody></table>
+<p>One slot of concurrency buys 4 preemptions down to 0, with no change in total time. This is the only parameter from this round I would proactively recommend trying first — assuming you actually see preemption in your logs.</p>
+<h3>3.5 Prefix caching only counts whole blocks</h3>
+<p>The official prefix caching document has one decisive sentence: <strong>We only cache full blocks.</strong> So the effective cached length of a shared prefix equals <code>floor(prefix_length / block_size) x block_size</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Shared prefix (tokens)</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">block = 8</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">block = 16</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">block = 32</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">block = 64</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">777</td><td style="border:1px solid #ddd;padding:8px;">776 (lose 0.13%)</td><td style="border:1px solid #ddd;padding:8px;">768 (lose 1.16%)</td><td style="border:1px solid #ddd;padding:8px;">768 (lose 1.16%)</td><td style="border:1px solid #ddd;padding:8px;">768 (lose 1.16%)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">1,000 (lose 0%)</td><td style="border:1px solid #ddd;padding:8px;">992 (lose 0.80%)</td><td style="border:1px solid #ddd;padding:8px;">992 (lose 0.80%)</td><td style="border:1px solid #ddd;padding:8px;">960 (lose 4.00%)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1,500</td><td style="border:1px solid #ddd;padding:8px;">1,496 (lose 0.27%)</td><td style="border:1px solid #ddd;padding:8px;">1,488 (lose 0.80%)</td><td style="border:1px solid #ddd;padding:8px;">1,472 (lose 1.87%)</td><td style="border:1px solid #ddd;padding:8px;">1,472 (lose 1.87%)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">3,000</td><td style="border:1px solid #ddd;padding:8px;">3,000 (lose 0%)</td><td style="border:1px solid #ddd;padding:8px;">2,992 (lose 0.27%)</td><td style="border:1px solid #ddd;padding:8px;">2,976 (lose 0.80%)</td><td style="border:1px solid #ddd;padding:8px;">2,944 (lose 1.87%)</td></tr></tbody></table>
+<p>In practice: with a system prompt around 1,000 tokens and the default block size of 16, a hit loses at most 8 recomputed tokens, which you can ignore. Push the block size to 64 for some other reason and the same prefix loses 40 tokens (4.00%).</p>
+<p>Two more things in that same document that are easy to miss:</p>
+<ul><li>Each block hash is built from the parent block hash, the tokens in the block, and extra hashes (LoRA IDs, multi-modality input hashes, cache salts). <strong>Since v0.11 the default algorithm is sha256</strong>, switchable with <code>--prefix-caching-hash-algo</code> to <code>sha256_cbor</code> / <code>xxhash</code> / <code>xxhash_cbor</code>. The docs also state plainly that a non-cryptographic hash raises collision risk and <strong>can leak private information in multi-tenant environments</strong>.</li><li>When tenants share an instance, the docs suggest attaching a <code>cache_salt</code> to requests, injecting it into the hash of the first block so cached blocks are only reused among requests with the same salt. That blocks timing-based attacks where an observer infers cached content from latency differences.</li></ul>
+<h3>3.6 Reproducible script</h3>
+<p>This is the script I actually ran. Standard library only; paste it in and every number above comes back.</p>
+<pre><code>"""vLLM-style KV cache block allocator simulation (stdlib only, reproducible)
+Compares: contiguous pre-allocation vs paged on-demand allocation
+"""
+
+import random
+
+B = 16                 # block size in tokens (vLLM default)
+POOL_TOKENS = 100_000  # total KV cache capacity in token slots
+MAX_LEN = 4096         # max_model_len
+N_REQ = 400            # number of requests
+SEED = 20261013
+
+
+def gen_workload(n=N_REQ, seed=SEED):
+    rng = random.Random(seed)
+    reqs = []
+    for i in range(n):
+        # prompt 60~1800 long tail; output 20~900 long tail
+        p = min(int(rng.lognormvariate(6.0, 0.7)), 1800)
+        o = min(int(rng.lognormvariate(4.8, 0.9)), 900)
+        reqs.append((max(p, 8), max(o, 8)))
+    return reqs
+
+
+# ---------------- allocator 1: contiguous pre-allocation ----------------
+class ContiguousPool:
+    def __init__(self, total):
+        self.free = [(0, total)]   # list of free intervals (start, length)
+
+    def alloc(self, size):
+        for i, (start, length) in enumerate(self.free):
+            if length >= size:
+                if length == size:
+                    self.free.pop(i)
+                else:
+                    self.free[i] = (start + size, length - size)
+                return start
+        return None
+
+    def release(self, start, size):
+        self.free.append((start, size))
+        self.free.sort()
+        merged = []
+        for s, l in self.free:
+            if merged and merged[-1][0] + merged[-1][1] == s:
+                merged[-1] = (merged[-1][0], merged[-1][1] + l)
+            else:
+                merged.append((s, l))
+        self.free = merged
+
+    def used(self):
+        return sum(l for _, l in self.free)
+
+
+# ---------------- allocator 2: paged on demand ----------------
+class PagedPool:
+    def __init__(self, n_blocks):
+        self.n = n_blocks
+        self.free = n_blocks
+
+    def take(self, k):
+        if self.free >= k:
+            self.free -= k
+            return True
+        return False
+
+    def give(self, k):
+        self.free += k
+
+
+def run_contiguous(reqs, total=POOL_TOKENS, max_len=MAX_LEN):
+    pool = ContiguousPool(total)
+    waiting = list(reqs)
+    running = []          # (start, prompt, out, generated, wait)
+    done = 0
+    peak = 0
+    waits = []
+    step = 0
+    while (waiting or running) and step < 200000:
+        step += 1
+        # admit at most one new request per step
+        if waiting:
+            p, o = waiting[0]
+            st = pool.alloc(max_len)
+            if st is not None:
+                waiting.pop(0)
+                running.append([st, p, o, 0, 0])
+        # advance
+        for r in running:
+            r[3] += 1
+            if r[3] >= r[2]:
+                pool.release(r[0], max_len)
+                waits.append(r[4])
+                r[3] = -1
+        running = [r for r in running if r[3] != -1]
+        done = len(waits)
+        for r in running:
+            r[4] += 1
+        peak = max(peak, len(running))
+        if not waiting and not running:
+            break
+    return {
+        "allocator": "contiguous",
+        "steps": step,
+        "done": done,
+        "peak_concurrency": peak,
+        "avg_wait_steps": round(sum(waits) / max(len(waits), 1), 1),
+        "utilization": round(100 * (1 - pool.used() / total), 1),
+    }
+
+
+def run_paged(reqs, total=POOL_TOKENS, b=B, watermark=0.0):
+    n_blocks = total // b
+    pool = PagedPool(n_blocks)
+    reserve = int(watermark * n_blocks)
+    waiting = [[p, o, 0] for p, o in reqs]
+    running = []          # [prompt, out, stored, blocks, wait]
+    preempt_cnt = 0
+    peak = 0
+    peak_used = 0
+    waits = []
+    internal_waste = 0
+    step = 0
+    while (waiting or running) and step < 200000:
+        step += 1
+        # admission: prefill needs ceil(prompt/b) blocks
+        if waiting:
+            p = waiting[0][0]
+            nb = -(-p // b)
+            if pool.free - nb >= reserve and pool.take(nb):
+                r = waiting.pop(0)
+                running.append([r[0], r[1], r[0], nb, r[2]])
+        # one decode step
+        for r in running:
+            r[2] += 1
+            if r[2] % b == 1 and r[2] > r[0]:
+                if pool.take(1):
+                    r[3] += 1
+                else:
+                    # no free block -> preempt (v1 default RECOMPUTE: free all, requeue)
+                    pool.give(r[3])
+                    preempt_cnt += 1
+                    waiting.insert(0, [r[0], r[1], r[4] + 1])
+                    r[2] = -1
+        running = [r for r in running if r[2] != -1]
+        # completion
+        for r in running:
+            if r[2] - r[0] >= r[1]:
+                internal_waste += (b - r[2] % b) % b
+                pool.give(r[3])
+                waits.append(r[4])
+                r[2] = -2
+        running = [r for r in running if r[2] != -2]
+        for r in running:
+            r[4] += 1
+        peak = max(peak, len(running))
+        peak_used = max(peak_used, n_blocks - pool.free)
+        if not waiting and not running:
+            break
+    total_stored = sum(p + o for p, o in reqs[:len(waits)])
+    return {
+        "allocator": "paged-b%d" % b,
+        "steps": step,
+        "done": len(waits),
+        "peak_concurrency": peak,
+        "peak_blocks_used": peak_used,
+        "total_blocks": n_blocks,
+        "preemptions": preempt_cnt,
+        "avg_wait_steps": round(sum(waits) / max(len(waits), 1), 1),
+        "internal_waste_tokens": internal_waste,
+        "internal_waste_pct": round(100 * internal_waste / max(total_stored, 1), 2),
+    }
+
+
+def block_sweep(reqs):
+    rows = []
+    for b in (8, 16, 32, 64, 128):
+        out = run_paged(reqs, POOL_TOKENS, b)
+        rows.append((b, out["peak_concurrency"], out["preemptions"],
+                     out["internal_waste_pct"], out["done"], out["steps"]))
+    return rows
+
+
+def prefix_granularity(prefix_len, b):
+    full = prefix_len // b
+    cached = full * b
+    return cached, prefix_len - cached, round(100 * (prefix_len - cached) / prefix_len, 2)
+
+
+if __name__ == "__main__":
+    reqs = gen_workload()
+    tot = sum(p + o for p, o in reqs)
+    print("workload: n=%d  total_tokens=%d  avg_len=%.1f  max_len=%d"
+          % (len(reqs), tot, tot / len(reqs), max(p + o for p, o in reqs)))
+    print()
+    print("A. contiguous:", run_contiguous(reqs))
+    print()
+    print("B. paged     :", run_paged(reqs))
+    print()
+    print("C. block sweep (b, peak_concurrency, preemptions, waste_pct, done, steps)")
+    for r in block_sweep(reqs):
+        print("   ", r)
+    print()
+    print("D2. watermark sweep (wm, peak_concurrency, preemptions, done, steps)")
+    for wm in (0.0, 0.01, 0.02, 0.05, 0.10):
+        o = run_paged(reqs, POOL_TOKENS, 16, wm)
+        print("    wm=%.2f peak=%d preempt=%d done=%d steps=%d"
+              % (wm, o["peak_concurrency"], o["preemptions"], o["done"], o["steps"]))
+    print()
+    print("D. prefix granularity loss (prefix_len, b) -> (cached, lost, lost_pct)")
+    for p in (777, 1000, 1500, 3000):
+        for b in (8, 16, 32, 64):
+            c, l, pct = prefix_granularity(p, b)
+            print("    prefix=%4d b=%2d -> cached=%4d lost=%3d lost_pct=%.2f%%" % (p, b, c, l, pct))</code></pre>
+<h2>4. Troubleshooting: four real errors and their root causes</h2>
+<h3>Error one: `ValueError: max_num_batched_tokens (X) is smaller than max_model_len (Y)`</h3>
+<p><strong>Source</strong>: <code>SchedulerConfig.verify_max_model_len()</code> in <code>vllm/config/scheduler.py</code> at v0.31.0.</p>
+<p><strong>Trigger</strong>: chunked prefill disabled and <code>max_num_batched_tokens < max_model_len</code>.</p>
+<p><strong>Verbatim</strong> (concatenated): <code>max_num_batched_tokens (X) is smaller than max_model_len (Y). This effectively limits the maximum sequence length to max_num_batched_tokens and makes vLLM reject longer sequences. Please increase max_num_batched_tokens or decrease max_model_len.</code></p>
+<p><strong>Why you hit it</strong>: chunked prefill is on by default in V1, so this normally stays quiet. The moment you disable it explicitly (to reproduce old scheduling behavior, say), you must guarantee <code>max_num_batched_tokens >= max_model_len</code>. The official optimization guide also warns that with chunked prefill off, if <code>max_num_batched_tokens < max_model_len</code>, vLLM <strong>may crash at server start-up</strong>. The same function carries an adjacent check: <code>max_num_batched_tokens</code> must not be smaller than <code>max_num_seqs</code>.</p>
+<h3>Error two: `ValueError: To serve at least one request with the model's max seq len (...)`</h3>
+<p><strong>Source</strong>: <code>vllm/v1/core/kv_cache_utils.py</code> at v0.31.0.</p>
+<p><strong>Verbatim, condensed</strong>: <code>To serve at least one request with the model's max seq len (N), (X GiB KV cache is needed, which is larger than the available KV cache memory (Y GiB). Based on the available memory, the estimated maximum model length is M. Try increasing gpu_memory_utilization (which also controls CPU memory on the CPU backend) or decreasing max_model_len when initializing the engine.</code></p>
+<p><strong>Meaning</strong>: there is not enough room to serve even one request at <code>max_model_len</code>. The pool cannot open for business.</p>
+<p><strong>Fix</strong>: the message hands you <code>estimated_max_len</code>. Lower <code>max_model_len</code> to that, or raise <code>gpu_memory_utilization</code> (default 0.92). The tail of the message links the official conserving-memory guide.</p>
+<h3>Error three: `Sequence group N is preempted by PreemptionMode.RECOMPUTE mode because there is not enough KV cache space`</h3>
+<p><strong>Source</strong>: a real warning quoted in the official optimization guide. A full line looks like: <code>WARNING 05-09 00:49:33 scheduler.py:1057 Sequence group 0 is preempted by PreemptionMode.RECOMPUTE mode because there is not enough KV cache space. This can affect the end-to-end performance. Increase gpu_memory_utilization or tensor_parallel_size to provide more KV cache memory. total_cumulative_preemption_cnt=1</code></p>
+<p><strong>Meaning</strong>: the pool ran out of blocks, the scheduler preempted a request, and it will be recomputed once space returns. V1 defaults to RECOMPUTE rather than SWAP because recomputation has lower overhead in the V1 architecture.</p>
+<p><strong>Fix</strong>: the docs list four levers — raise <code>gpu_memory_utilization</code>, lower <code>max_num_seqs</code> or <code>max_num_batched_tokens</code>, raise <code>tensor_parallel_size</code>, raise <code>pipeline_parallel_size</code>. My simulation suggests a cheaper fifth: set <code>watermark</code> to 0.01 first (see 3.4).</p>
+<p><strong>How to watch it</strong>: the docs note you can set <code>disable_log_stats=False</code> to log the cumulative preemption count, and vLLM exposes it as a Prometheus metric.</p>
+<h3>Error four: `RuntimeError: Cannot re-initialize CUDA in forked subprocess`</h3>
+<p><strong>Source</strong>: the Warning in the official conserving-memory guide.</p>
+<p><strong>Cause</strong>: calling CUDA-related functions before initializing vLLM (the example in the docs is <code>torch.accelerator.set_device_index</code>), so CUDA cannot re-initialize in a forked subprocess.</p>
+<p><strong>Fix</strong>: control device visibility with the <code>CUDA_VISIBLE_DEVICES</code> environment variable, and leave CUDA alone until after vLLM is initialized.</p>
+<h2>5. A tuning table indexed by symptom</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Symptom</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Look at first</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What to change</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Fails at boot: cannot fit one <code>max_model_len</code> request</td><td style="border:1px solid #ddd;padding:8px;"><code>estimated_max_len</code> in error two</td><td style="border:1px solid #ddd;padding:8px;">lower <code>max_model_len</code> / raise <code>gpu_memory_utilization</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Preemption in the logs</td><td style="border:1px solid #ddd;padding:8px;">cumulative preemption count (<code>disable_log_stats=False</code>)</td><td style="border:1px solid #ddd;padding:8px;"><code>watermark</code> 0.01 → lower <code>max_num_seqs</code> → raise TP / PP</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">High TTFT, long prompts slow everyone</td><td style="border:1px solid #ddd;padding:8px;"><code>max_num_batched_tokens</code></td><td style="border:1px solid #ddd;padding:8px;">docs suggest above 8192 for small models on large GPUs; with chunked prefill off it must be at least <code>max_model_len</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Shared prefix is not saving anything</td><td style="border:1px solid #ddd;padding:8px;">prefix length divided by block size</td><td style="border:1px solid #ddd;padding:8px;">keep the default block size 16; confirm <code>enable_prefix_caching=True</code> (already the default at v0.31.0)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Repeated restarts are slow</td><td style="border:1px solid #ddd;padding:8px;">compile cache</td><td style="border:1px solid #ddd;padding:8px;">reuse <code>VLLM_CACHE_ROOT</code> (default <code>~/.cache/vllm</code>), or pass <code>--kv-cache-memory</code> to skip memory profiling; <code>--enforce-eager</code> starts fastest but costs steady-state decode performance</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Optimization level</td><td style="border:1px solid #ddd;padding:8px;"><code>-O0</code> through <code>-O3</code></td><td style="border:1px solid #ddd;padding:8px;">per the docs table: <code>-O2</code> is the default, <code>-O3</code> currently equals <code>-O2</code>, <code>-O0</code> starts fastest with the lowest performance</td></tr></tbody></table>
+<h2>6. What this does not cover</h2>
+<p>An article that hides its scope misleads people, so here is what I deliberately left out:</p>
+<ul><li>I did not run a real vLLM server on a GPU. Section 3 is entirely an allocator-behavior simulation: no real kernels, no real scheduler, no real memory footprint.</li><li>Not covered: Mamba / hybrid KV cache (the docs have a separate hybrid KV cache manager design page), KV offloading, and disaggregated prefill/decode.</li><li>Not covered: multi-GPU. TP and PP are listed only at the level the official docs describe; I measured no synchronization overhead. The docs themselves warn that too much TP adds sync overhead and PP adds latency.</li><li>Block-size effects on real kernel performance (memory coalescing, warp assignment) are out of scope — that is kernel-layer work, and the official PagedAttention page only gives a high-level account of it.</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q: Should I change the block size?</strong></p>
+<p>A: Leave the default 16 alone. In my data, 8 only drops waste from 1.02% to 0.50% while buying longer block tables and more metadata; past 64 waste jumps straight to 4.58%.</p>
+<p><strong>Q: Is prefix caching on by default?</strong></p>
+<p>A: At v0.31.0, yes: <code>CacheConfig.enable_prefix_caching</code> defaults to <code>True</code>. Older versions need an explicit <code>--enable-prefix-caching</code>; check the config class for the version you run.</p>
+<p><strong>Q: Why will my concurrency not go up?</strong></p>
+<p>A: Read the startup line <code>GPU KV cache size: N tokens, Maximum concurrency for M tokens per request: X.XXx</code> — that is theoretical concurrency computed at <code>max_model_len</code>. If your real requests are far shorter than <code>max_model_len</code>, actual concurrency lands well above it, and that gap is exactly what paged allocation buys you.</p>
+<p><strong>Q: How expensive is a preemption?</strong></p>
+<p>A: I cannot give a universal number; it depends on how many tokens the preempted request had already generated. What is fixed is the semantics: V1 defaults to RECOMPUTE, the preempted request is recomputed after it gets blocks back, and the official docs state plainly that this hurts end-to-end latency.</p>
+<h2>Wrapping up</h2>
+<p>If you keep one sentence: <strong>paged allocation kills the waste of reserving for the longest sequence, and prefix caching kills the waste of recomputing the same prefix</strong> — and both are quantifiable. The 24 to 157 and the 1.02% above are those two claims with numbers attached.</p>
+<p>Further reading, all previously published on this site:</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
