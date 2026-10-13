@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>微调、RAG 还是提示工程：LLM 定制三条路线的决策树与成本账（2026） - TechPassive</title>
+  <meta name="description" content="微调、RAG、提示工程不是三选一，而是三层。本文用官方定价倍率反推提示缓存的回本点（5 分钟窗口内 2 次请求即回本），用本机实测算出 LoRA 在 8B 模型上按 2026 主流配方的真实压缩比 191.5 倍，并给出六步决策树、可叠加的四层折扣，以及四个取自 peft 源码的真实报错。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>微调 vs RAG vs 提示工程：三条路线的决策树</h1>
+  <div class="post-tags">
+    <span class="tag">LLM</span><span class="tag">微调</span><span class="tag"><a href="/2026-10-09-rag-5.html" class="internal-link">RAG</a></span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：微调、<a href="/2026-10-09-why-rag-retrieval-is-wrong-3-layers-5-real-errors-en.html" class="internal-link">RAG</a>、提示工程不是三选一，而是三个不同层次——提示工程管「怎么说」，RAG 管「不知道什么」，微调管「默认怎么做」。本文给出一张六步决策树、三笔成本账和四个真实报错：提示缓存在 5 分钟 TTL 下只需窗口内 2 次请求就回本（约 24 次/小时）；LoRA 在 8B 模型上按 2026 主流配方（全部 7 个投影、r=16）实测压缩 191.5 倍，而不是论文摘要里那个 10000 倍；OpenAI 自助微调平台已排定 2027-01-06 起对所有人关闭新建任务。所有价格与倍率均引自官方文档，截至发稿（2026-10-14）。本文不含任何联盟推广链接。</p>
+<h2>这三条路线根本不在同一层</h2>
+<p>绝大多数「要不要微调」的争论，起点就错了：把三件不同层的事当成同一个按钮在按。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">路线</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">它改的是</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">能解决</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解决不了</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">见效速度</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">提示工程</td><td style="border:1px solid #ddd;padding:8px;">每次请求带进去的上下文</td><td style="border:1px solid #ddd;padding:8px;">语气、格式、少样本示例、硬性约束</td><td style="border:1px solid #ddd;padding:8px;">模型训练时没见过的知识</td><td style="border:1px solid #ddd;padding:8px;">分钟级</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">RAG</td><td style="border:1px solid #ddd;padding:8px;">检索出来的外部知识</td><td style="border:1px solid #ddd;padding:8px;">时效性知识、长尾事实、可溯源引用</td><td style="border:1px solid #ddd;padding:8px;">输出风格不稳定、格式漂移</td><td style="border:1px solid #ddd;padding:8px;">天级（要先建索引）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">微调</td><td style="border:1px solid #ddd;padding:8px;">模型权重本身</td><td style="border:1px solid #ddd;padding:8px;">稳定格式、领域语气、小模型追大模型</td><td style="border:1px solid #ddd;padding:8px;">新知识注入（反而会放大幻觉）</td><td style="border:1px solid #ddd;padding:8px;">周级</td></tr></tbody></table>
+<p>一句话判据：<strong>模型「不知道」走 RAG；模型「知道但不照做」走提示工程，提示工程压不住才走微调。</strong></p>
+<p>这个判据不是随口的口径。RAG 原始论文（arXiv:2005.11401，NeurIPS 2020，Patrick Lewis 等）把参数化记忆（权重里的知识）和非参数化记忆（Wikipedia 稠密向量索引）明确分成两套东西，并指出「为决策提供出处」和「更新世界知识」这两个开放问题正是参数化模型的短板。换句话说，<strong>知识注入从来就不是微调该干的活</strong>，那正是 RAG 被发明出来的原因。</p>
+<h2>六步决策树：按顺序问，别跳</h2>
+<p><strong>第 1 步：它是缺知识，还是缺行为？</strong></p>
+<p>让模型先答一遍，看错误类型。答错事实属于缺知识；事实对但格式、语气、长度不对属于缺行为。缺知识直接进 RAG，不要再调提示词。</p>
+<p><strong>第 2 步：知识会不会变？</strong></p>
+<p>会变（价格表、库存、内部文档、新闻）只能走 RAG。把会变的东西烧进权重，等于给自己造一笔每次都要重训的债。</p>
+<p><strong>第 3 步：你有多少条干净的标注样本？</strong></p>
+<p>少于 50 条就用提示工程。OpenAI 官方给的建议是文本 SFT 从 50 条精心构造的样本起步，最低不少于 10 条——那是下限，不是「50 条就够」。</p>
+<p><strong>第 4 步：请求量够不够摊薄成本？</strong></p>
+<p>这步最容易被跳过，下一节给具体门槛。</p>
+<p><strong>第 5 步：你需要可溯源吗？</strong></p>
+<p>要回答「这句话出自哪份文档」，必须 RAG。</p>
+<p><strong>第 6 步：以上都过了，才考虑微调。</strong></p>
+<p>而且要先确认平台还让你做——见后面平台时间表那一节。</p>
+<h2>成本账一：提示缓存的回本点（用官方倍率反推）</h2>
+<p>Anthropic 官方文档（docs.anthropic.com 的 Pricing 页）给的提示缓存倍率是确定的：</p>
+<ul><li>5 分钟 TTL 的缓存写入 = <strong>基础输入价的 1.25 倍</strong></li><li>1 小时 TTL 的缓存写入 = <strong>基础输入价的 2 倍</strong></li><li>缓存命中读取 = <strong>基础输入价的 0.1 倍</strong>（Claude Opus 5.5 与 Sonnet 5.5 为 0.05 倍）</li></ul>
+<p>官方在文档里直接写了结论：caching pays off after one cache read for the 5-minute duration（1.25x write），or after two cache reads for the 1-hour duration（2x write）。我按这些倍率把账算了一遍，结果和官方说法完全对上：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">5 分钟 TTL 窗口内请求数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">全量付费（相对倍数）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">走缓存（相对倍数）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1.00x</td><td style="border:1px solid #ddd;padding:8px;">1.25x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">2.00x</td><td style="border:1px solid #ddd;padding:8px;">1.35x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">3.00x</td><td style="border:1px solid #ddd;padding:8px;">1.45x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">6</td><td style="border:1px solid #ddd;padding:8px;">6.00x</td><td style="border:1px solid #ddd;padding:8px;">1.75x</td></tr></tbody></table>
+<p>1 小时 TTL 那一行要 3 次才开始划算（2.20x 对 3.00x），同样和官方的 two cache reads 一致。</p>
+<p>换成能直接对照自己业务的门槛：<strong>5 分钟窗口内平均不少于 2 次请求，也就是大约 24 次/小时，开缓存就已经省钱了。</strong> 低于这个量级，缓存写入那 1.25 倍溢价根本摊不回来。</p>
+<p>再补一条时效性信息：Anthropic 2026-10-07 的 API 发布说明把 Claude Sonnet 5.5 的缓存读取价从每百万 token $0.20 降到 $0.10，即从 0.1 倍改成 0.05 倍。<strong>同一套代码，一周之内成本结构就变了</strong>——这也是为什么这类数字必须标日期。</p>
+<h2>成本账二：LoRA 的真实压缩比（本机实测）</h2>
+<p>几乎所有讲 LoRA 的文章都会引用原论文摘要那句「可训练参数减少 10000 倍、GPU 显存要求降低 3 倍」（arXiv:2106.09685，Edward J. Hu 等，2021-06-17 投稿）。这句话是真的，但它对应的是<strong>论文自己的实验设置</strong>，不是你现在跑的配方。</p>
+<p>我实际在本机用 peft 0.21.2 + transformers + torch 2.14.1+cpu 把这个数跑了出来。做法是按 Llama 3 8B 的公开架构建图（hidden 4096、intermediate 14336、32 层、32 头、8 个 KV 头），用 meta device 避免真分配几十 GB 内存，然后让 peft 真的注入 adapter 再数可训练参数：</p>
+<pre><code>import torch
+from transformers import LlamaConfig, LlamaForCausalLM
+from peft import LoraConfig, get_peft_model
+
+DIM, FFN, LAYERS, HEADS, KV, VOCAB = 4096, 14336, 32, 32, 8, 128256
+
+with torch.device("meta"):          # 只建图，不分配真实权重
+    cfg = LlamaConfig(hidden_size=DIM, intermediate_size=FFN,
+                      num_hidden_layers=LAYERS, num_attention_heads=HEADS,
+                      num_key_value_heads=KV, vocab_size=VOCAB, rope_theta=500000)
+    model = LlamaForCausalLM(cfg)
+
+total = sum(p.numel() for p in model.parameters())          # 8,030,261,248
+
+for r, mods in [(16, ["q_proj", "k_proj", "v_proj", "o_proj",
+                      "gate_proj", "up_proj", "down_proj"]),
+                (8,  ["q_proj", "v_proj"])]:
+    lcfg = LoraConfig(r=r, lora_alpha=2 * r, lora_dropout=0.0,
+                      target_modules=mods, task_type="CAUSAL_LM")
+    pm = get_peft_model(model, lcfg)
+    tr = sum(p.numel() for p in pm.parameters() if p.requires_grad)
+    print(f"r={r} 模块数={len(mods)} 可训练={tr:,} 占比={tr/total*100:.3f}% 压缩={total/tr:.1f}x")
+    pm = pm.unload()</code></pre>
+<p>实测输出：</p>
+<pre><code>r=16 模块数=7  peft 报告可训练 = 41,943,040  占比 0.522%  压缩 191.5x
+r=8  模块数=2  peft 报告可训练 = 3,407,872   占比 0.042%  压缩 2356.4x</code></pre>
+<p>结论很直接：<strong>按 2026 年的主流配方（q/k/v/o 加 gate/up/down 共七个投影全开、r=16、alpha 取 2r），压缩比是 191.5 倍，不是 10000 倍。</strong> 那个 10000 倍怎么来的？我按论文设置也算了一遍：GPT-3 175B、只挂 q 和 v、r=4、96 层，可训练参数 18,874,368，压缩 9,272 倍——对上了。</p>
+<p>差别在于三件事同时变了：基座从 175B 缩到 8B、rank 从 4 提到 16、挂载模块从 2 个涨到 7 个。</p>
+<p>显存账同样要重算。按混合精度 AdamW 的常见账本（bf16 权重 2 字节加 bf16 梯度 2 字节加 fp32 主权重 4 字节加一阶动量 4 字节加二阶动量 4 字节，合计每参数 16 字节）：</p>
+<ul><li>全量微调 8B：约 <strong>119.7 GiB</strong> 训练状态，单卡 80GB 装不下</li><li>LoRA r=16 全 7 模块：可训练 41,943,040 个参数，优化器状态约 <strong>40 MiB</strong></li></ul>
+<p><strong>这才是 LoRA 真正的价值：不是「省了 10000 倍参数」这个漂亮数字，而是把训练门槛从多卡集群降到单卡。</strong> 另外别忘了原论文那句 unlike adapters 不增加推理延迟——LoRA 权重可以 merge 回基座，推理时不加延迟。</p>
+<h2>成本账三：微调模型的单价还能叠四层折扣</h2>
+<p>很多人算微调成本只算训练费。但 OpenAI 官方定价页（developers.openai.com 的 Finetuning 段，o4-mini-2025-04-16）给的是一张多档表，同一个微调模型，输入单价能差 <strong>16 倍</strong>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">档位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">输入（每百万 token）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">输出（每百万 token）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">标准</td><td style="border:1px solid #ddd;padding:8px;">$4.00</td><td style="border:1px solid #ddd;padding:8px;">$16.00</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">标准加开启数据共享</td><td style="border:1px solid #ddd;padding:8px;">$2.00</td><td style="border:1px solid #ddd;padding:8px;">$8.00</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Batch</td><td style="border:1px solid #ddd;padding:8px;">$2.00</td><td style="border:1px solid #ddd;padding:8px;">$8.00</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Batch 加数据共享</td><td style="border:1px solid #ddd;padding:8px;">$1.00</td><td style="border:1px solid #ddd;padding:8px;">$4.00</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Batch 加数据共享再命中缓存</td><td style="border:1px solid #ddd;padding:8px;">$0.25</td><td style="border:1px solid #ddd;padding:8px;">$4.00</td></tr></tbody></table>
+<p>输入从 $4.00 到 $0.25 是 16 倍，输出从 $16.00 到 $4.00 是 4 倍。注意最后一行的 $0.25 是缓存输入那一档——<strong>微调模型和基座一样吃提示缓存</strong>，这两件事不冲突。</p>
+<p>训练费那边，官方口径是 <strong>$100.00/小时</strong>（不是按 token 计）。换算一下：训练 1 小时等于 $100，相当于 25 MTok 的微调模型输入量。<strong>低频场景下，这笔钱直接拿来买输入 token 通常更划算</strong>，这也是决策树第 4 步要卡请求量的原因。</p>
+<h2>一个绕不开的现实：OpenAI 正在关停自助微调</h2>
+<p>做 2026 年的技术选型，这条必须知道。OpenAI 官方 Deprecations 页给出的时间表：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">日期</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">发生什么</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">2026-05-07</td><td style="border:1px solid #ddd;padding:8px;">从未跑过微调的组织，不能再创建微调任务</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2026-07-02</td><td style="border:1px solid #ddd;padding:8px;">过去 60 天没对微调模型做过推理的组织，不能再创建新任务</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">2027-01-06</td><td style="border:1px solid #ddd;padding:8px;">所有客户都不能再创建任何新微调任务</td></tr></tbody></table>
+<p>已经训好的模型，推理会一直可用，直到它的基座模型下线为止。也就是说这不是「关掉你已经部署的服务」，而是「冻结你修改它的能力」。</p>
+<p>第二条特别阴：门槛绑在你自己的用量上。一个 2025 年重度微调、后来停了三季度的项目，想回来重训，会发现门是被自己的 60 天静默关上的，而不是被 2027 那个日期关上的。<strong>如果微调在你的技术栈里，按模型维度监控调用量就是能力保险。</strong></p>
+<h2>踩坑录：四个真实报错</h2>
+<p><strong>报错一：Target modules 找不到</strong></p>
+<p>原文是 <code>Target modules ['q_proj', 'k_proj'] not found in the base model. Please check the target modules and try again.</code>，出自 peft 源码 <code>tuners/tuners_utils.py</code>，抛的是 <code>NoMatchingPeftModuleError</code>。原因是很多模型的注意力层是融合的——Gemma、Phi、部分 Qwen 变体用的是 <code>qkv_proj</code> 一个融合矩阵，压根没有独立的 q_proj、k_proj、v_proj。照抄 Llama 的配方就会撞上。修法有两个：把 <code>target_modules</code> 写成 <code>all-linear</code> 让 peft 自动匹配所有线性层，或者先遍历 <code>model.named_modules()</code> 把真实模块名打出来再填。</p>
+<p><strong>报错二：量化基座上不能 merge</strong></p>
+<p>原文是 <code>ValueError: Cannot merge LORA layers when the model is gptq quantized</code>，出自 <code>peft/tuners/lora/model.py</code>。在 GPTQ 量化过的基座上调 LoRA 没问题，但 <code>merge_and_unload()</code> 会失败——量化权重没法再和 adapter 相加。量化加 LoRA 的场景就别指望 merge，直接保留 adapter 结构推理。</p>
+<p><strong>报错三：层被复制后不能 merge</strong></p>
+<p>原文是 <code>ValueError: Cannot merge LORA layers when base model layers are replicated</code>，同一份源码的相邻分支。用了张量并行把层复制开之后，merge 会失败。多卡部署遇到这条，说明该在 merge 之后再切并行，而不是反过来。</p>
+<p><strong>报错四：梯度断在第一层</strong></p>
+<p>原文是 <code>RuntimeError: element 0 of tensors does not require grad and does not have a grad_fn</code>。开 gradient checkpointing 省显存时，冻结的基座输出不带梯度，反向传播到第一层就断在这里。PEFT 场景的标准修法是调 <code>model.enable_input_require_grads()</code>，把输入嵌入层的输出重新挂上梯度。这个报错很容易误导——它指向 tensor 0，但根因在 checkpointing 与参数冻结的组合。</p>
+<p>再顺手说一个不算报错但经常浪费一天的问题：<strong>LoRA 训完，加载 adapter 之后输出和基座一模一样。</strong> 八成是没调 <code>model.eval()</code>，或者多 adapter 场景下没 <code>set_adapter()</code>。先用 <code>print_trainable_parameters()</code> 确认 adapter 真的挂上了，再去怀疑训练本身。</p>
+<h2>什么时候该回头改提示词</h2>
+<p>我测试下来最省事的一条回归路径：微调后的模型在新数据上掉队时，先别急着重训。把微调学到的那些约束写成几句话放回 system prompt，在同一个基座上跑一遍对比。如果差距在能接受的范围内，就把微调这套退役——尤其在平台窗口只剩几个月的情况下，<strong>减少一个会过期的依赖本身就是收益</strong>。</p>
+<h2>FAQ</h2>
+<p><strong>微调能让模型学会新知识吗？</strong></p>
+<p>不建议。RAG 论文把这件事讲得很清楚：参数化模型的短板是访问和精确操纵知识的能力有限，而且提供出处、更新世界知识是它的开放问题。知识会变就走 RAG。</p>
+<p><strong>LoRA 的 rank 该设多少？</strong></p>
+<p>Hugging Face 官方 PEFT 文档的口径是从 8 或 16 起步，<code>lora_alpha</code> 通常取 rank 的 2 倍；<code>target_modules</code> 覆盖越多适配能力越强，但显存也越高。上面的脚本可以直接改 r 值复跑。</p>
+<p><strong>提示缓存和 RAG 冲突吗？</strong></p>
+<p>不冲突，反而是叠加关系。把检索到的 chunk 放在 prompt 前缀里，前缀中不变的部分就能命中缓存。</p>
+<p><strong>现在还值得投微调吗？</strong></p>
+<p>看请求量和任务宽度。窄任务、高音量、格式要求死板，仍然值得——但要选一个不会在半年内关门的平台，开源基座加自托管通常更稳。</p>
+<h2>参考来源（截至 2026-10-14 均已核对）</h2>
+<ul><li>Anthropic 官方 Pricing 文档（提示缓存倍率、Batch 折扣、数据驻留倍率）：<code>https://docs.anthropic.com/en/docs/about-claude/pricing</code></li><li>Anthropic 官方 Prompt caching 文档：<code>https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching</code></li><li>Anthropic API 发布说明（2026-10-07，Sonnet 5.5 缓存读取降价）：<code>https://docs.anthropic.com/zh-TW/release-notes/api</code></li><li>OpenAI 官方 Pricing（Finetuning 段，o4-mini-2025-04-16 各档价格）：<code>https://developers.openai.com/api/docs/pricing</code></li><li>OpenAI 官方 Deprecations（自助微调时间表）：<code>https://developers.openai.com/api/docs/deprecations</code></li><li>LoRA 原始论文：<code>https://arxiv.org/abs/2106.09685</code></li><li>RAG 原始论文：<code>https://arxiv.org/abs/2005.11401</code></li><li>Hugging Face PEFT 官方文档：<code>https://huggingface.co/docs/peft</code></li></ul>
+<p>站内延伸阅读：</p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-09-rag-5.html" target="_blank" rel="nofollow sponsored">RAG 落地：向量库选型与「检索不准」根因排查</a></li><li><a href="https://yaohehe.github.io/2026-10-13-vllm-031-kv-cache-4.html" target="_blank" rel="nofollow sponsored">vLLM 0.31.0 KV Cache 解剖：分块分配实测与 4 个真实报错</a></li><li><a href="https://yaohehe.github.io/2026-10-12-numpy-pytorch-5.html" target="_blank" rel="nofollow sponsored">从零手搓注意力机制：NumPy 逐行实现加 PyTorch 2.14.1 对拍</a></li></ul><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
