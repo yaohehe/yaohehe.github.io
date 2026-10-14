@@ -158,7 +158,13 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         pointer-events: auto !important;
       }
       .pagefind-ui__drawer {
-        display: none !important;
+        background: #ffffff !important;
+        border: 1px solid #e8e8e8 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
+        padding: 20px !important;
+        margin-top: 10px !important;
+        box-sizing: border-box;
       }
       .pagefind-ui__result-title a {
         color: #1890ff !important;
@@ -314,7 +320,13 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         pointer-events: auto !important;
       }
       .pagefind-ui__drawer {
-        display: none !important;
+        background: #ffffff !important;
+        border: 1px solid #e8e8e8 !important;
+        border-radius: 8px !important;
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.1) !important;
+        padding: 20px !important;
+        margin-top: 10px !important;
+        box-sizing: border-box;
       }
       .pagefind-ui__result-title a {
         color: #1890ff !important;
