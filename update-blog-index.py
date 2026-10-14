@@ -138,13 +138,23 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
         outline: none;
       }
+      /* 🔴 本页未加载官方 pagefind-ui.css，缺以下两条规则 → 不搜索时「空抽屉常驻」+「清除键常显」。
+         这里按官方定义原样补上：svelte 在无搜索时会给 drawer 挂 .pagefind-ui__hidden、
+         给清除键挂 .pagefind-ui__suppressed，靠这两条隐藏。 */
+      .pagefind-ui__hidden { display: none !important; }
+      .pagefind-ui__suppressed { opacity: 0 !important; pointer-events: none !important; }
       .pagefind-ui__form {
         position: relative;
       }
+      /* ⚠️ 不写 opacity / pointer-events —— 清除键的显隐由官方
+         `.pagefind-ui__suppressed { opacity:0; pointer-events:none }` 控制（未搜索时自动隐藏）。
+         top 用固定值而非 50%：clear 的包含块是 form（内部还含 drawer），
+         用 50% 会被算到整个 form 的中部 → 按钮跑到输入框外面。
+         22px ≈ 输入框垂直中心（padding 12px + 1rem 字号 + 边框 ≈ 45px 高）。 */
       .pagefind-ui__search-clear {
         position: absolute;
-        top: 50%;
-        right: 12px;
+        top: 22px;
+        right: 8px;
         transform: translateY(-50%);
         background-color: #f5f5f5 !important;
         color: #555 !important;
@@ -152,10 +162,8 @@ INDEX_HEADER_CN = '''<!DOCTYPE html>
         padding: 6px 12px !important;
         font-size: 0.85rem !important;
         height: auto !important;
-        line-height: 1;
+        line-height: 1 !important;
         z-index: 10;
-        opacity: 1 !important;
-        pointer-events: auto !important;
       }
       .pagefind-ui__drawer {
         background: #ffffff !important;
@@ -300,13 +308,23 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         box-shadow: 0 0 0 3px rgba(24, 144, 255, 0.15) !important;
         outline: none;
       }
+      /* 🔴 本页未加载官方 pagefind-ui.css，缺以下两条规则 → 不搜索时「空抽屉常驻」+「清除键常显」。
+         这里按官方定义原样补上：svelte 在无搜索时会给 drawer 挂 .pagefind-ui__hidden、
+         给清除键挂 .pagefind-ui__suppressed，靠这两条隐藏。 */
+      .pagefind-ui__hidden { display: none !important; }
+      .pagefind-ui__suppressed { opacity: 0 !important; pointer-events: none !important; }
       .pagefind-ui__form {
         position: relative;
       }
+      /* ⚠️ 不写 opacity / pointer-events —— 清除键的显隐由官方
+         `.pagefind-ui__suppressed { opacity:0; pointer-events:none }` 控制（未搜索时自动隐藏）。
+         top 用固定值而非 50%：clear 的包含块是 form（内部还含 drawer），
+         用 50% 会被算到整个 form 的中部 → 按钮跑到输入框外面。
+         22px ≈ 输入框垂直中心（padding 12px + 1rem 字号 + 边框 ≈ 45px 高）。 */
       .pagefind-ui__search-clear {
         position: absolute;
-        top: 50%;
-        right: 12px;
+        top: 22px;
+        right: 8px;
         transform: translateY(-50%);
         background-color: #f5f5f5 !important;
         color: #555 !important;
@@ -314,10 +332,8 @@ INDEX_HEADER_EN = '''<!DOCTYPE html>
         padding: 6px 12px !important;
         font-size: 0.85rem !important;
         height: auto !important;
-        line-height: 1;
+        line-height: 1 !important;
         z-index: 10;
-        opacity: 1 !important;
-        pointer-events: auto !important;
       }
       .pagefind-ui__drawer {
         background: #ffffff !important;
