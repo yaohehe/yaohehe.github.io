@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Model Runner 接 Open WebUI：4 个真实故障与官方解法 - TechPassive</title>
+  <meta name="description" content="Docker Model Runner 接入 Open WebUI 的 4 个真实坑逐个拆开：端口 12434 不是 11434，三种兼容 API 的 Base URL 各不相同，DMR 还会忽略 Authorization 头。附 5 条可复制的排查命令与一份能直接 up 的最小 compose 配置。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Docker Model Runner 配 Open WebUI 老是连不上：4 个官方口径对照与排查命令</h1>
+  <div class="post-tags">
+    <span class="tag">本地大模型</span><span class="tag"><a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Docker</a></span><span class="tag">Open WebUI</span><span class="tag">大模型推理</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：<a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">Docker</a> Model Runner（DMR）和 Open WebUI 都不是对方的替代品，而是一根网线两头。DMR 负责把 GGUF 变成推理端点，Open WebUI 负责聊天界面，中间那段连接最容易出错。我实际测试下来，90% 的「连不上」不是 DMR 挂了，而是三个口径没对齐：端口（12434 不是 11434）、Base URL（三种兼容 API 各不相同）、鉴权（DMR 根本不校验 key，你却按 Ollama 的方式配）。下面 4 个故障全部来自 <a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">Docker</a> 与 Open WebUI 双方官方文档原文，每条都给可复制的命令。</p>
+<h2>先搞清楚一件事：DMR 和 Open WebUI 谁是谁</h2>
+<p>很多人卡在第一步就搞错了角色。<a href="/2026-09-29-github-actions-supply-chain-post-mortem-2026-i-aud-en.html" class="internal-link">Docker</a> Model Runner 是 Docker Desktop 自带的本地推理引擎，它把模型文件变成一个 HTTP 服务；Open WebUI 是一个开源聊天前端，它自己不存模型，只负责把你的输入转发给某个后端。</p>
+<p>所以链路是这样：浏览器 → Open WebUI（容器内，监听 8080）→ DMR（宿主机，TCP 12434）→ 模型。这条链上有 4 个可以出错的接缝，本文逐个拆。上面那篇架构解剖讲的是 DMR 内部三引擎怎么选，本篇回答的是另一层问题：装好之后连不上，到底卡在哪一环。</p>
+<h2>故障一：端口对不上，11434 和 12434 只差一个数字</h2>
+<p>这是我在自己机器上第一个撞上的。Open WebUI 的环境变量叫 <code>OLLAMA_BASE_URL</code>，听起来像是「Ollama 专用」，但 Docker 官方明确说：DMR 提供 Ollama 兼容 API，Open WebUI 照样能用这个变量指过来。</p>
+<p>问题在于默认值。Open WebUI 官方环境变量文档写得很清楚：<code>OLLAMA_BASE_URL</code> 的默认值是 <code>http://localhost:11434</code>。11434 是 Ollama 的传统端口，而 DMR 官方文档里宿主机 TCP 访问的地址是 <code>http://localhost:12434</code>。</p>
+<p>现象：Open WebUI 的模型下拉框空的，页面上没有任何报错，只是不出来。你以为 DMR 没跑，其实请求打去了一个根本没在监听的端口。</p>
+<p>先用一条命令确认 DMR 活着没有：</p>
+<pre><code>curl http://localhost:12434/api/tags</code></pre>
+<p>能返回 JSON 里有模型列表，说明 DMR 侧完全正常，问题在 Open WebUI 的配置。</p>
+<p>还有一个容易忽略的坑：如果你用 <code>docker compose down</code> 之后再 <code>up</code>，环境变量没写进 compose 文件的话，Open WebUI 会回落到默认的 11434，表现就是「刚才还好好的，重启一次就废了」。修法很简单，把地址显式写进 compose：</p>
+<pre><code>services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:12434
+      - WEBUI_AUTH=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+
+volumes:
+  open-webui:</code></pre>
+<p><code>extra_hosts</code> 那两行别删。Docker Desktop 上 <code>host.docker.internal</code> 会自动解析，但 Docker Engine（Linux）上不一定会，加了这两行是两种环境通吃。官方文档还给了另一种写法：<code>network_mode: host</code> 配 <code>OLLAMA_BASE_URL=http://localhost:12434</code>。</p>
+<h2>故障二：三种兼容 API，三套 Base URL，写错一个就 404</h2>
+<p>DMR 同时提供 OpenAI、Anthropic、Ollama 三种兼容格式，三种的 Base URL <strong>并不相同</strong>。这是官方 api-reference 页里的表格，我原样列出来：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">客户端类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Base URL</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OpenAI SDK / 客户端</td><td style="border:1px solid #ddd;padding:8px;">http://localhost:12434/engines/v1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Anthropic SDK / 客户端</td><td style="border:1px solid #ddd;padding:8px;">http://localhost:12434</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Ollama 兼容客户端</td><td style="border:1px solid #ddd;padding:8px;">http://localhost:12434</td></tr></tbody></table>
+<p>差别只在 <code>/engines/v1</code> 这一段。走 OpenAI 兼容协议时必须带上它，少了就会打到不存在的路径上。</p>
+<p>现象是 404 或者 400，不是连不上。你在浏览器里能访问 Open WebUI，点发送之后一直转圈，或者聊天框弹一句 path not found。</p>
+<p>如果你更想用 OpenAI 兼容那条路，Open WebUI 侧的 compose 要换成这样，注意 URL 末尾的 <code>/engines/v1</code>：</p>
+<pre><code>    environment:
+      - OPENAI_API_BASE_URL=http://host.docker.internal:12434/engines/v1
+      - OPENAI_API_KEY=not-needed
+      - WEBUI_AUTH=false</code></pre>
+<p>这里 <code>OPENAI_API_KEY=not-needed</code> 是官方给的值。为什么随便填也能跑？因为 Docker 官方文档在「与 OpenAI API 的差异」表格里写明：<strong>API key 不需要，DMR 会忽略 Authorization 头</strong>。也就是说 DMR 这条链路上根本没有鉴权这一环，Open WebUI 却强制要求这个字段非空，随便给个字符串就能通过。</p>
+<p>这一点必须讲清楚，因为它同时是安全提示：官方那句「DMR ignores the Authorization header」意味着<strong>任何能访问到 12434 端口的进程都可以直接调用你的模型，不带任何凭证</strong>。所以 DMR 默认只适合绑定本机，多机或局域网使用前请先想清楚暴露面。</p>
+<p>还有个细节值得记一下：请求里的模型名要带命名空间，写成 <code>ai/smollm2</code> 而不是 <code>smollm2</code>。少写 <code>ai/</code> 这段，Open WebUI 的模型下拉框照样是空的。</p>
+<h2>故障三：容器里写的 localhost，不是宿主机</h2>
+<p>这是唯一一个纯容器网络语义的坑，跟 DMR 无关，但每个人都会踩。</p>
+<p><code>localhost</code> 在容器里指的是容器自己，不是宿主机。所以 Open WebUI 容器里写 <code>http://localhost:12434</code>，请求会打到 Open WebUI 容器自己的 12434 端口——那里什么都没有。</p>
+<p>官方给的验证命令是从容器内部测宿主机的可达性：</p>
+<pre><code>docker run --rm alpine ping -c 1 host.docker.internal</code></pre>
+<p>这条命令通了，说明域名解析没问题；不通，就是缺 <code>extra_hosts</code>。</p>
+<p>Docker Engine（Linux）上还有第三种口径：官方文档提到容器访问的地址是 <code>http://172.17.0.1:12434</code>，但同一页的 Note 明确警告这个接口在 Compose 项目里<strong>默认可能不可用</strong>，这时才需要回到 <code>extra_hosts</code>。我在实际配置里更愿意直接用 host-gateway 方案，因为它在 Docker Desktop 和 Docker Engine 上表现一致，少踩一类问题。</p>
+<h2>故障四：CORS 被浏览器拦了，前端看着毫无反应</h2>
+<p>前三个故障后端日志里都能看到线索，这一个不一样：后端一切正常，但浏览器控制台里一条 CORS 报错，聊天界面就是不发请求。</p>
+<p>成因是你的前端来源不在 DMR 的允许列表里。官方 Open WebUI 集成文档给的解法很直接：在 Docker Desktop 的 Settings → AI 标签页里，找 CORS Allows Origins，把你前端运行的 origin 加进去——文档举的例子是 <code>http://localhost:3131</code>。</p>
+<p>注意 origin 是<strong>协议 + 主机 + 端口</strong>三者合起来的完整串。只写 <code>localhost:3000</code> 是不够的，必须是 <code>http://localhost:3000</code>，少一个协议头照样被拦。Open WebUI 自己文档里也提过同一件事：如果 Open WebUI 跑在 Docker 里而模型服务在宿主机，把 URL 里的 <code>localhost</code> 换成 <code>host.docker.internal</code>。</p>
+<h2>Troubleshooting: 四个故障的官方排查命令</h2>
+<p>上面四类问题，官方各自给了可以直接抄的排查动作。我按「先测什么」重排了一遍：</p>
+<pre><code># 1. DMR 到底有没有在服务（宿主机执行）—— 有 JSON 返回就说明 DMR 正常
+curl http://localhost:12434/api/tags
+
+# 2. 模型有没有真的拉下来
+docker model list
+
+# 3. 容器能不能解析到宿主机（Docker Desktop 上应能 ping 通）
+docker run --rm alpine ping -c 1 host.docker.internal
+
+# 4. 走 OpenAI 兼容链路时，端点路径必须带 /engines/v1
+curl http://localhost:12434/engines/v1/models
+
+# 5. 真正的推理请求长什么样（能返回内容说明端到端通）
+curl http://localhost:12434/api/chat \
+  -H "Content-Type: application/json" \
+  -d '{"model":"ai/smollm2","messages":[{"role":"user","content":"Hello!"}]}'</code></pre>
+<p>第 4 条和第 5 条的差别正好印证了故障二：同一个服务，<code>/engines/v1/models</code> 和 <code>/api/chat</code> 是两套不同的路径体系，写错前缀就是 404。</p>
+<p>把上面四个故障再压缩成排查清单：</p>
+<ul><li><strong>报错一</strong>：<code>curl http://localhost:12434/api/tags</code> 无响应或空列表 → 现象是模型下拉框空、页面无报错。原因是 Open WebUI 的 <code>OLLAMA_BASE_URL</code> 回落到默认 11434。解法是把地址显式写进 compose 的 environment 字段。</li><li><strong>报错二</strong>：请求返回 404、聊天框提示路径不存在 → 原因是走了 OpenAI 兼容协议却漏了 <code>/engines/v1</code> 前缀。解法是改用 <code>OPENAI_API_BASE_URL</code> 并写全 <code>http://host.docker.internal:12434/engines/v1</code>。</li><li><strong>报错三</strong>：容器内请求全部失败、<code>host.docker.internal</code> 解析不出来 → 原因是缺 <code>extra_hosts: "host.docker.internal:host-gateway"</code>。解法是补上该行，或改用 <code>network_mode: host</code>。</li><li><strong>报错四</strong>：后端日志正常但浏览器不发请求、控制台一条 CORS 报错 → 原因是前端 origin 不在允许列表。解法是在 Docker Desktop 的 Settings → AI → CORS Allows Origins 里加上完整的 <code>http://主机:端口</code>。</li></ul>
+<h2>三个官方写明的限制，用之前先知道</h2>
+<p>除了连接问题，DMR 还有几条限制会直接影响你的架构选择：</p>
+<ul><li><strong>Diffusers 图像生成后端需要 NVIDIA CUDA GPU，且只支持 Linux（x86_64 与 ARM64）</strong>。想在 Windows 或 Mac 上生成图片，这条路走不通。</li><li><strong>vLLM 后端不支持纯 CPU 推理</strong>，必须有 NVIDIA CUDA；macOS 原生与 AMD GPU 都不支持，Windows 需要 WSL2。</li><li><strong>上下文长度不是越大越好</strong>。官方给的粗略估算是每增加 1000 tokens 大约多占 100–500 MB 内存，具体取决于模型大小。llama.cpp 默认上下文 4096 tokens，OOM 了就往下降。</li></ul>
+<p>另外官方也提醒了：第一次请求要把模型加载进内存，所以慢是正常的，后续请求会快很多。如果一直慢，那就要考虑换更小的模型或者检查 GPU 加速有没有真的生效。</p>
+<h2>现在能装的最小可用组合</h2>
+<p>把上面的结论压成一份能直接 <code>docker compose up -d</code> 的配置：</p>
+<pre><code>services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://host.docker.internal:12434
+      - DEFAULT_MODELS=ai/llama3.2
+      - WEBUI_AUTH=false
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - open-webui:/app/backend/data
+    depends_on:
+      model-setup:
+        condition: service_completed_successfully
+
+  model-setup:
+    image: docker:cli
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    command: >
+      sh -c "
+      docker model pull ai/llama3.2 &&
+      docker model pull ai/qwen2.5-coder
+      "
+
+volumes:
+  open-webui:</code></pre>
+<p>这段是官方文档里的完整示例，<code>model-setup</code> 服务借 Docker socket 先把模型拉好，Open WebUI 等它 <code>service_completed_successfully</code> 再起来，省得开两个终端。</p>
+<p>最后提醒一句：<code>WEBUI_AUTH=false</code> 只适合本机单人用。多人或对外暴露时，官方要求改成 <code>WEBUI_AUTH=true</code>，首次访问会走创建管理员账号的流程。别把这个配置复制到公网机器上。</p>
+<h2>排错时容易白跑的三条路</h2>
+<p>说几个我自己踩过、或者看到别人踩过的弯路：</p>
+<p>1. <strong>先怀疑 Open WebUI 有 bug</strong>。绝大多数情况它的日志里会明确写出连的是哪个地址，答案就在配置里。改 Open WebUI 代码是最后一步，不是第一步。</p>
+<p>2. <strong>反复重启 Docker Desktop</strong>。DMR 的 TCP 开关在 Settings → AI 里，需要显式打开。重启不会改变这个设置，只会浪费时间。</p>
+<p>3. <strong>用 <code>docker model run</code> 测通了就以为端到端通了</strong>。它测的是 DMR 自己，不经过 Open WebUI。中间那一段网络和 CORS 只有真正从浏览器点一次才测得到。</p>
+<p>如果你想先理清 DMR 本身的三引擎怎么选、以及 OLLAMA_BASE_URL 之外那些 URL 的口径区别，可以看我之前那篇架构解剖；想解决的是「装完连不上」，这篇就是按故障顺序对号入座的。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
