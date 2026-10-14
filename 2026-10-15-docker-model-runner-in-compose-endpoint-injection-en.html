@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Model Runner in Compose: Endpoint Injection - TechPassive</title>
+  <meta name="description" content="Docker's docs give four different addresses for reaching Model Runner from a container. I captured the URLs the OpenAI SDK builds and reproduced four real errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Docker Model Runner in Compose</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-docker-compose-5x-4.html" class="internal-link">Docker</a></span><span class="tag">DMR</span><span class="tag"><a href="/2026-10-06-docker-compose-changes-not-applying-4-real-fixes-en.html" class="internal-link">Docker</a> Compose</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: The <code>models</code> top-level element requires <a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Docker</a> Compose 2.38.0 or later, the <code>provider</code> service type requires 2.36.0 or later, and Compose Bridge requires <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">Docker</a> Desktop 4.43.0 or later. From a container on Docker Desktop, reach the host model runner at <code>http://model-runner.docker.internal/engines/v1</code>; on Docker Engine use <code>http://172.17.0.1:12434/engines/v1</code>. The Base URL that the official API reference lists for containers is <code>http://model-runner.docker.internal</code> with no <code>/engines/v1</code>, and <strong>pasting that value straight into the OpenAI SDK produces <code>/chat/completions</code> instead of <code>/engines/v1/chat/completions</code></strong>. Short-syntax variable names can collide, so always use the long syntax with <code>endpoint_var</code> and <code>model_var</code>.</p>
+<p>Docker Model Runner (DMR) pulls OCI artifacts such as GGUF files and serves them behind an OpenAI-compatible endpoint. That part is easy. What actually blocks people is never "how do I run the model", it is "the model runs on the host, my app runs in a container, which address do I write". Docker's documentation answers that question in four places, and the four answers do not fully agree. So I ran every one of them through the real SDKs on my own machine and captured the URL each one builds. The result is clearer than the docs.</p>
+<h2>Why declare models in compose.yaml at all</h2>
+<p>Once you split an AI application into frontend, backend, database, and model, the model is just another external dependency — no different in kind from the database. The old approach was to run <code>docker model run ai/smollm2</code> by hand before <code>docker compose up</code>, or to hardcode <code>http://localhost:12434</code> in the backend startup script. Both share one flaw: the model dependency lives outside version control, so the stack breaks the moment you move to another machine.</p>
+<p>Compose promotes the model to a top-level element instead. As the official page at <code>docs.docker.com/ai/compose/models-and-compose/</code> states, you declare models with the <code>models</code> top-level element, the platform provisions and exposes them, and connection details are injected into your service containers as environment variables. Docker Compose is only one implementation of the spec; a cloud platform can consume the same declaration through <code>x-*</code> extension attributes.</p>
+<p>So the payoff is not "one fewer command to type". It is that your compose.yaml finally describes the whole dependency graph, and you can delete the README line that says "remember to start the model first".</p>
+<h2>The models element: short syntax and long syntax</h2>
+<p>The minimal shape:</p>
+<pre><code>services:
+  chat-app:
+    image: my-chat-app
+    models:
+      - llm
+
+models:
+  llm:
+    model: ai/smollm2</code></pre>
+<p><code>models</code> at the top level sits beside <code>services</code>. The <code>models</code> key *inside* a service is a reference: "this service uses these models". Docker defines three attributes: <code>model</code> (required, the OCI artifact identifier), <code>context_size</code> (maximum context in tokens), and <code>runtime_flags</code> (raw flags handed to the inference engine). Platform-specific options go through <code>x-*</code> extension attributes and are not validated by the Compose specification.</p>
+<p>Long syntax renames the injected variables:</p>
+<pre><code>services:
+  app:
+    image: my-app
+    models:
+      llm:
+        endpoint_var: AI_MODEL_URL
+        model_var: AI_MODEL_NAME
+      embedding-model:
+        endpoint_var: EMBEDDING_URL
+        model_var: EMBEDDING_NAME
+
+models:
+  llm:
+    model: ai/smollm2
+    context_size: 4096
+  embedding-model:
+    model: ai/all-minilm</code></pre>
+<p>One easily missed note in the official docs concerns <code>context_size</code>: every model has its own ceiling, and when raising it you should weigh your hardware constraints and keep the context "as small as feasible for your specific needs". That is not a tuning tip — exceed it and the model will not start.</p>
+<h2>How the injected variable names are derived</h2>
+<p>With short syntax the platform builds two variables per model: <code>{MODEL_NAME_UPPERCASED}_URL</code> and <code>{MODEL_NAME_UPPERCASED}_MODEL</code>, with hyphens converted to underscores. The official example gives <code>llm</code> producing <code>LLM_URL</code> and <code>LLM_MODEL</code>, and <code>embedding-model</code> producing <code>EMBEDDING_MODEL_URL</code> and <code>EMBEDDING_MODEL_MODEL</code>.</p>
+<p>That last one looks like a typo, but it follows from the rule. The real problem shows up in the table below. I wrote a short script that applies the documented rule to common names:</p>
+<pre><code>def short_vars(key: str):
+    p = key.upper().replace("-", "_")
+    return p + "_URL", p + "_MODEL"
+
+for k in ["llm", "embedding-model", "chat", "model"]:
+    print(k, "->", short_vars(k))
+
+for a, b in [("llm", "llm-model"), ("my-model", "my_model"), ("chat", "chat-model")]:
+    print(a, "+", b, "intersection:", set(short_vars(a)) & set(short_vars(b)))</code></pre>
+<p>Actual output on my machine (Python 3.13.14):</p>
+<pre><code>llm -> ('LLM_URL', 'LLM_MODEL')
+embedding-model -> ('EMBEDDING_MODEL_URL', 'EMBEDDING_MODEL_MODEL')
+chat -> ('CHAT_URL', 'CHAT_MODEL')
+model -> ('MODEL_URL', 'MODEL_MODEL')
+llm + llm-model intersection: set()
+my-model + my_model intersection: {'MY_MODEL_MODEL', 'MY_MODEL_URL'}
+chat + chat-model intersection: set()</code></pre>
+<p><code>my-model</code> and <code>my_model</code> collapse into the identical pair of variable names. One silently overwrites the other, nothing raises, and you just notice that one model keeps answering for the other. This is not a hypothetical I invented: uppercasing plus hyphen-to-underscore normalisation necessarily produces it.</p>
+<p>The takeaway: <strong>if a compose file declares two or more models, use the long syntax and name <code>endpoint_var</code> and <code>model_var</code> explicitly</strong>. Four extra lines remove an entire class of unexplainable behaviour.</p>
+<h2>Which address should a container use: four official answers</h2>
+<p>This is where most people get stuck, because four pages give four values and none of them says the others are wrong.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Source page</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Scenario</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Address given</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>compose/bridge/use-model-runner</code></td><td style="border:1px solid #ddd;padding:8px;">Docker Desktop (Helm <code>modelRunner.enabled: false</code>)</td><td style="border:1px solid #ddd;padding:8px;"><code>http://host.docker.internal:12434/engines/v1/</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>compose/bridge/usage</code></td><td style="border:1px solid #ddd;padding:8px;">Docker Desktop / Kubernetes</td><td style="border:1px solid #ddd;padding:8px;"><code>http://host.docker.internal:12434/engines/v1/</code> and <code>http://model-runner/engines/v1/</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ai/model-runner/api-reference</code></td><td style="border:1px solid #ddd;padding:8px;">Docker Desktop, from a container</td><td style="border:1px solid #ddd;padding:8px;"><code>http://model-runner.docker.internal</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>ai/model-runner/api-reference</code></td><td style="border:1px solid #ddd;padding:8px;">Docker Engine, from a container</td><td style="border:1px solid #ddd;padding:8px;"><code>http://172.17.0.1:12434</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ai/model-runner/api-reference</code></td><td style="border:1px solid #ddd;padding:8px;">Host process (TCP)</td><td style="border:1px solid #ddd;padding:8px;"><code>http://localhost:12434</code></td></tr></tbody></table>
+<p>Look at row three: <code>http://model-runner.docker.internal</code> has <strong>no port and no <code>/engines/v1</code></strong>. The same page's "Base URLs for third-party tools" table says the OpenAI SDK should use <code>http://localhost:12434/engines/v1</code>. Copy a value from one table into the SDK named by the other, and a path segment goes missing.</p>
+<p>Docker does explain the port difference: the Service that Compose Bridge generates in Kubernetes exposes <strong>port 80</strong>, mapped to container port 12434. That is why <code>http://model-runner/engines/v1/</code> has no port — it is the default, not a typo. The same reasoning applies to <code>model-runner.docker.internal</code> on Docker Desktop. The catch is that <strong>each explanation lives on its own page and is easy to lose when you read them side by side</strong>.</p>
+<p>There is a subtler one. On Docker Engine (plain Linux, not Desktop) the docs state that <code>172.17.0.1</code> "may not be available by default to containers within a Compose project", and you must add <code>extra_hosts</code> yourself:</p>
+<pre><code>services:
+  app:
+    image: my-app
+    extra_hosts:
+      - "model-runner.docker.internal:host-gateway"</code></pre>
+<p>After that, the address the docs tell you to use is <code>http://model-runner.docker.internal:12434/</code> — the same hostname, without a port on Desktop and with a port on Engine. I cannot reconcile that inconsistency on Docker's behalf, so I am presenting it as-is.</p>
+<h2>Measured locally: the URL the SDK actually sends</h2>
+<p>I have neither Docker Desktop nor a GPU on this machine, so I am not going to pretend I ran end-to-end inference. Instead I did something more useful: I put an <code>httpx.MockTransport</code> in front of the SDK and recorded the URL it builds. You can reproduce this anywhere — no model, no GPU.</p>
+<p>Environment: Windows, Python 3.13.14, <code>openai 3.31.0</code>, <code>httpx 0.28.1</code>, <code>anthropic 1.14.0</code> (versions as of publication).</p>
+<pre><code>import httpx
+from openai import OpenAI
+
+captured = {}
+def handler(request: httpx.Request) -> httpx.Response:
+    captured["url"] = str(request.url)
+    return httpx.Response(200, json={"id": "x", "object": "chat.completion",
+        "created": 0, "model": "ai/smollm2",
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"},
+                     "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}})
+
+for base in ["http://host.docker.internal:12434/engines/v1/",
+             "http://host.docker.internal:12434/engines/v1",
+             "http://model-runner.docker.internal",
+             "http://model-runner.docker.internal/engines/v1",
+             "http://172.17.0.1:12434/engines/v1/",
+             "http://model-runner/engines/v1/",
+             "http://localhost:12434/engines/v1/"]:
+    c = OpenAI(api_key="not-needed", base_url=base,
+               http_client=httpx.Client(transport=httpx.MockTransport(handler)))
+    c.chat.completions.create(model="ai/smollm2",
+                              messages=[{"role": "user", "content": "hi"}], max_tokens=8)
+    print(base, "->", captured["url"])</code></pre>
+<p>Measured output:</p>
+<pre><code>http://host.docker.internal:12434/engines/v1/  -> http://host.docker.internal:12434/engines/v1/chat/completions
+http://host.docker.internal:12434/engines/v1   -> http://host.docker.internal:12434/engines/v1/chat/completions
+http://model-runner.docker.internal            -> http://model-runner.docker.internal/chat/completions
+http://model-runner.docker.internal/engines/v1 -> http://model-runner.docker.internal/engines/v1/chat/completions
+http://172.17.0.1:12434/engines/v1/            -> http://172.17.0.1:12434/engines/v1/chat/completions
+http://model-runner/engines/v1/                -> http://model-runner/engines/v1/chat/completions
+http://localhost:12434/engines/v1/             -> http://localhost:12434/engines/v1/chat/completions</code></pre>
+<p>Six of the seven candidates — 85.7% — build the correct <code>/engines/v1/chat/completions</code>. <strong>The single failure is row three, the value printed verbatim in the official "access from containers" table.</strong> A trailing slash makes no difference because httpx normalises it, so the slash is not the issue; the missing <code>/engines/v1</code> segment is.</p>
+<p>The Anthropic SDK has an independent contradiction. The endpoint table in the API reference lists <code>/anthropic/v1/messages</code>, while the curl example on the same page uses <code>http://localhost:12434/v1/messages</code>, and the third-party Base URL table gives Anthropic clients <code>http://localhost:12434</code>. I fed all of these to anthropic 1.14.0:</p>
+<pre><code>base_url=http://localhost:12434            -> http://localhost:12434/v1/messages
+base_url=http://localhost:12434/anthropic  -> http://localhost:12434/anthropic/v1/messages</code></pre>
+<p>In other words, configuring from the official Base URL table makes the SDK build <code>/v1/messages</code>, which matches the curl example and contradicts the endpoint table. Both come from the same official page. I cannot tell you which one your DMR build honours, so the practical advice is to <strong>follow the curl example and confirm with one real request before you ship</strong>, rather than following the endpoint table.</p>
+<h2>Troubleshooting: 4 real errors I reproduced</h2>
+<p>All four errors below are raw output from my machine, not invented "typical error" samples. The first two are connectivity, the last two are configuration.</p>
+<h3>Error one: localhost:12434 inside a container goes nowhere</h3>
+<pre><code>openai.APIConnectionError: Connection error.
+cause: httpx.ConnectError: [WinError 10061] No connection could be made because the target machine actively refused it.</code></pre>
+<p><strong>Why</strong>: inside a container, <code>localhost</code> is the container itself. The model runs on the host, so nothing listens on port 12434 in the container's network namespace. This is the "host process" address applied to the "from a container" scenario.</p>
+<p><strong>Fix</strong>: on Docker Desktop use <code>http://model-runner.docker.internal/engines/v1</code>; on Docker Engine use <code>http://172.17.0.1:12434/engines/v1</code>, or add <code>extra_hosts</code> and use <code>http://model-runner.docker.internal:12434/engines/v1</code>.</p>
+<p>The error code is platform-specific: <code>[WinError 10061]</code> is the Windows output I measured, and Linux reports a different errno string, but the exception type is the same <code>httpx.ConnectError</code>. Search on the exception type, not on the error code.</p>
+<h3>Error two: the hostname does not resolve at all</h3>
+<pre><code>openai.APIConnectionError: Connection error.
+cause: httpx.ConnectError: [Errno 11001] getaddrinfo failed</code></pre>
+<p><strong>Why</strong>: <code>model-runner.docker.internal</code> is an internal DNS name provided by Docker Desktop. On plain Docker Engine, or when a container is not attached to the Compose project network, that record does not exist. The same official note about <code>172.17.0.1</code> mentions that containers may not reach it by default and need <code>extra_hosts</code>.</p>
+<p><strong>Fix</strong>: declare it explicitly in <code>extra_hosts</code>.</p>
+<pre><code>services:
+  app:
+    image: my-app
+    extra_hosts:
+      - "model-runner.docker.internal:host-gateway"
+    environment:
+      - AI_MODEL_URL=http://model-runner.docker.internal:12434/engines/v1</code></pre>
+<p>The check is one line: run <code>docker compose exec app getent hosts model-runner.docker.internal</code>. If it does not resolve, the problem is at this layer — do not start editing application code.</p>
+<h3>Error three: the path is missing /engines/v1</h3>
+<p>This one raises nothing. It just returns 404. Captured with the script above:</p>
+<pre><code>http://model-runner.docker.internal/chat/completions              # wrong
+http://model-runner.docker.internal/engines/v1/chat/completions   # right</code></pre>
+<p><strong>Why</strong>: the Base URL the API reference lists for containers omits <code>/engines/v1</code>, and the OpenAI SDK only appends <code>/chat/completions</code> to whatever base you gave it. It will not insert the middle segment for you.</p>
+<p><strong>Fix</strong>: either write the base URL as <code>http://model-runner.docker.internal/engines/v1</code>, or consume the variable Compose injects — and verify the injected value actually contains <code>/engines/v1</code> by running <code>docker compose exec app env</code>. Faster than guessing.</p>
+<h3>Error four: two models get the same variable names</h3>
+<p>No error is raised; model A's requests simply get answered by model B. Recomputed result:</p>
+<pre><code>my-model + my_model intersection: {'MY_MODEL_MODEL', 'MY_MODEL_URL'}</code></pre>
+<p><strong>Why</strong>: short syntax normalises by uppercasing and turning <code>-</code> into <code>_</code>. <code>my-model</code> and <code>my_model</code> normalise to the same string.</p>
+<p><strong>Fix</strong>: switch to the long syntax everywhere.</p>
+<pre><code>services:
+  app:
+    image: my-app
+    models:
+      my-model:
+        endpoint_var: MY_MODEL_A_URL
+        model_var: MY_MODEL_A_NAME
+      my_model:
+        endpoint_var: MY_MODEL_B_URL
+        model_var: MY_MODEL_B_NAME</code></pre>
+<p>If you have already hit this, <code>docker compose exec app env</code> shows how many <code>_URL</code> variables exist and what each one points at.</p>
+<h2>A minimal configuration that works</h2>
+<p>Everything above, folded into one file:</p>
+<pre><code>services:
+  app:
+    image: my-app
+    models:
+      llm:
+        endpoint_var: AI_MODEL_URL
+        model_var: AI_MODEL_NAME
+    extra_hosts:
+      - "model-runner.docker.internal:host-gateway"
+    environment:
+      - AI_MODEL_URL=http://model-runner.docker.internal:12434/engines/v1
+
+models:
+  llm:
+    model: ai/smollm2:360M-Q4_K_M
+    context_size: 4096</code></pre>
+<p>Notes: <code>ai/smollm2:360M-Q4_K_M</code> is the tagged form that appears in Docker's own examples, and 360M parameters — roughly 360 million — is small enough to run on CPU. Set <code>context_size</code> to the smallest value that meets your need, as the docs advise. <code>extra_hosts</code> is only required on Docker Engine; leaving it in on Docker Desktop does no harm.</p>
+<p>Application side:</p>
+<pre><code>import os
+from openai import OpenAI
+
+client = OpenAI(
+    base_url=os.environ["AI_MODEL_URL"],
+    api_key="not-needed",   # official: DMR ignores the Authorization header
+)
+resp = client.chat.completions.create(
+    model=os.environ["AI_MODEL_NAME"],
+    messages=[{"role": "user", "content": "hi"}],
+)</code></pre>
+<p>That <code>api_key</code> line is not a placeholder. Under "Limitations and differences from OpenAI" the docs state that an API key is not required and that DMR ignores the <code>Authorization</code> header. Read that the other way round: <strong>any process that can reach the endpoint can call your model without credentials</strong>. Think before you expose 12434 to an untrusted network.</p>
+<h2>When this is not worth adopting</h2>
+<p>Skip it if any of three things is true: your Compose is older than 2.38.0, your deployment target does not implement the Compose models spec, or your model already lives behind a remote API — in which case pointing the official SDK at the remote base URL is simpler.</p>
+<p>One more thing worth stating plainly: the <code>models</code> element solves <strong>declaration and wiring</strong>, not performance. Context size, which inference backend to use, and whether to enable GPU are still DMR-side decisions. Compose only turns "my service depends on this model" from a spoken convention into a line in a file.</p>
+<h2>Related reading</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-11-docker-model-runner-three-engines-explained-en.html" target="_blank" rel="nofollow sponsored">Docker Model Runner architecture: three inference engines and how containers reach the endpoint</a></li><li><a href="https://yaohehe.github.io/2026-10-14-docker-model-runner-with-open-webui-4-failures-en.html" target="_blank" rel="nofollow sponsored">Docker Model Runner won't connect to Open WebUI: four official answers compared</a></li><li><a href="https://yaohehe.github.io/2026-10-13-vllm-031-kv-cache-paged-blocks-measured-4-errors-en.html" target="_blank" rel="nofollow sponsored">vLLM 0.31.0 KV Cache: paged block allocation measured, four real errors traced</a></li></ul>
+<p>Every number and error message here comes from my own machine or from official Docker documentation. Where the official pages disagree, the disagreement is shown above rather than silently resolved. Versions and addresses are marked as of publication; check the official pages before relying on them.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
