@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL Replication Slots Ate My Disk: 18.6 Tested - TechPassive</title>
+  <meta name="description" content="A slot nobody reads pins WAL forever. Measured on 18.6: retained WAL hit 159 MB under the default max_slot_wal_keep_size=-1, safe_wal_size NULL. Six verbatim errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Replication Slots and WAL: What I Measured on 18.6</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">PostgreSQL</a></span><span class="tag">Database</span><span class="tag"><a href="/2026-04-07-how-to-automate-server-deployments-with-github-actions-a-com-en.html" class="internal-link">DevOps</a></span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: A replication slot is a promise. You tell the primary you will come back and read, so it holds WAL for you. If nobody reads, that promise has no ceiling.</p>
+<ul><li><code>max_slot_wal_keep_size</code> ships as <strong>-1</strong> (unlimited). After four batches of 120,000 rows, retained WAL grew from 56 bytes to <strong>159 MB</strong> while four <code>CHECKPOINT</code> runs reclaimed exactly nothing.</li><li>Two columns tell you how close you are to trouble: <code>pg_replication_slots.wal_status</code> and <code>safe_wal_size</code>. The second one is permanently <strong>NULL</strong> when <code>max_slot_wal_keep_size</code> is -1, which means the safety valve never reports a number.</li><li>With a 16 MB cap instead, I measured the full walk: <code>reserved</code> (5169 kB headroom) → <code>unreserved</code> (headroom goes <strong>negative</strong>, -3305 kB) → <code>lost</code> with <code>invalidation_reason = wal_removed</code> after one checkpoint.</li><li>Once a slot is <code>lost</code> it cannot be repaired. You drop it and resync. The error text is <code>can no longer access replication slot</code>.</li><li>PostgreSQL 18 adds <code>idle_replication_slot_timeout</code> (default 0, disabled). I set it to 10s, ran one <code>CHECKPOINT</code>, and two idle slots were invalidated with <code>invalidation_reason = idle_timeout</code>.</li></ul>
+<p>Disclosure: this article recommends no product or service. If a promotional box appears at the bottom of the page, it is rendered by the site template and has nothing to do with the conclusions above.</p>
+<h2>How a slot nobody reads fills your disk</h2>
+<p>The problem a replication slot solves is simple. If a subscriber drops off, the primary must not delete WAL just because nobody is listening, or the subscriber comes back to a gap and has to rebuild from scratch. So the primary records a <code>restart_lsn</code> per slot — the oldest position that slot might still need — and checkpoints are not allowed to remove any segment newer than the oldest <code>restart_lsn</code> in the cluster.</p>
+<p>That constraint is correct. The trouble is that <strong>by default it has no boundary</strong>.</p>
+<p>Here is the environment I tested on, reproducible end to end: the official PostgreSQL 18.6 Windows binaries from EDB, one <code>initdb</code> instance, <code>wal_level</code> set to <code>logical</code>, one logical slot created and then <strong>deliberately never read</strong>.</p>
+<pre><code>initdb.exe -D pgdata -U postgres --auth=trust -E UTF8 --locale=C
+psql -c "ALTER SYSTEM SET wal_level = 'logical';"
+pg_ctl -D pgdata restart
+psql -d pub_demo -c "SELECT * FROM pg_create_logical_replication_slot('stale_sub','pgoutput');"</code></pre>
+<h2>Test 1: with the default -1, WAL grows and checkpoints do nothing</h2>
+<p>Start by printing the shipped defaults. This is where the whole story begins:</p>
+<pre><code>SELECT name, setting, unit, boot_val FROM pg_settings
+ WHERE name IN ('max_slot_wal_keep_size','wal_level','logical_decoding_work_mem');</code></pre>
+<p>What I got (<code>boot_val</code> is the value compiled into the binary):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">setting</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">unit</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">boot_val</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">max_slot_wal_keep_size</td><td style="border:1px solid #ddd;padding:8px;">-1</td><td style="border:1px solid #ddd;padding:8px;">MB</td><td style="border:1px solid #ddd;padding:8px;">-1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">logical_decoding_work_mem</td><td style="border:1px solid #ddd;padding:8px;">65536</td><td style="border:1px solid #ddd;padding:8px;">kB</td><td style="border:1px solid #ddd;padding:8px;">65536</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">wal_level</td><td style="border:1px solid #ddd;padding:8px;">logical</td><td style="border:1px solid #ddd;padding:8px;"></td><td style="border:1px solid #ddd;padding:8px;">replica</td></tr></tbody></table>
+<p>Two things matter here: <code>max_slot_wal_keep_size</code> <strong>ships as -1</strong>, and <code>wal_level</code> <strong>ships as replica</strong>. The first is the subject of this article; the second means you cannot create a logical slot until you raise it.</p>
+<p>Then I pushed data into the published table, 120,000 rows per batch (with a 200-character text column so the WAL has some volume), ran <code>CHECKPOINT</code> after each batch, and measured how much WAL the slot was holding:</p>
+<pre><code>SELECT slot_name, wal_status,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained,
+       pg_size_pretty(safe_wal_size) AS safe_wal
+  FROM pg_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Stage</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">retained</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">safe_wal_size</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">At slot creation</td><td style="border:1px solid #ddd;padding:8px;">56 bytes</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After batch 1 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">40 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After batch 2 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">79 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After batch 3 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">119 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After batch 4 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">159 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr></tbody></table>
+<p><strong>Four checkpoints, zero bytes reclaimed.</strong> <code>wal_status</code> stayed <code>reserved</code> the whole way and <code>safe_wal_size</code> stayed <code>NULL</code> the whole way. The documentation describes <code>safe_wal_size</code> as the amount of WAL that can still be written before the slot is in danger of being lost, and it is NULL when <code>max_slot_wal_keep_size</code> is -1. In other words, under the default configuration <strong>the safety gauge never shows you a number at all</strong>.</p>
+<p>That is the standard cause of a disk filling up overnight on <code>pg_wal</code>: not a write spike, but one unread promise sitting there growing linearly with your write rate.</p>
+<h2>Test 2: with a 16 MB cap, watch wal_status walk the whole path</h2>
+<p>I set <code>max_slot_wal_keep_size</code> to 16 MB and reran the same experiment, this time <strong>without a checkpoint between batches</strong> so I could catch the intermediate state:</p>
+<pre><code>ALTER SYSTEM SET max_slot_wal_keep_size = '16MB';
+SELECT pg_reload_conf();</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Stage</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">retained</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">safe_wal_size</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">At slot creation</td><td style="border:1px solid #ddd;padding:8px;">112 bytes</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">28 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After batch 1 (no checkpoint)</td><td style="border:1px solid #ddd;padding:8px;">15 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">13 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After batch 2 (no checkpoint)</td><td style="border:1px solid #ddd;padding:8px;">23 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">5169 kB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After batch 3 (no checkpoint)</td><td style="border:1px solid #ddd;padding:8px;">31 MB</td><td style="border:1px solid #ddd;padding:8px;"><strong>unreserved</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>-3305 kB</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After batch 5 (no checkpoint)</td><td style="border:1px solid #ddd;padding:8px;">48 MB</td><td style="border:1px solid #ddd;padding:8px;">unreserved</td><td style="border:1px solid #ddd;padding:8px;">-20 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After batch 7 (no checkpoint)</td><td style="border:1px solid #ddd;padding:8px;">64 MB</td><td style="border:1px solid #ddd;padding:8px;">unreserved</td><td style="border:1px solid #ddd;padding:8px;">-36 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After one CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>lost</strong></td><td style="border:1px solid #ddd;padding:8px;">NULL (reason = wal_removed)</td></tr></tbody></table>
+<p>Three things worth keeping.</p>
+<p>First, <strong><code>safe_wal_size</code> goes negative.</strong> It is not a strict ceiling on remaining space; it is the cap minus what is already retained, so once you cross the line it reads negative. If your monitoring sees a negative value there, you are already in the danger zone — the WAL just has not been physically removed yet because no checkpoint has run.</p>
+<p>Second, the documentation defines four values for <code>wal_status</code>: <code>reserved</code> (claimed files are within <code>max_wal_size</code>), <code>extended</code> (<code>max_wal_size</code> exceeded but files still retained by the slot or by <code>wal_keep_size</code>), <code>unreserved</code> (the slot no longer retains the required WAL and some will be removed at the next checkpoint), and <code>lost</code> (the slot is unusable). I measured <code>reserved → unreserved → lost</code>. I did <strong>not</strong> observe <code>extended</code>; reaching it requires retained WAL to also exceed <code>max_wal_size</code>, which was 1 GB in my test, so I am quoting the definition rather than a measurement.</p>
+<p>Third, <code>unreserved</code> is <strong>recoverable</strong>. The documentation says this state can return to <code>reserved</code> or <code>extended</code>. If the subscriber catches up, the slot survives. Only <code>lost</code> is unrecoverable.</p>
+<h2>Test 3: logical decoding runs out of memory too, and the spills are countable</h2>
+<p>The other half of a slot is logical decoding. A large transaction is reassembled in memory first, and anything past <code>logical_decoding_work_mem</code> spills to disk. That volume is <strong>queryable</strong>, through <code>pg_stat_replication_slots</code>.</p>
+<p>To reproduce this on an ordinary machine I dropped <code>logical_decoding_work_mem</code> from its 64 MB default to 1 MB, committed a 20,000-row <code>UPDATE</code> transaction, and decoded it:</p>
+<pre><code>SET logical_decoding_work_mem = '1MB';
+SELECT count(*) FROM pg_logical_slot_get_changes('ord_sub', NULL, NULL);
+-- 20,002 changes decoded
+SELECT slot_name, total_txns, total_bytes,
+       spill_txns, spill_count, spill_bytes
+  FROM pg_stat_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">slot_name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">total_txns</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">total_bytes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_txns</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_count</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_bytes</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ord_sub</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">4,976,004</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">4,976,004</td></tr></tbody></table>
+<p><code>spill_count = 5</code> and <code>spill_bytes = 4,976,004</code> — exactly equal to <code>total_bytes</code>, which means none of those 4.7 MB stayed in memory. So when decoding feels slow, the cause is often not CPU. It is <code>logical_decoding_work_mem</code> set too small.</p>
+<h2>Test 4: PostgreSQL 18 idle slot invalidation (off by default)</h2>
+<p>The PostgreSQL 18 release notes contain this line: "Allow inactive replication slots to be automatically invalidated using server variable <code>idle_replication_slot_timeout</code>." I confirmed it exists in 18.6 and that it <strong>ships as 0 (disabled)</strong>:</p>
+<pre><code>ALTER SYSTEM SET idle_replication_slot_timeout = '10s';
+SELECT pg_reload_conf();
+-- wait, then trigger one checkpoint
+CHECKPOINT;
+SELECT slot_name, wal_status, invalidation_reason FROM pg_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">slot_name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">invalidation_reason</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ord_sub</td><td style="border:1px solid #ddd;padding:8px;">lost</td><td style="border:1px solid #ddd;padding:8px;">idle_timeout</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">stale_sub</td><td style="border:1px solid #ddd;padding:8px;">lost</td><td style="border:1px solid #ddd;padding:8px;">idle_timeout</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">idle_demo</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">(just created, 10s not elapsed)</td></tr></tbody></table>
+<p>Note that it is <strong>not a timer</strong>. I waited 30 seconds and nothing changed; it only took effect after I forced a <code>CHECKPOINT</code>. The check happens during the checkpoint, so how quickly invalidation kicks in depends on how long your <code>checkpoint_timeout</code> is.</p>
+<p>This and <code>max_slot_wal_keep_size</code> attack the same problem from two directions: one limits <strong>space</strong>, the other limits <strong>time</strong>. I recommend setting both in production.</p>
+<h2>Three queries you can copy today</h2>
+<p>First, list every slot ordered by how much WAL it is holding, so the worst offender is on top:</p>
+<pre><code>SELECT slot_name, slot_type, plugin, active, wal_status,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained,
+       safe_wal_size, invalidation_reason, inactive_since
+  FROM pg_replication_slots
+ ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC NULLS LAST;</code></pre>
+<p>Second, find slots that are already dead but still taking up an entry. These never clean themselves up:</p>
+<pre><code>SELECT slot_name, invalidation_reason
+  FROM pg_replication_slots
+ WHERE invalidation_reason IS NOT NULL;</code></pre>
+<p>Third, check whether logical decoding is thrashing to disk:</p>
+<pre><code>SELECT slot_name, total_txns, total_bytes,
+       spill_count, spill_bytes, stream_txns, stream_bytes, stats_reset
+  FROM pg_stat_replication_slots
+ WHERE spill_bytes > 0;</code></pre>
+<h2>Troubleshooting: six real errors and what to do</h2>
+<p>All six below are verbatim output from my PostgreSQL 18.6 runs, not reconstructions of "typical" errors.</p>
+<p><strong>Error 1: the slot is already dead</strong></p>
+<pre><code>ERROR:  can no longer access replication slot "stale_sub"
+DETAIL:  This replication slot has been invalidated due to "wal_removed".</code></pre>
+<p>This is what Test 2 produced. There is exactly one fix: drop and rebuild.</p>
+<pre><code>SELECT pg_drop_replication_slot('stale_sub');
+-- on the subscriber, unbind first: ALTER SUBSCRIPTION x SET (slot_name = NONE); DROP SUBSCRIPTION x;</code></pre>
+<p>Dropping the subscription alone is not enough. The slot survives it unless you unbind first, which is the usual answer to "I disabled the subscription, so why is WAL still growing?"</p>
+<p><strong>Error 2: no uppercase letters in slot names</strong></p>
+<pre><code>ERROR:  replication slot name "BadSlot" contains invalid character
+HINT:  Replication slot names may only contain lower case letters, numbers, and the underscore character.</code></pre>
+<p>Both subscription names and slot names are subject to this. It bites hardest when you migrate from another database.</p>
+<p><strong>Error 3: duplicate slot name</strong></p>
+<pre><code>ERROR:  replication slot "dup_slot" already exists</code></pre>
+<p>Slot names are unique <strong>cluster-wide</strong>, not per database. Two databases on the same instance will collide.</p>
+<p><strong>Error 4: publishing a table that does not exist</strong></p>
+<pre><code>ERROR:  relation "no_such_table" does not exist</code></pre>
+<p>From <code>CREATE PUBLICATION p2 FOR TABLE no_such_table;</code>. If you script this, confirm the table exists in the publishing database first.</p>
+<p><strong>Error 5: reaching a slot from the wrong database</strong></p>
+<pre><code>ERROR:  replication slot "ord_sub" does not exist</code></pre>
+<p>A logical slot is bound to one specific database (the <code>pg_replication_slots.database</code> column). Query a slot created in <code>pub_demo</code> while connected to <code>postgres</code> and you get "does not exist" rather than "permission denied" — which is genuinely misleading. Check which database you are connected to first.</p>
+<p><strong>Error 6: calling pg_logical_slot_get_changes on a pgoutput slot</strong></p>
+<pre><code>ERROR:  option "proto_version" missing
+CONTEXT:  slot "ord_sub", output plugin "pgoutput", in the startup callback</code></pre>
+<p>I hit this on my first decoding attempt. <code>pgoutput</code> is the wire protocol plugin for subscribers and requires options like <code>proto_version</code> and <code>publication_names</code>, so you cannot drive it by hand. Use <code>test_decoding</code> if you want to inspect decoded output manually:</p>
+<pre><code>SELECT * FROM pg_create_logical_replication_slot('ord_sub','test_decoding');</code></pre>
+<h2>What number should you actually set?</h2>
+<p>Here is a way to turn it into arithmetic. Let T be the longest subscriber outage you want to tolerate, in hours, and R your peak write rate in MB per hour:</p>
+<pre><code>max_slot_wal_keep_size ≈ T × R × 1.5</code></pre>
+<p>The 1.5 is headroom. <code>safe_wal_size</code> is computed against <code>restart_lsn</code>, and <code>restart_lsn</code> advances with a lag — in my measurements it consistently trailed <code>confirmed_flush_lsn</code>. Better a slot that gets invalidated (rebuilding a subscription is recoverable) than a full disk (which is not).</p>
+<p>For monitoring, I would watch the retained byte count from <code>pg_replication_slots</code> before I watch free disk space. When the disk alarm fires you are already fighting a fire; when retained WAL starts climbing you still have hours of warning.</p>
+<h2>FAQ</h2>
+<p><strong>Do physical replication slots behave the same way?</strong></p>
+<p>Yes. Slots with <code>slot_type = 'physical'</code> hold a <code>restart_lsn</code> too and are bound by <code>max_slot_wal_keep_size</code> just the same. A standby that stays offline for a long time produces the identical outcome.</p>
+<p><strong>Can <code>wal_keep_size</code> replace this setting?</strong></p>
+<p>No. <code>wal_keep_size</code> is an unconditional WAL retention floor unrelated to slots; <code>max_slot_wal_keep_size</code> is a ceiling per slot. They stack, and both belong in your disk budget.</p>
+<p><strong>Will the subscriber reconnect on its own after a slot is invalidated?</strong></p>
+<p>No. The apply worker keeps retrying and throwing errors. You have to drop the subscription and the slot and run a fresh initial sync.</p>
+<p><strong>Is <code>pg_stat_replication</code> enough?</strong></p>
+<p>No. It only shows senders that are <strong>currently connected</strong>. The slots eating your disk are precisely the ones <strong>missing</strong> from it. Query <code>pg_replication_slots</code>.</p>
+<p><strong>Can I just delete the <code>pg_replslot</code> directory?</strong></p>
+<p>Do not. Slot state lives in shared memory and on disk, and <code>pg_drop_replication_slot()</code> is the only correct entry point. Removing the directory by hand leaves the instance misbehaving at the next checkpoint.</p>
+<h2>Wrapping up</h2>
+<p>The lesson here is not in the mechanics, it is in the default: <strong>PostgreSQL trusts that you will come back and read</strong>. That trust is harmless in a test environment and is a write-rate-timed bomb in production. Two minutes spent setting <code>max_slot_wal_keep_size</code> and <code>idle_replication_slot_timeout</code> is cheaper than a night spent deleting WAL by hand.</p>
+<p>If you are planning a version upgrade, my <a href="https://yaohehe.github.io/2026-10-11-postgresql-17-upgrade-5-real-errors-after-pg_upgra-en.html" target="_blank" rel="nofollow sponsored">PostgreSQL 17 upgrade walkthrough</a> covers how <code>pg_upgrade</code> preserves logical slots from 17 onward, which connects directly to the slot lifecycle above. And if you already have a stalled production instance, <a href="https://yaohehe.github.io/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" target="_blank" rel="nofollow sponsored">PostgreSQL Troubleshooting in Production: 5 Real Errors</a> tells the other half of the story — what sessions piling up on locks look like once WAL is pinned.</p>
+<p>As of this writing, every number above comes from my own PostgreSQL 18.6 run (<code>PostgreSQL 18.6 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code>), and the official definitions come from the PostgreSQL 18 documentation page for the <code>pg_replication_slots</code> view and the Release 18 notes. Verify versions and behavior against your own instance.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
