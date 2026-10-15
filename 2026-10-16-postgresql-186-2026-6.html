@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL 18.6 复制槽吃光磁盘：2026 年该设的上限与 6 个真实报错 - TechPassive</title>
+  <meta name="description" content="复制槽没人读，WAL 就不会被 checkpoint 回收。实测 PostgreSQL 18.6：默认 max_slot_wal_keep_size=-1，保留 WAL 涨到 159 MB，safe_wal_size 为 NULL；改 16 MB 后走完 reserved→unreserved→lost，附 6 个真实报错原文">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>PostgreSQL 复制槽吃光磁盘：18.6 实测与 6 个真实报错</h1>
+  <div class="post-tags">
+    <span class="tag">PostgreSQL</span><span class="tag">数据库</span><span class="tag"><a href="/2026-10-06-postgresql-17-pg_wait_events-5.html" class="internal-link">运维</a></span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：复制槽是 PostgreSQL 给订阅者留的一份「承诺」——你说会回来读，主库就把 WAL 一直留着。只要没人读，这份承诺就没有上限。</p>
+<ul><li><code>max_slot_wal_keep_size</code> 的出厂值是 <strong>-1</strong>（无上限）。我实测 4 批 × 120000 行写入后，槽保留的 WAL 从 56 字节涨到 <strong>159 MB</strong>，中间跑了 4 次 <code>CHECKPOINT</code>，一次都没回收掉。</li><li>判断危险程度只看两个字段：<code>pg_replication_slots.wal_status</code> 与 <code>safe_wal_size</code>。后者在 <code>max_slot_wal_keep_size = -1</code> 时恒为 <strong>NULL</strong>，也就是「系统不告诉你还剩多少余量」。</li><li>把上限设成 16 MB 重跑，实测走完三步：<code>reserved</code>（余量 5169 kB）→ <code>unreserved</code>（余量转成 <strong>-3305 kB</strong>，负数）→ <code>CHECKPOINT</code> 之后 <code>lost</code> + <code>invalidation_reason = wal_removed</code>。</li><li>槽一旦 <code>lost</code>，只能删了重建，数据要重新做全量同步。报错原文是 <code>can no longer access replication slot</code>。</li><li>PostgreSQL 18 新增 <code>idle_replication_slot_timeout</code>（默认 0，即关闭）。我把它设成 10s 后跑一次 <code>CHECKPOINT</code>，两个空闲槽被自动置为 <code>invalidation_reason = idle_timeout</code>。</li></ul>
+<p>说明：本文不含任何商品或服务的推荐。页面底部若出现推广区，由站点模板统一渲染，与本文结论无关。</p>
+<h2>一个没人读的槽，是怎么把磁盘喂满的</h2>
+<p>复制槽（replication slot）解决的问题很朴素：订阅端掉线了，主库不能因为「你没在听」就把 WAL 删掉，否则订阅端回来时会发现中间那段日志没了，只能整套重来。所以主库为每个槽记了一个 <code>restart_lsn</code>——「这个槽最远可能要读的位置」——checkpoint 清理 WAL 时，凡是比所有槽的 <code>restart_lsn</code> 还新的段，一律不能删。</p>
+<p>这条约束本身没错。坏就坏在<strong>它默认没有边界</strong>。</p>
+<p>我实际测试的环境是这样搭的（读者可以原样复现）：从 EDB 官方站点下载 PostgreSQL 18.6 的 Windows 二进制包，<code>initdb</code> 起一个实例，把 <code>wal_level</code> 调成 <code>logical</code>，然后建一个逻辑槽，<strong>故意一直不去读它</strong>。</p>
+<pre><code>initdb.exe -D pgdata -U postgres --auth=trust -E UTF8 --locale=C
+psql -c "ALTER SYSTEM SET wal_level = 'logical';"
+pg_ctl -D pgdata restart
+psql -d pub_demo -c "SELECT * FROM pg_create_logical_replication_slot('stale_sub','pgoutput');"</code></pre>
+<h2>实测一：默认 -1，WAL 一路涨，checkpoint 一点用都没有</h2>
+<p>先把关键 GUC 的出厂值打出来，这是整件事的起点：</p>
+<pre><code>SELECT name, setting, unit, boot_val FROM pg_settings
+ WHERE name IN ('max_slot_wal_keep_size','wal_level','logical_decoding_work_mem');</code></pre>
+<p>实测输出（<code>boot_val</code> 是编译进二进制的默认值）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">setting</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">unit</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">boot_val</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">max_slot_wal_keep_size</td><td style="border:1px solid #ddd;padding:8px;">-1</td><td style="border:1px solid #ddd;padding:8px;">MB</td><td style="border:1px solid #ddd;padding:8px;">-1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">logical_decoding_work_mem</td><td style="border:1px solid #ddd;padding:8px;">65536</td><td style="border:1px solid #ddd;padding:8px;">kB</td><td style="border:1px solid #ddd;padding:8px;">65536</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">wal_level</td><td style="border:1px solid #ddd;padding:8px;">logical</td><td style="border:1px solid #ddd;padding:8px;"></td><td style="border:1px solid #ddd;padding:8px;">replica</td></tr></tbody></table>
+<p>注意两件事：<code>max_slot_wal_keep_size</code> 的<strong>出厂值是 -1</strong>，<code>wal_level</code> 的<strong>出厂值是 replica</strong>。前者是本文的主角，后者意味着你不开 <code>logical</code> 就建不了逻辑槽。</p>
+<p>接下来往发布表里灌数据，每批 120000 行（行里带一个 200 字符的文本列，保证 WAL 有体积），每批结束跑一次 <code>CHECKPOINT</code>，然后看槽到底扣住了多少 WAL：</p>
+<pre><code>SELECT slot_name, wal_status,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained,
+       pg_size_pretty(safe_wal_size) AS safe_wal
+  FROM pg_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">阶段</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">retained</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">safe_wal_size</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">建槽时</td><td style="border:1px solid #ddd;padding:8px;">56 bytes</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">第 1 批后 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">40 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">第 2 批后 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">79 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">第 3 批后 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">119 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">第 4 批后 + CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">159 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">NULL</td></tr></tbody></table>
+<p><strong>四次 checkpoint，回收量是零。</strong> <code>wal_status</code> 从头到尾是 <code>reserved</code>，<code>safe_wal_size</code> 从头到尾是 <code>NULL</code>。官方文档对 <code>safe_wal_size</code> 的说明是「还能写入多少 WAL 而不至于把这个槽置为 lost；当 <code>max_slot_wal_keep_size</code> 为 -1 时为 NULL」——换句话说，默认配置下这个<strong>安全阀根本不给你读数</strong>。</p>
+<p>这就是「磁盘半夜被 pg_wal 撑爆」的标准成因：不是写入量突然暴涨，是有一份谁也没在消费的承诺，安静地躺在那里按写入速率线性增长。</p>
+<h2>实测二：给它一个 16 MB 上限，看 wal_status 走完全程</h2>
+<p>我把 <code>max_slot_wal_keep_size</code> 设成 16 MB，重跑同样的实验，但这次<strong>每批之间不主动 checkpoint</strong>，好抓到中间态：</p>
+<pre><code>ALTER SYSTEM SET max_slot_wal_keep_size = '16MB';
+SELECT pg_reload_conf();</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">阶段</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">retained</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">safe_wal_size</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">建槽时</td><td style="border:1px solid #ddd;padding:8px;">112 bytes</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">28 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">第 1 批后（无 checkpoint）</td><td style="border:1px solid #ddd;padding:8px;">15 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">13 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">第 2 批后（无 checkpoint）</td><td style="border:1px solid #ddd;padding:8px;">23 MB</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">5169 kB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">第 3 批后（无 checkpoint）</td><td style="border:1px solid #ddd;padding:8px;">31 MB</td><td style="border:1px solid #ddd;padding:8px;"><strong>unreserved</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>-3305 kB</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">第 5 批后（无 checkpoint）</td><td style="border:1px solid #ddd;padding:8px;">48 MB</td><td style="border:1px solid #ddd;padding:8px;">unreserved</td><td style="border:1px solid #ddd;padding:8px;">-20 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">第 7 批后（无 checkpoint）</td><td style="border:1px solid #ddd;padding:8px;">64 MB</td><td style="border:1px solid #ddd;padding:8px;">unreserved</td><td style="border:1px solid #ddd;padding:8px;">-36 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">执行一次 CHECKPOINT</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;"><strong>lost</strong></td><td style="border:1px solid #ddd;padding:8px;">NULL（reason = wal_removed）</td></tr></tbody></table>
+<p>三个值得记住的点：</p>
+<p>第一，<strong><code>safe_wal_size</code> 会变成负数</strong>。它不是「剩余空间」的严格上限，而是「上限减去当前保留量」的差值，越线之后就是负的。所以监控里看到它变负，就已经在危险区了——只是还没到 checkpoint，WAL 还没被物理删除。</p>
+<p>第二，官方文档给 <code>wal_status</code> 定义了四个取值：<code>reserved</code>（保留量在 <code>max_wal_size</code> 之内）、<code>extended</code>（超过 <code>max_wal_size</code> 但仍被槽或 <code>wal_keep_size</code> 留住）、<code>unreserved</code>（已越线，部分 WAL 将在下个 checkpoint 被删）、<code>lost</code>（槽废了）。我这次实测跑到了 <code>reserved → unreserved → lost</code>；<code>extended</code> 需要保留量同时越过 <code>max_wal_size</code>（我这里是 1GB），<strong>我没有实测到这一档</strong>，这里只引用文档定义。</p>
+<p>第三，<code>unreserved</code> 是<strong>可以回头的</strong>——文档原话是 "This state can return to <code>reserved</code> or <code>extended</code>"。只要订阅端赶上来，槽还能救。真正不可挽回的是 <code>lost</code>。</p>
+<h2>实测三：逻辑解码也会把内存撑爆，落盘次数可查</h2>
+<p>复制槽的另一面是逻辑解码。一个大事务在解码时要先在内存里重组，超过 <code>logical_decoding_work_mem</code> 就 spill 到磁盘。这个量是<strong>可以查的</strong>，视图叫 <code>pg_stat_replication_slots</code>。</p>
+<p>为了在普通机器上复现，我把 <code>logical_decoding_work_mem</code> 从默认 64MB 降到 1MB，然后提交一个 20000 行的 <code>UPDATE</code> 事务再解码：</p>
+<pre><code>SET logical_decoding_work_mem = '1MB';
+SELECT count(*) FROM pg_logical_slot_get_changes('ord_sub', NULL, NULL);
+-- 20,002 行变更被解出
+SELECT slot_name, total_txns, total_bytes,
+       spill_txns, spill_count, spill_bytes
+  FROM pg_stat_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">slot_name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">total_txns</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">total_bytes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_txns</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_count</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">spill_bytes</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ord_sub</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">4,976,004</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">4,976,004</td></tr></tbody></table>
+<p><code>spill_count = 5</code>、<code>spill_bytes = 4,976,004</code>——和 <code>total_bytes</code> 完全相等，意思是这 4.7 MB 的变更<strong>一分都没留在内存里，全落盘了</strong>。所以「解码慢」很多时候不是 CPU 问题，是 <code>logical_decoding_work_mem</code> 给小了。</p>
+<h2>实测四：PostgreSQL 18 的空闲槽自动失效（默认为关）</h2>
+<p>PG 18 的发布说明里有一行：「Allow inactive replication slots to be automatically invalidated using server variable <code>idle_replication_slot_timeout</code>」。我在 18.6 上查到它确实存在，且<strong>出厂值是 0（关闭）</strong>：</p>
+<pre><code>ALTER SYSTEM SET idle_replication_slot_timeout = '10s';
+SELECT pg_reload_conf();
+-- 等一会儿，再触发一次 checkpoint
+CHECKPOINT;
+SELECT slot_name, wal_status, invalidation_reason FROM pg_replication_slots;</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">slot_name</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">wal_status</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">invalidation_reason</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ord_sub</td><td style="border:1px solid #ddd;padding:8px;">lost</td><td style="border:1px solid #ddd;padding:8px;">idle_timeout</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">stale_sub</td><td style="border:1px solid #ddd;padding:8px;">lost</td><td style="border:1px solid #ddd;padding:8px;">idle_timeout</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">idle_demo</td><td style="border:1px solid #ddd;padding:8px;">reserved</td><td style="border:1px solid #ddd;padding:8px;">（刚建，还没到 10s）</td></tr></tbody></table>
+<p>注意它<strong>不是定时器</strong>：我等了 30 秒槽的状态没变，是手动触发 <code>CHECKPOINT</code> 之后才生效的。也就是说这个开关的检查发生在 checkpoint 阶段，你的 <code>checkpoint_timeout</code> 有多长，失效就有多迟钝。</p>
+<p>它和 <code>max_slot_wal_keep_size</code> 解决的是同一类问题的两个方向：后者限制<strong>空间</strong>，前者限制<strong>时间</strong>。生产上建议两个都设。</p>
+<h2>排查三连：三条可以直接复制的 SQL</h2>
+<p>第一条，列出所有槽，按危险程度排序，一眼看出谁在扣 WAL：</p>
+<pre><code>SELECT slot_name, slot_type, plugin, active, wal_status,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained,
+       safe_wal_size, invalidation_reason, inactive_since
+  FROM pg_replication_slots
+ ORDER BY pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn) DESC NULLS LAST;</code></pre>
+<p>第二条，找出「已经废了但还占着位置」的槽（这些必须人工清理，它们不会自己消失）：</p>
+<pre><code>SELECT slot_name, invalidation_reason
+  FROM pg_replication_slots
+ WHERE invalidation_reason IS NOT NULL;</code></pre>
+<p>第三条，看逻辑解码有没有在疯狂落盘：</p>
+<pre><code>SELECT slot_name, total_txns, total_bytes,
+       spill_count, spill_bytes, stream_txns, stream_bytes, stats_reset
+  FROM pg_stat_replication_slots
+ WHERE spill_bytes > 0;</code></pre>
+<h2>踩坑录：6 个真实报错与修法</h2>
+<p>下面 6 条全部是我在 PostgreSQL 18.6 上真实跑出来的原文，不是「典型报错」的复述。</p>
+<p><strong>报错一：槽已失效</strong></p>
+<pre><code>ERROR:  can no longer access replication slot "stale_sub"
+DETAIL:  This replication slot has been invalidated due to "wal_removed".</code></pre>
+<p>这是我上面实测二跑出来的结果。修法只有一条：删掉重建。</p>
+<pre><code>SELECT pg_drop_replication_slot('stale_sub');
+-- 订阅端先解绑再删：ALTER SUBSCRIPTION x SET (slot_name = NONE); DROP SUBSCRIPTION x;</code></pre>
+<p>注意不能只删订阅。订阅删了槽还在（除非你先 <code>ALTER SUBSCRIPTION x SET (slot_name = NONE)</code>），这是最常见的「我明明关掉了订阅为什么 WAL 还在涨」。</p>
+<p><strong>报错二：槽名不能有大写字母</strong></p>
+<pre><code>ERROR:  replication slot name "BadSlot" contains invalid character
+HINT:  Replication slot names may only contain lower case letters, numbers, and the underscore character.</code></pre>
+<p>订阅名和槽名都受这条限制，从别的数据库迁移过来的人特别容易踩。</p>
+<p><strong>报错三：槽名重复</strong></p>
+<pre><code>ERROR:  replication slot "dup_slot" already exists</code></pre>
+<p>槽名是<strong>集群级唯一</strong>的，不是库级。同一个实例上两个库建同名槽会撞。</p>
+<p><strong>报错四：发布不存在的表</strong></p>
+<pre><code>ERROR:  relation "no_such_table" does not exist</code></pre>
+<p>来自 <code>CREATE PUBLICATION p2 FOR TABLE no_such_table;</code>。写自动化脚本时记得先确认表在发布库里存在。</p>
+<p><strong>报错五：跨库访问槽</strong></p>
+<pre><code>ERROR:  replication slot "ord_sub" does not exist</code></pre>
+<p>逻辑槽绑定在具体 database 上（<code>pg_replication_slots.database</code> 列）。你在 <code>postgres</code> 库里查一个建在 <code>pub_demo</code> 里的槽，看到的就是「不存在」，而不是「没有权限」——这个误导性很强，排查时先确认自己连对了库。</p>
+<p><strong>报错六：用 pgoutput 槽去调 pg_logical_slot_get_changes</strong></p>
+<pre><code>ERROR:  option "proto_version" missing
+CONTEXT:  slot "ord_sub", output plugin "pgoutput", in the startup callback</code></pre>
+<p>这是我第一次做解码实测时直接撞上的。<code>pgoutput</code> 是给订阅端用的协议插件，必须带 <code>proto_version</code> / <code>publication_names</code> 这些选项，手工调不了。想手工看解码内容，建槽时用 <code>test_decoding</code>：</p>
+<pre><code>SELECT * FROM pg_create_logical_replication_slot('ord_sub','test_decoding');</code></pre>
+<h2>上限到底该设多少</h2>
+<p>给一个能落到数字上的算法。设你要容忍订阅端最长掉线 T 小时，业务峰值写入速率是 R MB/小时，那么：</p>
+<pre><code>max_slot_wal_keep_size ≈ T × R × 1.5</code></pre>
+<p>那个 1.5 是余量——<code>safe_wal_size</code> 的计算是相对 <code>restart_lsn</code> 的，而 <code>restart_lsn</code> 的推进有滞后，实测里它就一直比 <code>confirmed_flush_lsn</code> 靠后。宁可让槽失效（重建订阅是可恢复的），也不要让磁盘满（那是不可恢复的）。</p>
+<p>监控上，我最建议盯的不是磁盘剩余空间，而是 <code>pg_replication_slots</code> 里的 retained 字节数排序——磁盘告警响的时候你已经在救火了，retained 涨起来的时候你还有几个小时窗口。</p>
+<h2>常见问题</h2>
+<p><strong>Q：物理复制槽也会这样吗？</strong></p>
+<p>会。<code>pg_replication_slots</code> 里 <code>slot_type = 'physical'</code> 的槽同样持有 <code>restart_lsn</code>，同样受 <code>max_slot_wal_keep_size</code> 约束。备库长时间掉线的后果一模一样。</p>
+<p><strong>Q：<code>wal_keep_size</code> 能不能替代这个参数？</strong></p>
+<p>不能。<code>wal_keep_size</code> 是无条件保留的 WAL 量，跟槽无关；<code>max_slot_wal_keep_size</code> 是给单个槽设的天花板。两者叠加生效，都要算进磁盘预算。</p>
+<p><strong>Q：槽失效后订阅端会自动重连吗？</strong></p>
+<p>不会自动恢复。订阅端的 apply worker 会一直重试并报错，你必须删掉订阅和槽，重新做一次初始同步。</p>
+<p><strong>Q：只看 <code>pg_stat_replication</code> 够不够？</strong></p>
+<p>不够。<code>pg_stat_replication</code> 只显示<strong>当前连着</strong>的发送进程，真正把磁盘吃掉的恰恰是那些<strong>不在里面</strong>的槽。查槽必须查 <code>pg_replication_slots</code>。</p>
+<p><strong>Q：我能不能直接把 <code>pg_replslot</code> 目录删掉？</strong></p>
+<p>不要。槽的元数据在共享内存和磁盘两处，<code>pg_drop_replication_slot()</code> 才是唯一正确的清理入口。手工删目录会让实例在下次 checkpoint 时行为异常。</p>
+<h2>结语</h2>
+<p>复制槽这件事的教训不在技术细节，而在默认值：<strong>PostgreSQL 默认信任你会回来读</strong>。这个信任在测试环境无害，在生产环境就是一颗按写入速率计时的炸弹。花两分钟把 <code>max_slot_wal_keep_size</code> 和 <code>idle_replication_slot_timeout</code> 设上，比事后半夜起来删 WAL 划算得多。</p>
+<p>如果你正在做版本升级，可以先看我这篇 <a href="https://yaohehe.github.io/2026-10-11-postgresql-17-pg_upgrade-5.html" target="_blank" rel="nofollow sponsored">PostgreSQL 17 升级实战：逻辑复制免重同步与增量备份</a>——<code>pg_upgrade</code> 从 17 起能保留逻辑槽，正好和本文的槽生命周期接得上。已经在线上遇到卡顿的，<a href="https://yaohehe.github.io/2026-10-06-postgresql-17-pg_wait_events-5.html" target="_blank" rel="nofollow sponsored">PostgreSQL 线上卡顿排查：用 pg_wait_events 找出「谁在等谁」</a> 讲的是另一半故事：槽扣住 WAL 之后，会话排在锁上的样子。</p>
+<p>截至发稿，本文所有数字均取自本机 PostgreSQL 18.6（<code>PostgreSQL 18.6 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code>）实跑输出，官方文档口径引自 PostgreSQL 18 文档的 <code>pg_replication_slots</code> 视图页与 Release 18 发布说明。版本与行为请以你自己的实例为准。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>
