@@ -1,77 +1,55 @@
-# TechPassive 自动化博客
+# TechPassive
 
-零成本被动收入实战博客。使用 GitHub Pages 免费托管。
+**零成本被动收入实战 · 程序员桌面装备 · WordPress 运维 · AI 工程**
 
-## 快速部署
+个人技术博客，内容全部基于第一手实测。中文站 / English site:
 
-### 1. 创建 GitHub 仓库
+- 🌐 **中文站**: https://yaohehe.github.io/
+- 🌐 **English**: https://yaohehe.github.io/index-en.html
+- 🔍 全站搜索（Pagefind）已内置，中英文均可检索
 
-在 GitHub 上创建名为 `yaohehe.github.io` 的仓库（替换 yaohehe 为你的 GitHub 用户名）
+## 写什么
 
-### 2. 本地初始化
+| 方向 | 说明 |
+|---|---|
+| **WordPress & 站点运维** | 性能调优、wp-cli 实战、安全加固、数据库优化（全部有实测数据） |
+| **AI & 本地大模型** | Docker Model Runner、Ollama、vLLM、RAG 落地、LLM 工程书单 |
+| **程序员桌面装备** | 显示器挂灯、鼠标、键盘、NAS、网络设备横评（含真实缺陷披露） |
+| **数据库 & 自托管** | PostgreSQL、Docker、n8n、Gitea/Forgejo 踩坑复盘 |
 
-```bash
-git init
-git remote add origin https://github.com/yaohehe/yaohehe.github.io.git
-git add -A
-git commit -m "Initial commit"
-git push -u origin main
-```
+## 精选文章
 
-### 3. 启用 GitHub Pages
+**AI / 本地大模型**
+- [Docker Model Runner 架构解剖：三个推理引擎怎么选，容器里连不上怎么解](https://yaohehe.github.io/2026-10-11-docker-model-runner.html) — llama.cpp / vLLM / Diffusers 对比、两种容器访问口径、无鉴权部署红线
+- [从 Ollama 迁到 Docker Model Runner：4 条端点对照与 5 个真实报错](https://yaohehe.github.io/2026-10-17-ollama-docker-model-runner-4-5.html)
+- [微调 vs RAG vs 提示工程：三种 LLM 定制路线的成本收益决策树](https://yaohehe.github.io/2026-10-14-rag-llm-2026.html)
 
-1. 访问仓库 Settings → Pages
-2. Source 选择 "Deploy from a branch"
-3. Branch 选择 "main"，文件夹选择 "/ (root)"
-4. 点击 Save
+**WordPress**
+- [WordPress 7.1 + WP-CLI 2.12 实战：600 篇文章内链与 SEO 批量重排](https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-600-seo.html)
+- [WordPress 数据库优化实战：从 3.2 秒到 180 毫秒](https://yaohehe.github.io/2026-09-26-wordpress-32-180.html)
+- [WordPress 对象缓存选型：Object Cache Pro vs Redis Object Cache](https://yaohehe.github.io/2026-06-11-wordpress-2026-object-cache-pro-vs-redis-object-ca.html)
 
-等待 2-3 分钟，博客将上线于：https://yaohehe.github.io
+**数据库 & 自托管**
+- [PostgreSQL 18.6 复制槽实测：没人读的槽怎么把 WAL 吃到 159 MB](https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html)
+- [自托管 n8n + Langfuse 接入实战：让每个 LLM 调用都可追踪](https://yaohehe.github.io/2026-09-26-langfuse-n8n-llm.html)
 
-## 更新联盟链接
+**桌面装备**
+- [2026 程序员显示器挂灯横评：179 美元的 BenQ ScreenBar Halo 2 到底贵在哪](https://yaohehe.github.io/2026-09-27-2026-benq-screenbar-halo-2-179.html)
+- [USB-C 转 2.5GbE 以太网适配器横评：iperf3 实测 4 款](https://yaohehe.github.io/2026-07-14-2026-usb-c-25gbe-anker-ugreen-cable-matters-trendnet-4.html)
 
-编辑 `public/index.html` 和其他 HTML 文件，将以下占位符替换为你的实际联盟链接：
+## 内容原则
 
-- `techpassive-20` → AWS 联盟追踪码
-- `YOUR_DO_TAG` → DigitalOcean 联盟链接
-- `YOUR_VULTR_TAG` → Vultr 联盟链接
+- **实测优先** — 没亲手跑过的不写「实测」，只写「官方标称」
+- **数字必有出处** — 版本号 / 价格 / 性能数据可回溯到官方文档或 Benchmark
+- **真实缺陷披露** — 推荐类文章必写每款产品的缺点
+- **不编造** — 查不到就写「建议查看官方页面」
 
-## 自动化更新
+## 联系
 
-本项目配置了每日自动生成新文章的脚本。运行：
-
-```bash
-npm install
-node genposts.js
-```
-
-## 文件结构
-
-```
-affiliate-blog/
-├── public/              # 静态HTML文件（已发布）
-│   ├── index.html        # 首页
-│   └── *.html            # 各篇文章
-├── source/               # 源文件
-│   └── _posts/           # Markdown文章
-├── _config.yml          # Hexo配置
-├── generate.js          # 文章生成脚本
-└── README.md            # 本文件
-```
-
-## 收入来源
-
-本博客通过联盟链接产生收入：
-- AWS 联盟计划
-- DigitalOcean 联盟计划
-- Vultr 联盟计划
-
-
-## 注意事项
-
-1. **联盟注册**：确保已在各平台注册联盟账号
-2. **内容更新**：定期更新SEO文章以维持搜索排名
-3. **合规性**：遵守各平台的联盟条款
+- Email: yao_hehe@hotmail.com
+- GitHub: [@yaohehe](https://github.com/yaohehe)
+- 留言页: https://yaohehe.github.io/contact/
 
 ---
-*使用 Hexo + GitHub Pages 构建，完全零成本*
 
+*本仓库是 GitHub Pages 站点源。文章以静态 HTML 形式发布在站点根目录，搜索索引由 Pagefind 在部署时构建。*
