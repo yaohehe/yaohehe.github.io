@@ -35,7 +35,7 @@
 
 **桌面装备**
 - [2026 程序员显示器挂灯横评：179 美元的 BenQ ScreenBar Halo 2 到底贵在哪](https://yaohehe.github.io/2026-09-27-2026-benq-screenbar-halo-2-179.html)
-- [USB-C 转 2.5GbE 以太网适配器横评：iperf3 实测 4 款](https://yaohehe.github.io/2026-07-14-2026-usb-c-25gbe-anker-ugreen-cable-matters-trendnet-4.html)
+- [USB-C 转 2.5GbE 以太网适配器横评：iperf3 实测 4 款](https://yaohehe.github.io/2026-07-14-2026-usb-c-25gbe-anker-ugreen-cable-matters-trendn.html)
 
 ## 内容原则
 
