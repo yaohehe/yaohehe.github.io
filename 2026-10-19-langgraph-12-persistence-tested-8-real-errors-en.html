@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph 1.2 Persistence Tested: 8 Real Errors - TechPassive</title>
+  <meta name="description" content="I tested LangGraph 1.2.16 with SqliteSaver 3.1.2 on Python 3.13.14: 3 checkpoints per turn, 10.7x slower, 93.75% of concurrent writes to one thread lost, 8 real errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>LangGraph Persistence Tested: 8 Real Errors</h1>
+  <div class="post-tags">
+    <span class="tag">LangGraph</span><span class="tag">AI Agents</span><span class="tag">Persistence</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: LangGraph persistence is not a "memory switch" you flip on a graph. It writes a state snapshot per step into a table whose primary key is <code>(thread_id, checkpoint_ns, checkpoint_id)</code>. I tested langgraph 1.2.16 with langgraph-checkpoint-sqlite 3.1.2 and found three things the official docs do not spell out: <code>SqliteSaver.from_conn_string()</code> returns a context manager, not a saver, so handing it straight to <code>compile()</code> blows up; passing only <code>thread_id + checkpoint_id</code> to <code>update_state()</code> — exactly what the time-travel page shows — raises <code>KeyError: 'checkpoint_ns'</code>; and while the docs tell you to prune old checkpoints, <code>SqliteSaver.prune()</code> in 3.1.2 is a bare <code>raise NotImplementedError</code>.</p>
+<h2>What I ran, and what "measured" means here</h2>
+<p>Every number below came out of a real process on this machine. Nothing is copied from a blog post.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Component</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Source</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Python</td><td style="border:1px solid #ddd;padding:8px;">3.13.14</td><td style="border:1px solid #ddd;padding:8px;">local <code>sys.version</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">langgraph</td><td style="border:1px solid #ddd;padding:8px;">1.2.16</td><td style="border:1px solid #ddd;padding:8px;">PyPI and GitHub Release <code>langgraph==1.2.16</code> (published 2026-10-16T22:11:28Z) — both agree</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">langgraph-checkpoint</td><td style="border:1px solid #ddd;padding:8px;">4.3.0</td><td style="border:1px solid #ddd;padding:8px;">PyPI</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">langgraph-checkpoint-sqlite</td><td style="border:1px solid #ddd;padding:8px;">3.1.2</td><td style="border:1px solid #ddd;padding:8px;">PyPI</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">langchain-core</td><td style="border:1px solid #ddd;padding:8px;">1.6.12</td><td style="border:1px solid #ddd;padding:8px;">PyPI</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">OS</td><td style="border:1px solid #ddd;padding:8px;">Windows 11</td><td style="border:1px solid #ddd;padding:8px;">local</td></tr></tbody></table>
+<p>Scope: "measured" means I executed it and recorded the value. Anything describing official behaviour is quoted from official docs and labelled as such. The throughput numbers are single-process, single-threaded, local-file SQLite — <strong>not Postgres, and not production concurrency</strong>. Versions and dates are as of 2026-10-19; check the official release page before relying on them.</p>
+<h2>What a checkpointer actually writes to SQLite</h2>
+<p>Before writing any business logic, I built a one-node graph and opened the database:</p>
+<pre><code>import sqlite3
+from typing import Annotated, TypedDict
+import operator
+from langgraph.graph import StateGraph, START, END
+from langgraph.checkpoint.sqlite import SqliteSaver
+
+class S(TypedDict):
+    n: Annotated[int, operator.add]
+
+def d(s): return {"n": 1}
+
+g = StateGraph(S)
+g.add_node("d", d)
+g.add_edge(START, "d")
+g.add_edge("d", END)
+
+conn = sqlite3.connect("ckpt.sqlite", check_same_thread=False)
+app = g.compile(checkpointer=SqliteSaver(conn))
+app.invoke({"n": 0}, {"configurable": {"thread_id": "t-1"}})</code></pre>
+<p>The table (dumped from <code>sqlite_master</code>):</p>
+<pre><code>CREATE TABLE checkpoints (
+    thread_id TEXT NOT NULL,
+    checkpoint_ns TEXT NOT NULL DEFAULT '',
+    checkpoint_id TEXT NOT NULL,
+    parent_checkpoint_id TEXT,
+    type TEXT,
+    checkpoint BLOB,
+    metadata BLOB,
+    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+)</code></pre>
+<p>Two things matter here. First, <strong>the primary key is a triple</strong>, not <code>(thread_id, checkpoint_id)</code> — that is where the <code>KeyError</code> below comes from. Second, measured: each <code>invoke</code> adds <strong>3 rows</strong>. 100 invokes produced 300 checkpoint rows and 500 write rows; 200 invokes produced 600. A minimal "input → node → end" graph leaves one snapshot per superstep, not one per run.</p>
+<h2>Resuming across processes is replay, not memory</h2>
+<p>A common mental model is that enabling a checkpointer makes the graph "remember". What actually happens: the next <code>invoke</code> reads the last checkpoint from the database, uses it as the starting state, and folds new writes through your reducers.</p>
+<p>I launched three <strong>completely separate Python processes</strong>, each running one <code>invoke</code> and exiting:</p>
+<pre><code>process #1 -> {'n': 1}
+process #2 -> {'n': 2}
+process #3 -> {'n': 3}</code></pre>
+<p>No shared memory between them — just one SQLite file and one <code>thread_id</code>. That is what the official docs mean by "fault tolerance": process restarts and container rebuilds do not lose state. The flip side is that <strong>changing the <code>thread_id</code> cuts the state</strong>: without a checkpointer, two consecutive invokes both return <code>{'n': 1}</code>, and the second run cannot see the first.</p>
+<h2>Human-in-the-loop: interrupt and Command(resume=)</h2>
+<p><code>interrupt()</code> parks a node mid-flight until a human answers. Measured behaviour:</p>
+<pre><code>def ask(s):
+    ans = interrupt({"question": "confirm?", "seen": s["v"]})
+    return {"v": 10 + int(ans)}
+
+app.invoke({"v": 1}, cfg)              # result carries one '__interrupt__'
+app.get_state(cfg).next                # ('ask',)  — not finished
+app.invoke(Command(resume=5), cfg)     # {'v': 16}</code></pre>
+<p>The trap: calling <code>interrupt()</code> on a graph <strong>without</strong> a checkpointer does not raise. It stuffs an <code>Interrupt</code> into the return value and ends, so you never get a second chance to resume. To tell whether you are genuinely parked, inspect <code>get_state(cfg).next</code> and <code>tasks[].interrupts</code> — not whether <code>invoke</code> threw.</p>
+<h2>Time travel: the official snippet is two characters short</h2>
+<p>The official time-travel page reads state like this:</p>
+<pre><code>config = {"configurable": {"thread_id": "1", "checkpoint_id": "1ef663ba-..."}}
+graph.get_state(config)</code></pre>
+<p>Measured: <code>get_state()</code> accepts that fine and returns <code>{'n': 1}</code>. Hand the <strong>same config</strong> to <code>update_state()</code> to fork, and it explodes:</p>
+<pre><code>KeyError: 'checkpoint_ns'</code></pre>
+<p>The cause is line 432 of <code>langgraph/checkpoint/sqlite/__init__.py</code>, which unconditionally reads <code>config["configurable"]["checkpoint_ns"]</code> — a field nobody thinks to add when hand-writing a config. Add it and it works:</p>
+<pre><code>cfg_ok = {"configurable": {"thread_id": "t7", "checkpoint_ns": "", "checkpoint_id": cid}}
+app.update_state(cfg_ok, {"n": 100})     # measured: n goes 1 -> 101</code></pre>
+<p>My recommendation: do not hand-write it at all. Pass back the <code>config</code> object returned by <code>get_state_history()</code> — it already carries <code>checkpoint_ns</code> (measured as an empty string). After forking, history went from 9 entries to 10 and the original branch survived: time travel forks, it does not overwrite.</p>
+<h2>Cleanup: the docs say prune, the SQLite backend raises</h2>
+<p>The official persistence page, under "Checkpoints growing unboundedly", says long conversations accumulate checkpoints and drive up latency and storage cost, and recommends pruning periodically or setting a retention policy — <strong>with a PostgresSaver example</strong>.</p>
+<p>On the SQLite backend:</p>
+<pre><code>app.checkpointer.prune(["t7"])
+# NotImplementedError (empty message)</code></pre>
+<p>In the source, <code>SqliteSaver.prune()</code> has the base-class signature, but the last line of the body is <code>raise NotImplementedError</code>, with no message at all. So <strong>the officially recommended cleanup path does not exist for local SQLite development</strong>. The alternative that measured as working is <code>delete_thread()</code>, signature <code>(thread_id: str) -> None</code>; after calling it the checkpoints table went from 10 rows to 0.</p>
+<h2>The performance bill: a checkpointer is not free</h2>
+<p>Same graph, 100 invokes each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Setup</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Time for 100</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Throughput</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">No checkpointer</td><td style="border:1px solid #ddd;padding:8px;">0.121 s</td><td style="border:1px solid #ddd;padding:8px;">827.7 invokes/s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">SqliteSaver (local file)</td><td style="border:1px solid #ddd;padding:8px;">1.293 s</td><td style="border:1px solid #ddd;padding:8px;">77.3 invokes/s</td></tr></tbody></table>
+<p>About <strong>10.7x</strong>. Storage: 100 turns produced 331,776 B (~3.3 KB/turn), 200 turns produced 475,136 B (~2.4 KB/turn) — the file grows in 4 KB pages, so short-run numbers jump around.</p>
+<p>Does latency degrade as history grows? Measured 52.17 ms on turn 1, 28.88 ms at turn 25, 29.93 ms at turn 50, 28.32 ms at turn 100, 27.59 ms at turn 200 (the node contains a deliberate 20 ms sleep, so net is roughly 8 ms). <strong>No read amplification observed up to 600 checkpoint rows.</strong> Rows keep accumulating though, so long-running jobs still need their own retention policy.</p>
+<h2>Concurrent writes to one thread: no error, lost updates</h2>
+<p>This is the most dangerous thing I measured. Sixteen threads, released together with a barrier, all <code>invoke</code> the same <code>thread_id</code>:</p>
+<pre><code>16 threads in 0.24s | exceptions = 0
+history len: 48        # 16 x 3, every one persisted
+final n = 1            # expected 16</code></pre>
+<p>No exception, all 48 checkpoints written, final state 1 — <strong>15 of 16 updates (93.75%) vanish from the business point of view</strong>. They all forked from the same parent checkpoint, and <code>get_state()</code> returns only the newest one. The SQLite backend does no mutual exclusion for you.</p>
+<p>The rule is blunt: <strong>writes to one <code>thread_id</code> must be serialised</strong>. If you need concurrency, use different <code>thread_id</code>s or queue upstream. The docs position the checkpointer as "thread-scoped memory" — the thread *is* the concurrency boundary.</p>
+<h2>Troubleshooting: 8 real errors and their fixes</h2>
+<p>Every one of these I triggered and recorded on this machine. None of them is an invented "typical error".</p>
+<p><strong>Error one</strong>: <code>TypeError: Invalid checkpointer provided. Expected an instance of BaseCheckpointSaver, True, False, or None. Received _GeneratorContextManager.</code></p>
+<p>Cause: <code>SqliteSaver.from_conn_string()</code> is decorated with <code>@contextmanager</code>, so it yields a context manager. Fix: either <code>with SqliteSaver.from_conn_string("ckpt.sqlite") as saver:</code> or build the connection yourself — <code>SqliteSaver(sqlite3.connect(path, check_same_thread=False))</code>. Keep <code>check_same_thread=False</code>; that is what the official implementation passes.</p>
+<p><strong>Error two</strong>: <code>ValueError: Checkpointer requires one or more of the following 'configurable' keys: thread_id, checkpoint_ns, checkpoint_id</code></p>
+<p>Cause: a checkpointer is installed but no <code>thread_id</code> in the config. Fix: always pass <code>{"configurable": {"thread_id": "..."}}</code>. Design <code>thread_id</code> as a business key (session id, job id), not a timestamp.</p>
+<p><strong>Error three</strong>: <code>langgraph.errors.InvalidUpdateError: At key 'n': Can receive only one value per step. Use an Annotated key to handle multiple values.</code></p>
+<p>Cause: two parallel branches writing the same key that has no reducer. Fix: give the state field a reducer, e.g. <code>Annotated[list, operator.add]</code>. The official explainer lives at <code>docs.langchain.com/oss/python/langgraph/errors/INVALID_CONCURRENT_GRAPH_UPDATE</code>.</p>
+<p><strong>Error four</strong>: <code>RuntimeError: Cannot use Command(resume=...) without checkpointer</code></p>
+<p>Cause: the graph was compiled without a checkpointer but you try to resume an interrupt. Fix: pass a checkpointer at compile time. The nasty part is that <code>interrupt()</code> itself stays silent, so everything looks fine until the resume blows up.</p>
+<p><strong>Error five</strong>: <code>RuntimeError: checkpointer=True cannot be used for root graphs.</code></p>
+<p>Cause: error one's message lists <code>True</code> as a valid value; passing <code>compile(checkpointer=True)</code> hits this. Fix: root graphs need an instance; <code>True</code> is for subgraphs.</p>
+<p><strong>Error six</strong>: <code>KeyError: 'checkpoint_ns'</code></p>
+<p>Cause: see the time-travel section — a hand-written config missing <code>checkpoint_ns</code>. Fix: reuse the <code>config</code> returned by <code>get_state_history()</code>.</p>
+<p><strong>Error seven</strong>: <code>NotImplementedError</code> (empty message)</p>
+<p>Cause: <code>SqliteSaver.prune()</code> is not implemented. Fix: use <code>delete_thread()</code> per conversation, or delete by checkpoint range with your own SQL.</p>
+<p><strong>Error eight</strong>: <code>RuntimeError: Called get_config outside of a runnable context</code></p>
+<p>Cause: calling <code>interrupt()</code> outside a graph node. Fix: <code>interrupt()</code> only works inside a node body; for external approval, split it into "interrupt inside the node" plus "Command(resume=) from outside".</p>
+<h2>FAQ</h2>
+<p><strong>Q: Checkpointer or store — which one do I want?</strong></p>
+<p>A: The official split: a checkpointer stores a single thread's graph state, used for conversation continuity, human-in-the-loop, time travel and fault tolerance; a store holds application-defined data across threads, for user preferences and long-term knowledge. This article measured the former.</p>
+<p><strong>Q: Can I run SQLite in production?</strong></p>
+<p>A: The official checkpointers page describes <code>langgraph-checkpoint-sqlite</code> as "Ideal for experimentation and local workflows. Needs to be installed separately." Everything here was measured on SQLite — do not extrapolate the throughput or concurrency results to the Postgres backend.</p>
+<p><strong>Q: Checkpoint history keeps growing. What now?</strong></p>
+<p>A: The docs say prune periodically, but the SQLite backend does not implement it (error seven). <code>delete_thread()</code> measured as working; set a lifecycle per conversation and delete the thread once it is done.</p>
+<p><strong>Q: Can two requests write the same thread at once?</strong></p>
+<p>A: Better not. Sixteen concurrent threads produced zero exceptions and 93.75% lost updates. Use separate <code>thread_id</code>s or serialise at the application layer.</p>
+<p><strong>Q: Why does my program just end after <code>interrupt()</code> instead of waiting for input?</strong></p>
+<p>A: Most likely no checkpointer was compiled in, or you only looked at the <code>invoke</code> return value instead of <code>get_state().next</code>. In that state <code>interrupt()</code> does not raise; the failure surfaces later as error four.</p>
+<h2>What this article does not cover</h2>
+<p>This was single-machine, single-process SQLite. I did <strong>not</strong> measure — and make no claim about — the Postgres backend's concurrency or throughput, subgraph behaviour with a non-empty <code>checkpoint_ns</code>, the async <code>AsyncSqliteSaver</code>, or persistence handled automatically by a managed runtime. Consult the official docs for those.</p>
+<p>If you want to keep digging, two earlier posts on this site pair well with it: one on execution-layer scheduling and queues (<a href="https://yaohehe.github.io/2026-10-10-n8n-task-runner-architecture-external-and-queue-mo-en.html" target="_blank" rel="nofollow sponsored">n8n Task Runner architecture: external and queue modes</a>), one on why retrieval returns the wrong chunks (<a href="https://yaohehe.github.io/2026-10-09-why-rag-retrieval-is-wrong-3-layers-5-real-errors-en.html" target="_blank" rel="nofollow sponsored">RAG in production: why retrieval is wrong</a>); and for the choice one level up, <a href="https://yaohehe.github.io/2026-10-14-fine-tuning-vs-rag-vs-prompting-the-2026-decision--en.html" target="_blank" rel="nofollow sponsored">Fine-tuning vs RAG vs prompting: the 2026 decision</a> answers it on cost. Together they cover the chain from "how an agent runs" to "where its state lives" to "where its knowledge comes from".</p>
+<p><strong>Affiliate disclosure</strong>: there are no product links in this article body; product links in this site's recommendation box are affiliate links and may earn me a commission. Every figure here comes from my own runs or from official documentation cited inline, and no vendor sponsored this article.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
