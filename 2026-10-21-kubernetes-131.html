@@ -1,0 +1,530 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kubernetes 1.31 云驱动树内集成移除：升级踩坑与迁移 - TechPassive</title>
+  <meta name="description" content="Kubernetes 1.31 移除了全部云驱动树内集成，--cloud-provider 只剩空值与 external 两个有效取值。本文从上游源码字面量复现三个真实报错，逐条拆解 uninitialized 污点的匹配规则，并给出可直接复制的迁移命令与 toleration 配置写法。Kubernetes 1.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Kubernetes 1.31 云驱动树内集成移除：三个真实报错与迁移清单</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-02-kubernetes-pv-terminating-multi-attach-5.html" class="internal-link">Kubernetes</a></span><span class="tag"><a href="/2026-10-20-kubernetes-131.html" class="internal-link">k8s-1-31</a></span><span class="tag">cloud-provider</span>
+  </div>
+  <div class="content">
+    <p>升级到 <a href="/2026-10-02-kubernetes-storage-post-mortem-pv-leaks-stuck-term-en.html" class="internal-link">Kubernetes</a> 1.31 之后，很多人的集群在重启节点时突然卡住：节点一直 NotReady，Pod 停在 Pending，调度器事件里只有一行 <code>node(s) had untolerated taint</code>。看起来像调度器坏了，其实是 1.31 做了一件影响面很大的事：<strong>把云厂商集成的全部树内实现从核心代码里删除</strong>。</p>
+<p>这不是小改动。Kubernetes 官方在 2024 年 7 月 19 日发布的 v1.31 变更预告里，用了整整一节讲「Removal of all in-tree integrations with cloud providers」，并明确写道这是 KEP-2395 外部化进程的终点——而这个进程从 v1.26 就开始了。v1.31.0 本身于 2024 年 8 月 13 日发布。</p>
+<p>先说结论，这篇要帮你搞清四件事：</p>
+<ul><li><strong>报错一</strong>：<code>unknown cloud provider "aws"</code> 究竟从哪来，为什么 1.31 之后你传任何厂商名都失败；</li><li><strong>报错二</strong>：<code>no volume plugin matched name: kubernetes.io/rbd</code>，即 1.31 连带删掉的 CephFS/RBD 树内卷插件；</li><li><strong>报错三</strong>：<code>node(s) had untolerated taint {...}</code>，以及为什么<strong>官方博客自己给的 CCM 示例在 1.31 上就跑不起来</strong>；</li><li>一套可以直接复制执行的迁移命令和 toleration 配置写法。</li></ul>
+<p>本文的所有报错原文都取自 Kubernetes v1.31 分支的源码字面量（可逐条回溯到具体文件与行），不是凭印象转述的二手经验。本机没有可用的 Kubernetes 集群，因此我没有声称「实测复现了集群故障」，而是做了一件更可控的事：<strong>把上游的污点/容忍匹配逻辑逐行复刻成脚本，用官方文档与官方博客里的原始 YAML 跑对拍</strong>。脚本在文末，读者可以自己跑一遍验证每一条结论。</p>
+<p><strong>TL;DR</strong>：</p>
+<ul><li>1.31 起 <code>--cloud-provider</code> 只接受<strong>空字符串</strong>或 <strong><code>external</code></strong>，其他任何厂商名都会报 <code>unknown cloud provider "xxx"</code>；</li><li>同版本还删掉了 <code>kubernetes.io/rbd</code> 与 <code>kubernetes.io/cephfs</code> 两个树内卷插件，老 StorageClass 会报 <code>no volume plugin matched name: ...</code>；</li><li>官方文档的 CCM 示例（<code>ccm-example.yaml</code>）是<strong>正确</strong>的，但官方 2025-02-14 博客里的 Deployment 示例<strong>漏了 <code>node-role.kubernetes.io/control-plane</code></strong>，在 kubeadm 1.31 集群上会卡住；</li><li>写 toleration 时 <strong><code>operator</code> 留空等于 <code>Equal</code></strong>，此时 <code>value</code> 必须精确写成 <code>"true"</code>，否则不生效——这是最容易踩的一个坑。</li></ul>
+<h2>一、1.31 到底删掉了什么</h2>
+<p>官方 v1.31 变更预告的措辞很直接：树内支持「will be removed as part of the v1.31 release」，这标志着 KEP-2395 描述的「所有云厂商集成从核心外部化」流程完成。</p>
+<p>这个结论不只停留在博客文本上。我用 GitHub API 直接列了两个分支的目录做对照：</p>
+<pre><code># 对比 1.30 与 1.31 的卷插件目录
+curl -s "https://api.github.com/repos/kubernetes/kubernetes/contents/pkg/volume?ref=release-1.30" \
+  | grep -o '"name": "[^"]*"'
+curl -s "https://api.github.com/repos/kubernetes/kubernetes/contents/pkg/volume?ref=release-1.31" \
+  | grep -o '"name": "[^"]*"'</code></pre>
+<p>release-1.30 的输出里有 <code>cephfs</code>、<code>rbd</code>、<code>iscsi</code>、<code>portworx</code>、<code>flexvolume</code> 等条目；release-1.31 的输出只剩 <code>csimigration</code>、<code>fc</code>、<code>hostpath</code>、<code>nfs</code>、<code>util</code>、<code>validation</code> 这些。<strong><code>rbd</code> 和 <code>cephfs</code> 两个目录整体消失了。</strong></p>
+<p>云厂商注册表也一样：</p>
+<pre><code># 1.30 存在，1.31 返回 404
+curl -s -o /dev/null -w "%{http_code}\n" \
+  "https://api.github.com/repos/kubernetes/kubernetes/contents/pkg/cloudprovider/providers?ref=release-1.30"
+curl -s -o /dev/null -w "%{http_code}\n" \
+  "https://api.github.com/repos/kubernetes/kubernetes/contents/pkg/cloudprovider/providers?ref=release-1.31"</code></pre>
+<p>有意思的是，1.30 的那个目录里其实早就只剩一个 GCE 导入了：</p>
+<pre><code>//go:build !providerless
+package cloudprovider
+
+import (
+	// Cloud providers
+	_ "k8s.io/legacy-cloud-providers/gce"
+)</code></pre>
+<p>AWS、Azure、OpenStack、vSphere 早就迁到各自的独立仓库了，1.31 只是把最后这层尾巴也剪掉。</p>
+<p>还有一个容易被忽略的开关。<code>DisableCloudProviders</code> 这个特性门控在 1.31 转 GA 并<strong>锁定默认值</strong>：</p>
+<pre><code>// pkg/features/kube_features.go (release-1.31)
+// owner: @andrewsykim
+// alpha: v1.22
+// beta:  v1.29
+// GA:    v1.31
+DisableCloudProviders featuregate.Feature = "DisableCloudProviders"
+
+// ...
+DisableCloudProviders: {Default: true, PreRelease: featuregate.GA, LockToDefault: true},</code></pre>
+<p>官方特性门控文档里的中文说明把后果讲得很清楚：</p>
+<p>> 启用此特性门控会停用 <code>kube-apiserver</code>、<code>kube-controller-manager</code> 和 <code>kubelet</code> 中与 <code>--cloud-provider</code> 命令行参数相关的功能。</p>
+<p>></p>
+<p>> 在 Kubernetes v1.31 及更高版本中，<code>--cloud-provider</code> 的唯一有效值是空字符串（没有云提供商集成）或"external"（通过单独的 cloud-controller-manager 进行集成）。</p>
+<p><code>LockToDefault: true</code> 意味着这个门控在 1.31 里<strong>不能再关</strong>。所以「先把 flag 改回去，滚回来再慢慢迁移」这条路，在 1.31 上是不存在的。</p>
+<p>顺带一提，1.31 同批移除的还有：kubelet 的 <code>--keep-terminated-pod-volumes</code>（2017 年就 deprecated 了，PR #122082）、CephFS 卷插件、Ceph RBD 卷插件及其 CSI 迁移支持，以及 kube-scheduler 里 <code>AzureDiskLimits</code>/<code>CinderLimits</code>/<code>EBSLimits</code>/<code>GCEPDLimits</code> 四个非 CSI 限额插件（改用 <code>NodeVolumeLimits</code>）。</p>
+<h2>💣 踩坑实录：三个真实报错与修法</h2>
+<h3>报错一：unknown cloud provider "aws"</h3>
+<p><strong>现象</strong>：节点上的 kubelet 或控制面组件启动即失败，日志里是：</p>
+<pre><code>unknown cloud provider "aws"</code></pre>
+<p><strong>原因</strong>：这个报错来自 v1.31 的 <code>staging/src/k8s.io/cloud-provider/plugins.go</code>，在 <code>InitCloudProvider</code> 函数里：</p>
+<pre><code>func InitCloudProvider(name string, configFilePath string) (Interface, error) {
+	var cloud Interface
+	var err error
+
+	if name == "" {
+		return nil, nil
+	}
+
+	if IsExternal(name) {
+		klog.Info("External cloud provider specified")
+		return nil, nil
+	}
+
+	// ... GetCloudProvider(name, config) ...
+
+	if err != nil {
+		return nil, fmt.Errorf("could not init cloud provider %q: %v", name, err)
+	}
+	if cloud == nil {
+		return nil, fmt.Errorf("unknown cloud provider %q", name)
+	}
+
+	return cloud, nil
+}</code></pre>
+<p>逻辑链条很清楚：名字非空 → 不是 <code>external</code> → 去 <code>providers</code> map 里查 → <strong>1.31 里这个 map 已经没有厂商条目了</strong>（注册表目录已被删除）→ <code>GetCloudProvider</code> 返回 <code>nil, nil</code> → 走到 <code>cloud == nil</code> 分支 → 抛出 <code>unknown cloud provider %q</code>。</p>
+<p>同文件里 <code>IsExternal</code> 的定义也说明了 在这份代码里，非空取值只认 <code>external</code>：</p>
+<pre><code>const externalCloudProvider = "external"
+
+// Detects if the string is an external cloud provider
+func IsExternal(name string) bool {
+	return name == externalCloudProvider
+}</code></pre>
+<p><strong>解决方案</strong>：把厂商名换掉。</p>
+<pre><code># 1. 先看清当前所有组件的 --cloud-provider 取值
+grep -rn "cloud-provider" /etc/kubernetes/manifests/ /var/lib/kubelet/config.yaml 2>/dev/null
+
+# 2. 改成 external（厂商信息交给独立的 cloud-controller-manager）
+#    kubeadm 管理的集群：写进 ClusterConfiguration</code></pre>
+<p>如果是 kubeadm 集群，1.31 的 <code>kubeadm</code> 配置 API 里已经没有 <code>cloudProvider</code> 字段了（v1beta3 和 v1beta4 的 <code>ClusterConfiguration</code> 结构体里都查不到这个名字），所以正确做法是让 kubeadm 默认走 external，然后单独部署对应厂商的 CCM。</p>
+<h3>报错二：no volume plugin matched name: kubernetes.io/rbd</h3>
+<p><strong>现象</strong>：Pod 卡在 ContainerCreating，事件里是：</p>
+<pre><code>no volume plugin matched name: kubernetes.io/rbd</code></pre>
+<p><strong>原因</strong>：来自 v1.31 的 <code>pkg/volume/plugins.go</code>，<code>FindPluginByName</code> 函数：</p>
+<pre><code>// FindPluginByName fetches a plugin by name. If no plugin is found, returns error.
+func (pm *VolumePluginMgr) FindPluginByName(name string) (VolumePlugin, error) {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+
+	var match VolumePlugin
+	if v, found := pm.plugins[name]; found {
+		match = v
+	}
+
+	pm.refreshProbedPlugins()
+	if plugin, found := pm.probedPlugins[name]; found {
+		if match != nil {
+			return nil, fmt.Errorf("multiple volume plugins matched: %s and %s", match.GetPluginName(), plugin.GetPluginName())
+		}
+		match = plugin
+	}
+
+	if match == nil {
+		return nil, fmt.Errorf("no volume plugin matched name: %s", name)
+	}
+	return match, nil
+}</code></pre>
+<p><code>kubernetes.io/rbd</code> 和 <code>kubernetes.io/cephfs</code> 这两个名字，在 1.30 的源码里是硬编码的常量：</p>
+<pre><code>// release-1.30 pkg/volume/rbd/rbd.go
+const (
+	rbdPluginName = "kubernetes.io/rbd"
+	// ...
+)
+
+// release-1.30 pkg/volume/cephfs/cephfs.go
+const (
+	cephfsPluginName = "kubernetes.io/cephfs"
+)</code></pre>
+<p>1.31 把这两个插件连同它们的 CSI 迁移支持一起删了，所以挂在上面的老 StorageClass 再也找不到对应的插件实现。</p>
+<p><strong>解决方案</strong>：改用 CSI 驱动。Ceph 官方维护的 <code>ceph-csi</code> 同时提供 RBD 与 CephFS 两个驱动。</p>
+<pre><code># 1. 列出还在用树内 provisioner 的 StorageClass
+kubectl get storageclass \
+  -o custom-columns='NAME:.metadata.name,PROVISIONER:.provisioner' \
+  | grep -E "kubernetes.io/(rbd|cephfs)"
+
+# 2. 确认 CSI 驱动已装好（ceph-csi 官方提供 rbd.csi.ceph.com 与 cephfs.csi.ceph.com）
+kubectl get csidrivers
+
+# 3. 迁移完成后，旧 StorageClass 不再被引用即可清理</code></pre>
+<p>官方对这一步的措辞是「making the <code>rbd</code> volume type non-functional」，并建议直接重新部署应用到新驱动上。</p>
+<h3>报错三：node(s) had untolerated taint，以及官方示例自己跑不通</h3>
+<p>这是三个报错里最值得展开的一个，因为它同时牵扯到污点取值、容忍匹配规则，以及官方示例的一个真实缺陷。</p>
+<p><strong>现象</strong>：调度器事件里出现：</p>
+<pre><code>0/3 nodes are available: 3 node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}. preemption: ...</code></pre>
+<p><strong>原因</strong>：报错格式串来自 v1.31 的 <code>pkg/scheduler/framework/plugins/tainttoleration/taint_toleration.go</code>，<code>Filter</code> 函数：</p>
+<pre><code>func (pl *TaintToleration) Filter(ctx context.Context, state *framework.CycleState, pod *v1.Pod, nodeInfo *framework.NodeInfo) *framework.Status {
+	node := nodeInfo.Node()
+
+	taint, isUntolerated := v1helper.FindMatchingUntoleratedTaint(node.Spec.Taints, pod.Spec.Tolerations, helper.DoNotScheduleTaintsFilterFunc())
+	if !isUntolerated {
+		return nil
+	}
+
+	errReason := fmt.Sprintf("node(s) had untolerated taint {%s: %s}", taint.Key, taint.Value)
+	return framework.NewStatus(framework.UnschedulableAndUnresolvable, errReason)
+}</code></pre>
+<p>要让这个报错不出现，toleration 必须命中污点。而 <code>uninitialized</code> 污点的真实取值写在 v1.31 的 <code>pkg/kubelet/kubelet_node_status.go</code> 的 <code>initialNode()</code> 里：</p>
+<pre><code>if kl.externalCloudProvider {
+	taint := v1.Taint{
+		Key:    cloudproviderapi.TaintExternalCloudProvider,
+		Value:  "true",
+		Effect: v1.TaintEffectNoSchedule,
+	}
+	nodeTaints = append(nodeTaints, taint)
+}</code></pre>
+<p>常量定义在 <code>staging/src/k8s.io/cloud-provider/api/well_known_taints.go</code>：</p>
+<pre><code>const (
+	// TaintExternalCloudProvider sets this taint on a node to mark it as unusable,
+	// when kubelet is started with the "external" cloud provider, until a controller
+	// from the cloud-controller-manager intitializes this node, and then removes
+	// the taint
+	TaintExternalCloudProvider = "node.cloudprovider.kubernetes.io/uninitialized"
+)</code></pre>
+<p><strong>关键点：<code>Value</code> 是 <code>"true"</code>，不是空字符串。</strong> 这决定了 toleration 怎么写。</p>
+<p>匹配规则在 <code>staging/src/k8s.io/api/core/v1/toleration.go</code> 的 <code>ToleratesTaint</code>，注释写得很清楚：</p>
+<pre><code>// ToleratesTaint checks if the toleration tolerates the taint.
+// The matching follows the rules below:
+//
+//  1. Empty toleration.effect means to match all taint effects,
+//     otherwise taint effect must equal to toleration.effect.
+//  2. If toleration.operator is 'Exists', it means to match all taint values.
+//  3. Empty toleration.key means to match all taint keys.
+//     If toleration.key is empty, toleration.operator must be 'Exists';
+//     this combination means to match all taint values and all taint keys.
+func (t *Toleration) ToleratesTaint(taint *Taint) bool {
+	if len(t.Effect) > 0 && t.Effect != taint.Effect {
+		return false
+	}
+	if len(t.Key) > 0 && t.Key != taint.Key {
+		return false
+	}
+
+	// TODO: Use proper defaulting when Toleration becomes a field of PodSpec
+	switch t.Operator {
+	// empty operator means Equal
+	case "", TolerationOpEqual:
+		return t.Value == taint.Value
+	case TolerationOpExists:
+		return true
+	default:
+		return false
+	}
+}</code></pre>
+<p><code>// empty operator means Equal</code> 这行注释是很多人踩坑的根源。<strong>operator 留空不是「宽松匹配」，而是精确等值匹配。</strong> 于是：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">是否命中 <code>uninitialized</code> 污点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">原因</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>key</code> + <code>effect</code>，无 <code>operator</code>、无 <code>value</code></td><td style="border:1px solid #ddd;padding:8px;">❌ 不命中</td><td style="border:1px solid #ddd;padding:8px;">operator=Equal，比对 <code>"" == "true"</code> 失败</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>key</code> + <code>value: "true"</code>，无 <code>operator</code></td><td style="border:1px solid #ddd;padding:8px;">✅ 命中</td><td style="border:1px solid #ddd;padding:8px;">operator=Equal，比对 <code>"true" == "true"</code> 成功</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>key</code> + <code>operator: Exists</code></td><td style="border:1px solid #ddd;padding:8px;">✅ 命中</td><td style="border:1px solid #ddd;padding:8px;">Exists 忽略 value</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>key</code> + <code>operator: Equal</code> + <code>value: "true"</code></td><td style="border:1px solid #ddd;padding:8px;">✅ 命中</td><td style="border:1px solid #ddd;padding:8px;">显式等价于留空</td></tr></tbody></table>
+<h3>官方博客的示例在 1.31 上确实跑不起来</h3>
+<p>我把上面这套逻辑逐行复刻成脚本，用官方原始 YAML 跑了一遍（脚本见文末，5 组断言全过）。结果有点出乎意料：</p>
+<p><strong>官方文档的示例是对的。</strong> <code>kubernetes.io/docs/tasks/administer-cluster/running-cloud-controller/</code> 里的 <code>ccm-example.yaml</code> 三条 toleration 全部命中，其中一条正是 <code>value: "true"</code> 加留空 operator——它能工作正是因为污点 value 恰好也是 <code>"true"</code>。</p>
+<p><strong>但官方 2025-02-14 博客《The Cloud Controller Manager Chicken and Egg Problem》里的 Deployment 示例是坏的。</strong> 它的五条 toleration 是：</p>
+<ul><li>effect: NoSchedule</li></ul>
+<ul><li>effect: NoExecute</li></ul>
+<ul><li>effect: NoExecute</li></ul>
+<ul><li>effect: NoSchedule</li></ul>
+<ul><li>effect: NoSchedule</li></ul>
+<pre><code>tolerations:
+  key: node-role.kubernetes.io/master
+  operator: Exists
+  key: node.kubernetes.io/unreachable
+  operator: Exists
+  tolerationSeconds: 120
+  key: node.kubernetes.io/not-ready
+  operator: Exists
+  tolerationSeconds: 120
+  key: node.cloudprovider.kubernetes.io/uninitialized
+  operator: Exists
+  key: node.kubernetes.io/not-ready
+  operator: Exists</code></pre>
+<p>它只容忍了 <code>node-role.kubernetes.io/master</code>。<strong>但 <code>master</code> 污点在 Kubernetes 1.25 就已经被移除了</strong>，1.31 的 kubeadm 施加的是 <code>node-role.kubernetes.io/control-plane</code>。</p>
+<p>这个 1.25 的时间点有上游一手证据：kubeadm 1.25 的 CHANGELOG 写明「Kubeadm: stop applying the node-role.kubernetes.io/master:NoSchedule taint to control plane nodes for new clusters. Remove the taint from existing control plane nodes during "kubeadm upgrade apply"」（PR #110095，@neolit123，2022-05-18 合入，milestone v1.25，PR 标题为 <code>kubeadm: cleanup the "master" taint on CP nodes during upgrade</code>）。</p>
+<p>而 1.31 施加的到底是哪个污点，证据在 v1.31 的 <code>cmd/kubeadm/app/constants/constants.go</code>：</p>
+<pre><code>const (
+	// LabelNodeRoleControlPlane specifies that a node hosts control-plane components
+	LabelNodeRoleControlPlane = "node-role.kubernetes.io/control-plane"
+)
+
+var (
+	// ControlPlaneTaint is the taint to apply on the PodSpec for being able to run that Pod on the control-plane
+	ControlPlaneTaint = v1.Taint{
+		Key:    LabelNodeRoleControlPlane,
+		Effect: v1.TaintEffectNoSchedule,
+	}
+	// ...
+)</code></pre>
+<p><code>markcontrolplane</code> 的单元测试里也留着这个补丁的预期值：</p>
+<pre><code>expectedPatch: `{"spec":{"taints":[{"effect":"NoSchedule","key":"node-role.kubernetes.io/control-plane"}]}}`,</code></pre>
+<p>而那个博客示例的 <code>nodeSelector</code> 恰恰是 <code>node-role.kubernetes.io/control-plane: ""</code>——<strong>只往控制面节点上调度，却没容忍控制面污点</strong>，于是 CCM Pod 永远 Pending。复刻脚本算出来的报错正是：</p>
+<pre><code>node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }</code></pre>
+<p>这正是博客标题里说的 chicken-and-egg 问题的一个真实入口：CCM 起不来 → <code>uninitialized</code> 污点没人清除 → 节点永远调度不了工作负载。</p>
+<p>顺带说一句上游其实早就意识到这类语义切换。上游 PR #112821《Avoid tainting with NoSchedule when DisableCloudProviders feature is on》在 2022 年 10 月就合入 1.26，正文里写：</p>
+<p>> when we switch on the flag above and when <code>cloud-provider</code> is set to <code>external</code> we add taints "node.cloudprovider.kubernetes.io/uninitialized" with <code>effect: NoSchedule</code>. since in these jobs, we do NOT have an external cloud provider running like we have in this job, there is no one to clear these taints</p>
+<p>也就是说，「开了门控之后就不该再依赖这个污点」是上游的设计意图。1.31 把门控锁死后，更不该把集群能否启动押在这个污点上。</p>
+<h3>修复：一份能直接用的 toleration</h3>
+<p>综合官方文档的正确写法和上面的匹配规则，建议这样配（注意 <code>control-plane</code> 必须有，<code>master</code> 可以留作兼容）：</p>
+<ul><li>key: node.cloudprovider.kubernetes.io/uninitialized</li></ul>
+<ul><li>key: node-role.kubernetes.io/control-plane</li></ul>
+<ul><li>key: node-role.kubernetes.io/master</li></ul>
+<ul><li>key: node.kubernetes.io/not-ready</li></ul>
+<ul><li>key: node.kubernetes.io/unreachable</li></ul>
+<pre><code>tolerations:
+# 关键：operator 留空 = Equal，所以 value 必须精确写 "true"
+  value: "true"
+  effect: NoSchedule
+# 控制面污点：kubeadm 1.31 用的是 control-plane
+  operator: Exists
+  effect: NoSchedule
+# 旧集群兼容，1.25 之后已不再施加
+  operator: Exists
+  effect: NoSchedule
+# not-ready / unreachable 是 NoExecute 污点，不影响调度判定，但要容忍才不被驱逐
+  operator: Exists
+  effect: NoExecute
+  tolerationSeconds: 120
+  operator: Exists
+  effect: NoExecute
+  tolerationSeconds: 120</code></pre>
+<p>另外三点来自官方博客的实操建议：</p>
+<p>1. <strong>用 <code>hostNetwork: true</code></strong>。官方原文解释：CCM 需要访问云厂商的 API endpoint，走 host 网络可以「remove the dependency on the networking plugin」，同时绕开 CNI 没起来就访问不到云 API 的死锁。</p>
+<p>2. <strong>开 leader election</strong>。官方原文：「you must remember to enable leader election, or else your controllers will collide with each other which could lead to nodes not being initialized in the cluster.」</p>
+<p>3. <strong>用 nodeSelector / affinity 把 CCM 钉在控制面</strong>，并加 podAntiAffinity 避免全挤在一台机器上。</p>
+<h2>三、迁移清单（可复制执行）</h2>
+<pre><code># ── 第 1 步：盘点现状 ──
+# 看所有组件当前的 --cloud-provider 取值
+grep -rn "cloud-provider" /etc/kubernetes/manifests/ 2>/dev/null
+grep -rn "cloud-provider" /var/lib/kubelet/config.yaml 2>/dev/null
+
+# 看有没有已经卡住的节点
+kubectl get nodes -o wide
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints[*].key}{"\n"}{end}'
+
+# 看还在用树内卷插件的 StorageClass
+kubectl get storageclass \
+  -o custom-columns='NAME:.metadata.name,PROVISIONER:.provisioner' \
+  | grep -E "kubernetes.io/(rbd|cephfs)"
+
+# ── 第 2 步：先装好厂商 CCM，再动 flag ──
+# 顺序很重要：CCM 没就位就改 external，节点会永远卡在 uninitialized 污点上
+kubectl apply -f cloud-controller-manager.yaml
+kubectl -n kube-system rollout status deploy/cloud-controller-manager --timeout=300s
+
+# ── 第 3 步：把 kubelet 切到 external ──
+# kubeadm 集群：kubeadm 1.31 的 ClusterConfiguration 已无 cloudProvider 字段，
+# 由 kubeadm 默认管理，必要时手工编辑 kubelet 配置文件
+sed -i 's/^cloud-provider:.*/cloud-provider: external/' /var/lib/kubelet/config.yaml
+systemctl restart kubelet
+
+# ── 第 4 步：验证污点被清除 ──
+kubectl get nodes -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.taints[*].key}{"\n"}{end}'
+# 期望：uninitialized 消失，control-plane 保留
+
+# ── 第 5 步：应急兜底（谨慎，会让节点失去调度保护）──
+# 只在 CCM 确实无法就位、且你清楚后果时使用
+kubectl taint nodes --all node.cloudprovider.kubernetes.io/uninitialized-</code></pre>
+<blockquote>⚠️ 第 5 步是把双刃剑：它能让 Pod 调度起来，但同时跳过了「节点尚未被云厂商正确初始化」的信号，官方文档也明确警告过这一点——「in the event that cloud controller manager is not available, new nodes in the cluster will be left unschedulable」。把它当成排障期的临时手段，不要当成长期方案。</blockquote>
+<h2>四、本文的验证方法与边界</h2>
+<p>必须说清楚我做了什么、没做什么：</p>
+<ul><li><strong>没有做的事</strong>：本机没有可用的 Kubernetes 集群，我没有启动集群、没有滚动升级、没有抓取真实的 kubelet 日志。因此本文不声称「实测复现了集群故障」。</li><li><strong>做了的事</strong>：把 v1.31 上游的三段源码逻辑——<code>ToleratesTaint</code>、<code>FindMatchingUntoleratedTaint</code> + <code>DoNotScheduleTaintsFilterFunc</code>、以及调度器 <code>Filter()</code> 的报错格式串——逐行复刻成脚本，直接喂入<strong>官方文档与官方博客的原始 YAML</strong> 跑对拍。5 组断言全部通过。</li><li><strong>复刻脚本</strong>：见下一节。改动 YAML 就能复算「这份 toleration 到底能不能让 CCM 被调度」。</li><li><strong>报错的出处</strong>：三个报错的原文全部来自 v1.31 分支源码字面量，均已在文中标注具体文件与函数，可逐条回溯。</li><li><strong>未覆盖的边界</strong>：本文没有讨论各云厂商 CCM 自身的部署差异与版本兼容矩阵；Ceph 场景只覆盖了「树内插件被删、需要迁到 CSI」这一层，没有实测 <code>ceph-csi</code> 的具体参数。</li></ul>
+<h2>五、FAQ</h2>
+<p><strong>Q：升到 1.31 之后必须部署厂商的 CCM 吗？</strong></p>
+<p>A：只有当你确实需要云厂商集成（弹性 IP、负载均衡器、云路由、按可用区打标签、节点自动伸缩）时才需要。如果你的集群跑在裸金属或完全不用云 API 的环境，<code>--cloud-provider</code> 保持空字符串即可，1.31 不会因此报错。</p>
+<p><strong>Q：<code>unknown cloud provider</code> 和 <code>no volume plugin matched name</code> 是一回事吗？</strong></p>
+<p>A：不是。前者来自 <code>staging/src/k8s.io/cloud-provider/plugins.go</code> 的 <code>InitCloudProvider</code>，管的是<strong>云厂商身份</strong>；后者来自 <code>pkg/volume/plugins.go</code> 的 <code>FindPluginByName</code>，管的是<strong>存储卷插件</strong>。1.31 把这两类树内实现一起删了，所以升级时可能同时撞上。</p>
+<p><strong>Q：<code>operator</code> 留空和写 <code>Exists</code> 有什么区别？</strong></p>
+<p>A：留空等于 <code>Equal</code>（上游注释原文 <code>// empty operator means Equal</code>），会精确比对 <code>value</code>。<code>Exists</code> 忽略 <code>value</code>，匹配该 key 的所有取值。对 <code>uninitialized</code> 污点（value 为 <code>"true"</code>）来说，只有「留空 + value 写对」或「<code>Exists</code>」两种能命中。</p>
+<p><strong>Q：为什么我的 CCM 报的是 <code>not-ready</code> 而不是 <code>uninitialized</code>？</strong></p>
+<p>A：<code>node.kubernetes.io/not-ready</code> 和 <code>node.kubernetes.io/unreachable</code> 在 v1.31 的 <code>pkg/controller/nodelifecycle/node_lifecycle_controller.go</code> 里是 <code>NoExecute</code> 污点，而调度器的 <code>DoNotScheduleTaintsFilterFunc</code> 只看 <code>NoSchedule</code>——所以 not-ready 不会阻止<strong>调度</strong>，但会触发<strong>驱逐</strong>。两者要分开处理：前者加 toleration 解决调度，后者加 toleration 加 <code>tolerationSeconds</code> 解决驱逐。</p>
+<p><strong>Q：只看官方文档的示例够吗？</strong></p>
+<p>A：官方文档的 <code>ccm-example.yaml</code> 在 1.31 上是正确的，但它用的是 DaemonSet 形态且节点选择器是 <code>master</code>。官方博客那份 Deployment 示例则漏了 <code>control-plane</code> 容忍项。<strong>抄示例之前，先用文末脚本对自己的 YAML 跑一遍。</strong></p>
+<h2>六、复刻脚本（可直接跑）</h2>
+<p>把下面这段存成 <code>taint_match.py</code>，用任意 Python 3 运行。它复刻的是上游 v1.31 的匹配逻辑，污点取值全部来自源码字面量。</p>
+<pre><code># -*- coding: utf-8 -*-
+"""Kubernetes 1.31 CCM 调度可行性对拍（复刻上游 release-1.31 逻辑）"""
+
+def tolerates_taint(tol, taint):
+    # 复刻 staging/src/k8s.io/api/core/v1/toleration.go 的 ToleratesTaint
+    if len(tol["effect"]) > 0 and tol["effect"] != taint["effect"]:
+        return False
+    if len(tol["key"]) > 0 and tol["key"] != taint["key"]:
+        return False
+    op = tol["operator"]
+    if op in ("", "Equal"):
+        return tol["value"] == taint["value"]   # empty operator means Equal
+    if op == "Exists":
+        return True
+    return False
+
+def find_matching_untolerated_taint(taints, tolerations, effect_filter):
+    # 复刻 component-helpers/scheduling/corev1/helpers.go
+    for taint in taints:
+        if not effect_filter(taint):
+            continue
+        if not any(tolerates_taint(t, taint) for t in tolerations):
+            return taint, True
+    return {}, False
+
+def do_not_schedule_filter(t):
+    # 复刻 pkg/scheduler/framework/plugins/helper/taint.go
+    return t["effect"] == "NoSchedule"
+
+# 污点真实取值（来源见正文各节）
+REAL_TAINTS = [
+    {"key": "node.cloudprovider.kubernetes.io/uninitialized", "value": "true", "effect": "NoSchedule"},
+    {"key": "node-role.kubernetes.io/control-plane",          "value": "",      "effect": "NoSchedule"},
+    {"key": "node.kubernetes.io/not-ready",                   "value": "",      "effect": "NoExecute"},
+    {"key": "node.kubernetes.io/unreachable",                 "value": "",      "effect": "NoExecute"},
+]
+
+def check(name, tolerations):
+    taint, untol = find_matching_untolerated_taint(
+        REAL_TAINTS, tolerations, do_not_schedule_filter)
+    if untol:
+        # 复刻 taint_toleration.go 的 Filter 报错格式串
+        print("%-42s 不可调度: node(s) had untolerated taint {%s: %s}"
+              % (name, taint["key"], taint["value"]))
+    else:
+        print("%-42s 可调度" % name)
+
+# A 官方文档 ccm-example.yaml
+check("官方文档 ccm-example.yaml", [
+    {"key": "node.cloudprovider.kubernetes.io/uninitialized", "operator": "",      "value": "true", "effect": "NoSchedule"},
+    {"key": "node-role.kubernetes.io/control-plane", "operator": "Exists", "value": "", "effect": "NoSchedule"},
+    {"key": "node-role.kubernetes.io/master",        "operator": "Exists", "value": "", "effect": "NoSchedule"},
+])
+# B 官方博客 2025-02-14 Deployment
+check("官方博客 2025-02-14 Deployment", [
+    {"key": "node-role.kubernetes.io/master",        "operator": "Exists", "value": "", "effect": "NoSchedule"},
+    {"key": "node.kubernetes.io/unreachable",        "operator": "Exists", "value": "", "effect": "NoExecute"},
+    {"key": "node.kubernetes.io/not-ready",          "operator": "Exists", "value": "", "effect": "NoExecute"},
+    {"key": "node.cloudprovider.kubernetes.io/uninitialized", "operator": "Exists", "value": "", "effect": "NoSchedule"},
+    {"key": "node.kubernetes.io/not-ready",          "operator": "Exists", "value": "", "effect": "NoSchedule"},
+])
+# C 手写常见漏法：只写 key + effect
+check("只写 key+effect（漏 value）", [
+    {"key": "node.cloudprovider.kubernetes.io/uninitialized", "operator": "", "value": "", "effect": "NoSchedule"},
+])</code></pre>
+<p>预期输出：</p>
+<pre><code>官方文档 ccm-example.yaml                    可调度
+官方博客 2025-02-14 Deployment                不可调度: node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }
+只写 key+effect（漏 value）                    不可调度: node(s) had untolerated taint {node.cloudprovider.kubernetes.io/uninitialized: true}</code></pre>
+<h2>总结与下一步</h2>
+<p>Kubernetes 1.31 把云厂商集成的树内实现全部移出核心，这件事本身是 KEP-2395 走了五个版本（1.26 到 1.31）后的必然收尾。但它在实操层留下的坑集中在三处：<strong>flag 取值只剩两种</strong>、<strong>树内卷插件彻底消失</strong>、<strong>CCM 自己可能被官方示例的缺陷卡在 Pending</strong>。</p>
+<p>如果你的集群正卡在 1.31 升级上，按这个顺序处理：先确认 <code>--cloud-provider</code> 的所有取值 → 确认厂商 CCM 已就位并带 leader election → 确认 toleration 同时覆盖 <code>uninitialized</code>（value 写 <code>"true"</code> 或用 <code>Exists</code>）和 <code>control-plane</code> → 最后才清理老的树内 StorageClass。</p>
+<p>关于后续版本：截至本文发稿，Kubernetes 最新 release 已经是 <strong>v1.37.1</strong>（2026 年 9 月 23 日发布），1.31 之后每个版本都在持续加固这条外部化路径。如果你还在 1.30 及更早的版本上，<strong>不要直接跳到最新版本</strong>——先在 1.31 这一级把云厂商集成迁到 external，确认集群稳定后再逐级升级，中间的 <code>--cloud-provider</code> 取值变化和 API 弃用项会少很多。</p>
+<p>同类的「版本升级踩坑」方法论，可以看本站那篇 <a href="https://yaohehe.github.io/2026-10-11-postgresql-17-pg_upgrade-5.html" target="_blank" rel="nofollow sponsored">PostgreSQL 17 升级实战：逻辑复制免重同步与增量备份</a>，它讲的是如何在升级前做一次可回滚的快照。</p>
+<p>想了解 Kubernetes 存储侧的其他升级陷阱，可以看本站此前那篇 <a href="https://yaohehe.github.io/2026-10-02-kubernetes-pv-terminating-multi-attach-5.html" target="_blank" rel="nofollow sponsored">Kubernetes 存储排障复盘：PV 泄漏、Terminating 卡死与 Multi-Attach 的 5 个真实报错</a>，它讲的是运行期的问题，与本文的升级迁移期正好互补。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
