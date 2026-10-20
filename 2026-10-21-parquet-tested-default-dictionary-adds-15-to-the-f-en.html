@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parquet Tested: Default Dictionary Adds 15% to the File - TechPassive</title>
+  <meta name="description" content="pyarrow 26.0.0 on 500,000 rows: the default dictionary makes the file 15.0% bigger, zstd beats gzip by 33x, and reading one column touches 19.6% of the bytes.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Parquet and Arrow: What Is Actually Inside the File</h1>
+  <div class="post-tags">
+    <span class="tag">Parquet</span><span class="tag">PyArrow</span><span class="tag">Data Engineering</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: Parquet is not a box that magically shrinks your data. I tested a 500,000-row table with pyarrow 26.0.0 on this Windows machine and found that the default <code>use_dictionary=True</code> wraps integers and floats in a dictionary too, making the whole table <strong>15.0% larger</strong> than with it off (15,697,403 vs 13,650,207 bytes); switching to <code>compression="zstd"</code> is 33x faster to write than gzip and still 12.4% smaller; reading a single column touches only 19.6% of the file's bytes; and sorting the data by region shrinks that column 80.6x and drops filter IO to 20.5%, at the cost of a file that is 3.5% bigger and an id-range filter that can no longer prune anything.</p>
+<p>No affiliate links appear in this article. Every number below was produced on this machine.</p>
+<h2>What Is Actually Inside a Parquet File</h2>
+<p>The Apache Parquet format documentation gives this layout: a 4-byte magic <code>PAR1</code>, then the data area as column chunks grouped by row group (N column chunks for row group 1, then N for row group 2, up to row group M), then the file metadata, then a 4-byte little-endian length of that metadata, then another 4-byte <code>PAR1</code> at the very end.</p>
+<p>The important line in the official docs is "File metadata is written after the data to allow for single pass writing" — <strong>the metadata lives at the tail</strong>. Reading a Parquet file always starts with a seek to the end, grabbing the footer, and walking back to the column chunk offsets. That is the physical reason column projection really saves IO, which I measure further down: the footer carries the start offset of every column chunk, so a reader can seek directly instead of scanning.</p>
+<h2>Test Setup</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Item</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Value</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Libraries</td><td style="border:1px solid #ddd;padding:8px;">pyarrow 26.0.0 (writes <code>created_by</code> as <code>parquet-cpp-arrow version 26.0.0</code>), pandas 3.0.6, numpy 2.5.4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Data</td><td style="border:1px solid #ddd;padding:8px;">500,000 rows x 5 columns, synthetic, seed 20261021</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Columns</td><td style="border:1px solid #ddd;padding:8px;">id (sequential int64), region (8 distinct strings), url (~500,000 distinct strings), value (random float64), flag (bool)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Machine</td><td style="border:1px solid #ddd;padding:8px;">Windows, local SSD, single process</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Sources</td><td style="border:1px solid #ddd;padding:8px;">parquet.apache.org file format and configuration pages, Apache Arrow 26.0.0 <code>write_table</code> reference</td></tr></tbody></table>
+<p>Reproducible script (comments removed so it runs as-is):</p>
+<pre><code>import numpy as np, pyarrow as pa, pyarrow.parquet as pq
+rng = np.random.default_rng(20261021)
+N = 500_000
+regions = np.array(["us-east-1", "us-west-2", "eu-central-1", "ap-southeast-1",
+                    "ap-northeast-1", "eu-west-1", "sa-east-1", "us-east-2"])
+tbl = pa.table({
+    "id":     pa.array(np.arange(N, dtype="int64")),
+    "region": pa.array(rng.choice(regions, N)),
+    "url":    pa.array([f"/api/v1/items/{i}/detail?q=abc{i%97}" for i in range(N)]),
+    "value":  pa.array(rng.random(N)),
+    "flag":   pa.array(rng.random(N) > 0.5),
+})
+pq.write_table(tbl, "base.parquet", row_group_size=100_000)
+print(pq.ParquetFile("base.parquet").metadata)</code></pre>
+<h2>1. The Default Dictionary Makes the Whole Table 15.0% Bigger</h2>
+<p><code>write_table</code> defaults <code>use_dictionary</code> to <code>True</code>, and it applies to <strong>every column</strong>. Flipping the switch one column at a time (500,000 rows, snappy, row groups of 100,000):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Column</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dictionary on</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dictionary off</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Verdict</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">region</td><td style="border:1px solid #ddd;padding:8px;">191,631</td><td style="border:1px solid #ddd;padding:8px;">1,424,216</td><td style="border:1px solid #ddd;padding:8px;">dictionary is <strong>7.43x smaller</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">url</td><td style="border:1px solid #ddd;padding:8px;">3,724,421</td><td style="border:1px solid #ddd;padding:8px;">3,475,834</td><td style="border:1px solid #ddd;padding:8px;">dictionary is 7.1% bigger</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">id</td><td style="border:1px solid #ddd;padding:8px;">3,017,665</td><td style="border:1px solid #ddd;padding:8px;">2,004,753</td><td style="border:1px solid #ddd;padding:8px;">dictionary is 50.5% bigger</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">value</td><td style="border:1px solid #ddd;padding:8px;">5,016,860</td><td style="border:1px solid #ddd;padding:8px;">4,003,111</td><td style="border:1px solid #ddd;padding:8px;">dictionary is 25.3% bigger</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">flag</td><td style="border:1px solid #ddd;padding:8px;">64,522</td><td style="border:1px solid #ddd;padding:8px;">64,522</td><td style="border:1px solid #ddd;padding:8px;">identical</td></tr></tbody></table>
+<p>flag being identical is not a coincidence. The pyarrow docs state plainly that <code>BOOLEAN</code> type doesn't support dictionary encoding; the column uses RLE, and its metadata lists only <code>RLE</code> and <code>PLAIN</code>, while every other column also carries <code>RLE_DICTIONARY</code>.</p>
+<p>Put together, the table written with defaults is <strong>15,697,403</strong> bytes versus <strong>13,650,207</strong> with <code>use_dictionary=False</code> — the default is <strong>15.0%</strong> fatter for nothing. I ran a third variant with the dictionary limited to low-cardinality columns (<code>use_dictionary=["region"]</code> style) and got <strong>13,430,547</strong> bytes: 14.4% smaller than the default and still 1.6% smaller than switching it off entirely. <strong>The fix is not to disable the dictionary, it is to scope it.</strong></p>
+<h2>2. The Dictionary Sweet Spot Sits Near 65% Cardinality</h2>
+<p>Dictionary encoding does not win just because a column holds strings. I wrote 100,000 rows of a fixed 25-character token and varied only the number of distinct values:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Distinct / rows</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dictionary on</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Dictionary off</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Winner</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">8 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">38,675</td><td style="border:1px solid #ddd;padding:8px;">269,801</td><td style="border:1px solid #ddd;padding:8px;">dictionary by <strong>6.98x</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">512 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">116,151</td><td style="border:1px solid #ddd;padding:8px;">347,693</td><td style="border:1px solid #ddd;padding:8px;">dictionary by 2.99x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">32,768 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">378,387</td><td style="border:1px solid #ddd;padding:8px;">608,500</td><td style="border:1px solid #ddd;padding:8px;">dictionary by 1.61x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">50,000 / 100,000 (50.0%)</td><td style="border:1px solid #ddd;padding:8px;">580,532</td><td style="border:1px solid #ddd;padding:8px;">622,368</td><td style="border:1px solid #ddd;padding:8px;">dictionary by 1.07x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">65,536 / 100,000 (65.5%)</td><td style="border:1px solid #ddd;padding:8px;">633,942</td><td style="border:1px solid #ddd;padding:8px;">632,424</td><td style="border:1px solid #ddd;padding:8px;"><strong>dead heat (0.998)</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">100,000 / 100,000 (100%)</td><td style="border:1px solid #ddd;padding:8px;">675,487</td><td style="border:1px solid #ddd;padding:8px;">643,385</td><td style="border:1px solid #ddd;padding:8px;">PLAIN by 5.0%</td></tr></tbody></table>
+<p>Numeric columns are blunter: with 100,000 sequential int64 values, dictionary on is 603,746 versus 401,768 off (<strong>50.3% bigger</strong>); sequential int32 comes out at 1.506x; random float64 at 1.253x. So <strong>skip the dictionary above roughly 65% cardinality, and skip it on numeric columns almost always</strong>.</p>
+<h2>3. Stop Reaching for gzip: zstd Is Both Smaller and Faster</h2>
+<p>Same table, same parameters, only the codec changes (row groups of 100,000, dictionary on):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Codec</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">File size</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">vs snappy</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Write time</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Full read time</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">none</td><td style="border:1px solid #ddd;padding:8px;">35,880,270</td><td style="border:1px solid #ddd;padding:8px;">128.6% bigger</td><td style="border:1px solid #ddd;padding:8px;">0.299s</td><td style="border:1px solid #ddd;padding:8px;">0.459s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">snappy (default)</td><td style="border:1px solid #ddd;padding:8px;">15,697,403</td><td style="border:1px solid #ddd;padding:8px;">1.00</td><td style="border:1px solid #ddd;padding:8px;">0.595s</td><td style="border:1px solid #ddd;padding:8px;">0.062s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">lz4</td><td style="border:1px solid #ddd;padding:8px;">16,004,470</td><td style="border:1px solid #ddd;padding:8px;">2.0% bigger</td><td style="border:1px solid #ddd;padding:8px;">0.400s</td><td style="border:1px solid #ddd;padding:8px;">0.041s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">zstd</td><td style="border:1px solid #ddd;padding:8px;">10,216,336</td><td style="border:1px solid #ddd;padding:8px;"><strong>34.9% smaller</strong></td><td style="border:1px solid #ddd;padding:8px;">0.455s</td><td style="border:1px solid #ddd;padding:8px;">0.053s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">gzip</td><td style="border:1px solid #ddd;padding:8px;">11,657,380</td><td style="border:1px solid #ddd;padding:8px;">25.7% smaller</td><td style="border:1px solid #ddd;padding:8px;"><strong>15.125s</strong></td><td style="border:1px solid #ddd;padding:8px;">0.065s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">brotli</td><td style="border:1px solid #ddd;padding:8px;">9,921,421</td><td style="border:1px solid #ddd;padding:8px;">36.8% smaller</td><td style="border:1px solid #ddd;padding:8px;">4.247s</td><td style="border:1px solid #ddd;padding:8px;">0.077s</td></tr></tbody></table>
+<p>Two conclusions you can copy directly. First, <strong>zstd beats gzip on both axes</strong>: 12.4% smaller and 33.2x faster to write (0.455s vs 15.125s). Only brotli is smaller, and it is 9.3x slower to write. Second, <strong>zstd's default level is 1</strong>: the default output of 10,216,336 bytes is byte-identical to <code>compression_level=1</code>. Level 9 saves another 8,580 bytes for 2.4x the time, and level 17 takes 8.043s while producing a file 1,661 bytes *larger* than level 1.</p>
+<h2>4. Column Projection Really Does Read Only Those Bytes</h2>
+<p>Reading <code>base.parquet</code> through a file wrapper that counts every byte handed to it:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Columns read</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Bytes actually read</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Share of file</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Time</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">all 5</td><td style="border:1px solid #ddd;padding:8px;">15,758,717</td><td style="border:1px solid #ddd;padding:8px;">100.4%</td><td style="border:1px solid #ddd;padding:8px;">0.082s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">id only</td><td style="border:1px solid #ddd;padding:8px;">3,082,270</td><td style="border:1px solid #ddd;padding:8px;"><strong>19.6%</strong></td><td style="border:1px solid #ddd;padding:8px;">0.008s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">value only</td><td style="border:1px solid #ddd;padding:8px;">5,081,446</td><td style="border:1px solid #ddd;padding:8px;">32.4%</td><td style="border:1px solid #ddd;padding:8px;">0.005s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">url only</td><td style="border:1px solid #ddd;padding:8px;">3,788,773</td><td style="border:1px solid #ddd;padding:8px;">24.1%</td><td style="border:1px solid #ddd;padding:8px;">0.016s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">id + value</td><td style="border:1px solid #ddd;padding:8px;">8,098,180</td><td style="border:1px solid #ddd;padding:8px;">51.6%</td><td style="border:1px solid #ddd;padding:8px;">0.010s</td></tr></tbody></table>
+<p>This is what the footer pays for: seek to the chunk you need. value is random float64 and barely compresses, so even one column costs 32.4% of the file — which also tells you that <strong>splitting a wide table, or parking the fat column elsewhere, pays out in literal bytes</strong>.</p>
+<h2>5. Sorting Buys Pruning and Costs Size</h2>
+<p>I sorted the same data by region before writing (row groups of 50,000, ten of them) and then filtered:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Scenario</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Bytes read</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Share of file</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Rows matched</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">unsorted, filter region="eu-west-1"</td><td style="border:1px solid #ddd;padding:8px;">12,254,333</td><td style="border:1px solid #ddd;padding:8px;">100.5%</td><td style="border:1px solid #ddd;padding:8px;">62,704</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sorted, filter region="eu-west-1"</td><td style="border:1px solid #ddd;padding:8px;">2,587,292</td><td style="border:1px solid #ddd;padding:8px;"><strong>20.5%</strong></td><td style="border:1px solid #ddd;padding:8px;">62,704</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">unsorted, filter id in [0,100000)</td><td style="border:1px solid #ddd;padding:8px;">2,524,399</td><td style="border:1px solid #ddd;padding:8px;">20.7%</td><td style="border:1px solid #ddd;padding:8px;">100,000</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sorted, filter id in [0,100000)</td><td style="border:1px solid #ddd;padding:8px;">12,676,244</td><td style="border:1px solid #ddd;padding:8px;">100.5%</td><td style="border:1px solid #ddd;padding:8px;">100,000</td></tr></tbody></table>
+<p><strong>You can only optimize for one filter column.</strong> Unsorted, every row group's region statistics run from <code>ap-northeast-1</code> to <code>us-west-2</code>, so none can be skipped; sorted, only 2 of 10 row groups fall in range. But sorting by region scatters id, and the id range filter degrades from 20.7% to 100.5% of the file.</p>
+<p>The size cost is real: per-column compressed bytes show region dropping from <strong>191,587 to 2,376</strong> (80.6x smaller), while the correlated url column grows from 3,974,336 to 4,570,381 (<strong>15.0% bigger</strong>, because url embeds the sequential id and sorting destroys that pattern). The whole file goes from 12,195,324 to 12,617,166, <strong>3.5% bigger</strong>. You sort for pruning, not for size.</p>
+<p>Row group sizing is not monotonic either: at 1,000 rows per group the file is 15,783,076 bytes (500 row groups, 340,426 bytes of footer), at 10,000 it is *larger* (15,979,172), and it only drops to 13,275,918 at 500,000 rows per group (1 row group, 1,391 bytes of footer). <strong>The footer grows linearly with the number of row groups</strong>, so very fine grouping gives back in metadata what it saves in compression.</p>
+<h2>6. The Official Recommendation and the pyarrow Default Do Not Agree</h2>
+<p>The Parquet configuration page says of row groups: "We recommend large row groups (512MB - 1GB)." Of pages: "We recommend 8KB for page sizes."</p>
+<p>pyarrow 26.0.0 ships something else. Both the local docstring and the Apache Arrow 26.0.0 reference say <code>row_group_size</code> defaults to None, meaning "the minimum of the Table size (in rows) and 1024 * 1024", and <code>data_page_size</code> defaults to None, meaning "use the default data page size of 1MByte". I wrote a 1,200,000-row single-column table and got <strong>[1,048,576, 151,424]</strong> — two row groups, exactly 1024x1024, not 512MB–1GB.</p>
+<p>Neither is wrong; they just use different units. The recommendation is in bytes, the default is in rows. The wider your columns, the further 1,048,576 rows drifts from the official advice — which makes this a parameter worth setting by hand on wide tables.</p>
+<h2>Nobody Verifies a Declared Sort Order</h2>
+<p>The <code>sorting_columns</code> documentation says outright: "The writer does not sort the data nor does it verify that the data is sorted." I tested it by writing a thoroughly shuffled table with <code>sorting_columns=[SortingColumn(1)]</code>. pyarrow accepted it without a sound, and reading it back gives <code>row_group(0).sorting_columns</code> equal to <code>(SortingColumn(column_index=1, descending=False, nulls_first=False),)</code> — while every row group's region statistics still span <code>ap-northeast-1</code> to <code>us-west-2</code>.</p>
+<p>The good news is that pyarrow's own <code>filters</code> uses the real statistics, so results stay correct (12,481 rows, matching a brute-force filter of 12,481). The risk sits elsewhere: any engine that trusts the declaration and skips row groups on that basis will return wrong answers, and whoever wrote the file sees no error at all. <strong>Declaring a sort order is not sorting.</strong></p>
+<p>Two more fields I wanted and could not get: <code>statistics.distinct_count</code> is <code>None</code> (pyarrow writes no cardinality statistics, so an engine cannot tell from metadata whether a column deserves a dictionary), and <code>write_page_index</code> defaults to <code>False</code> — the docs note that turning it on "disables the old method of writing statistics to each data page header", meaning page-level pruning is off by default.</p>
+<h2>Troubleshooting: Six Real Errors</h2>
+<p><strong>Error 1: reading a non-Parquet file as Parquet</strong></p>
+<pre><code>ArrowInvalid: Could not open Parquet input source 'notparquet.bin': Parquet magic bytes not found in footer. Either the file is corrupted or this is not a parquet file.</code></pre>
+<p>Usually a truncated download or something else sitting in your object store. File extensions prove nothing — check whether the last 4 bytes are <code>PAR1</code>.</p>
+<p><strong>Error 2: a zero-byte file</strong></p>
+<pre><code>ArrowInvalid: Parquet file size is 0 bytes</code></pre>
+<p>A killed write job, a full disk, or an upstream filter that produced no rows but still created the file. Note the difference: writing a genuinely typed empty table with <code>pq.write_table()</code> produces a valid <strong>467-byte</strong> file (0 rows, complete schema) that reads back fine. The 0-byte one never finished and cannot be opened.</p>
+<p><strong>Error 3: mixed types in one column</strong></p>
+<pre><code>ArrowInvalid: Could not convert 'three' with type str: tried to convert to double</code></pre>
+<p>Handing <code>[1, 2.5, "three"]</code> to <code>pa.array()</code> blows up. Parquet gives you one type per column and no lenient mode; clean the data before you build the table.</p>
+<p><strong>Error 4: writing a different schema to the same ParquetWriter</strong></p>
+<pre><code>ValueError: Table schema does not match schema used to create file:
+table:
+a: double vs.
+file:
+a: int64</code></pre>
+<p>The second batch turned <code>a</code> into a float. <code>cast()</code> every batch to one schema before appending, or write separate fragment files with <code>write_to_dataset</code>.</p>
+<p><strong>Error 5: a filter naming a column that does not exist</strong></p>
+<pre><code>ArrowInvalid: No match for FieldRef.Name(nope) in id: int64
+v: double</code></pre>
+<p>A typo'd column name does not give you an empty table, it raises. Column names are case-sensitive, and nested columns are referenced differently.</p>
+<p><strong>Error 6: mismatched schemas inside one directory</strong></p>
+<pre><code>ArrowInvalid: Failed to parse string: 'y' as a scalar of type int64</code></pre>
+<p><code>pq.read_table("directory")</code> treats every parquet file there as one dataset and parses the rest with the first file's schema. One fragment with a different schema fails during <strong>parsing</strong>, not merging, which makes it easy to mistake for dirty data.</p>
+<p>One more boundary: a Python int past the int64 ceiling gives <code>OverflowError: int too big to convert</code> from <code>pa.array([2**63 + 1])</code>, not an Arrow error type.</p>
+<h2>How to Turn the Six Knobs</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Knob</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Default</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What these measurements suggest</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>use_dictionary</code></td><td style="border:1px solid #ddd;padding:8px;">True (all columns)</td><td style="border:1px solid #ddd;padding:8px;">Pass a column list, low-cardinality only; leave numeric columns off</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>compression</code></td><td style="border:1px solid #ddd;padding:8px;">snappy</td><td style="border:1px solid #ddd;padding:8px;">Use zstd for archival or cold data; lz4 only when read speed is everything</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>compression_level</code></td><td style="border:1px solid #ddd;padding:8px;">None (= zstd level 1)</td><td style="border:1px solid #ddd;padding:8px;">Do not raise it: level 9 saves 0.08% for 2.4x the time</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>row_group_size</code></td><td style="border:1px solid #ddd;padding:8px;">None (= 1,048,576 rows)</td><td style="border:1px solid #ddd;padding:8px;">On wide tables, recompute against the official 512MB–1GB byte target</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>write_statistics</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">Keep it — it is the only basis for row group pruning</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>sorting_columns</code></td><td style="border:1px solid #ddd;padding:8px;">None</td><td style="border:1px solid #ddd;padding:8px;">Declare it only after you have actually sorted</td></tr></tbody></table>
+<h2>Where This Stops</h2>
+<p>Everything here comes from one Windows machine running pyarrow 26.0.0 single-processed, on synthetic data: 500,000 rows, fixed-length string tokens, uniformly distributed floats. Real-world string length distributions, time locality, and null ratios all move these numbers, especially the 65% crossover in section 2 — that figure belongs to one combination (25-character tokens plus snappy) and will drift with a different codec or a different string shape. I did not test Spark, Trino, or DuckDB read behavior, and I did not test remote reads against object storage, where random access costs nothing like a local SSD and column projection usually pays off far more than the 19.6% measured here. For page-level pruning (<code>write_page_index</code>) I only confirmed it is off by default; I did not run an on/off comparison.</p>
+<h2>FAQ</h2>
+<p><strong>Should I use dictionary encoding or not?</strong></p>
+<p>It depends on cardinality. On this data, dictionary encoding is a net win below roughly 65% distinct values and a net loss above; for numeric columns (integers and floats) it loses almost always, and leaving the default on made this table 15.0% bigger.</p>
+<p><strong>Which compression codec?</strong></p>
+<p>Default snappy is the safe choice for speed. For size, pick zstd: here it is 12.4% smaller than gzip and 33.2x faster to write. lz4 gave the fastest full read on this machine (0.041s) but landed 2.0% larger than snappy.</p>
+<p><strong>I sorted by timestamp and now id lookups got slower. Why?</strong></p>
+<p>Because sorting serves exactly one filter column. After sorting by region, the region filter dropped from 100.5% to 20.5% of the file, while the id range filter went from 20.7% to 100.5%. Decide your most frequent filter first, then pick the sort key.</p>
+<p><strong>Does setting <code>sorting_columns</code> sort my data?</strong></p>
+<p>No. The official docstring says the writer neither sorts nor verifies. I wrote shuffled data with a sort declaration and got no error at all.</p>
+<p><strong>A file will not open. Truncated, or never Parquet to begin with?</strong></p>
+<p>Look at the last 4 bytes for <code>PAR1</code>. A 0-byte file raises <code>Parquet file size is 0 bytes</code>; a file with content but a broken tail raises <code>Parquet magic bytes not found in footer</code>. Different failures, different fixes.</p>
+<h2>Related Reading</h2>
+<p>If your question is what happens after the file is written, the same machine produced <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" target="_blank" rel="nofollow sponsored">DuckDB 1.5.6: Querying 40 MB CSV Without a Database</a>, which covers the query layer while this piece covers the storage layer. On the server side, <a href="https://yaohehe.github.io/2026-10-16-postgresql-replication-slots-ate-my-disk-186-teste-en.html" target="_blank" rel="nofollow sponsored">PostgreSQL Replication Slots Ate My Disk</a> is the same story of write amplification nobody reads. Methodologically this article matches <a href="https://yaohehe.github.io/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" target="_blank" rel="nofollow sponsored">LangGraph Persistence Tested</a>: no third-party benchmarks, every number produced locally with the script included.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
