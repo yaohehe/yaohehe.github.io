@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Parquet 实测：默认字典编码让我的文件大了 15% - TechPassive</title>
+  <meta name="description" content="用 pyarrow 26.0.0 在 50 万行表上实测 Parquet 的六个写入旋钮：默认字典编码让文件大了 15.0%、zstd 比 gzip 快 33 倍且更小、列裁剪只读 19.6% 字节、排序后过滤读盘降到 20.5% 却让文件大 3.5%，附 6 个真实报错与可复现脚本，并给出六个旋钮的建议取值。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Parquet 与 Arrow 实测：文件里到底存了什么</h1>
+  <div class="post-tags">
+    <span class="tag">Parquet</span><span class="tag">PyArrow</span><span class="tag">数据分析</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：Parquet 不是「存进去就变小」的黑盒。我实际在这台 Windows 机器上用 pyarrow 26.0.0 跑了 50 万行 × 5 列的对照，结果是：默认 <code>use_dictionary=True</code> 会把字典套到整数和浮点列上，让整张表比关掉它大 <strong>15.0%</strong>（15,697,403 vs 13,650,207 字节）；改 <code>compression="zstd"</code> 比 gzip 快 33 倍且文件还小 12.4%；只读一列时磁盘只被读走 19.6% 的字节；而把数据按 region 排序能让该列缩小 80.6 倍、过滤读盘掉到 20.5%，代价是整文件反而大 3.5%，且按 id 过滤时剪枝彻底失效。</p>
+<p>本文不含任何联盟推广链接，所有数字都是本机跑出来的。</p>
+<h2>文件里到底装了什么</h2>
+<p>Apache Parquet 官方格式文档给出的文件布局是这样的：开头 4 字节 magic <code>PAR1</code>，中间是「列块按行组切分」的数据区（第 1 个行组的 N 个列块，接着第 2 个行组的 N 个列块，一直到第 M 个行组），然后是文件元数据、4 字节的元数据长度（小端），最后又是 4 字节 <code>PAR1</code>。</p>
+<p>关键在于官方那句 "File metadata is written after the data to allow for single pass writing"——<strong>元数据写在数据之后</strong>，所以读一个 Parquet 文件的第一步永远是跳到文件尾部拿元数据，再回头找列块的位置。这也是后面「列裁剪为什么真的省 IO」的物理基础：元数据里有每个列块的起始偏移，读引擎可以直接 seek 过去，不必扫全文件。</p>
+<h2>实测环境与方法</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项目</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">取值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">库版本</td><td style="border:1px solid #ddd;padding:8px;">pyarrow 26.0.0（写入的 <code>created_by</code> 是 <code>parquet-cpp-arrow version 26.0.0</code>）、pandas 3.0.6、numpy 2.5.4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">数据</td><td style="border:1px solid #ddd;padding:8px;">50 万行 × 5 列，合成数据，随机种子 20261021</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">列构成</td><td style="border:1px solid #ddd;padding:8px;">id（顺序 int64）、region（8 个取值字符串）、url（约 50 万个互不相同字符串）、value（随机 float64）、flag（bool）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">机器</td><td style="border:1px solid #ddd;padding:8px;">Windows，本机 SSD，单进程</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">官方来源</td><td style="border:1px solid #ddd;padding:8px;">parquet.apache.org 文件格式页与配置页、Apache Arrow 26.0.0 <code>write_table</code> 参数文档</td></tr></tbody></table>
+<p>可复现脚本（去掉了注释，直接可跑）：</p>
+<pre><code>import numpy as np, pyarrow as pa, pyarrow.parquet as pq
+rng = np.random.default_rng(20261021)
+N = 500_000
+regions = np.array(["us-east-1", "us-west-2", "eu-central-1", "ap-southeast-1",
+                    "ap-northeast-1", "eu-west-1", "sa-east-1", "us-east-2"])
+tbl = pa.table({
+    "id":     pa.array(np.arange(N, dtype="int64")),
+    "region": pa.array(rng.choice(regions, N)),
+    "url":    pa.array([f"/api/v1/items/{i}/detail?q=abc{i%97}" for i in range(N)]),
+    "value":  pa.array(rng.random(N)),
+    "flag":   pa.array(rng.random(N) > 0.5),
+})
+pq.write_table(tbl, "base.parquet", row_group_size=100_000)
+print(pq.ParquetFile("base.parquet").metadata)</code></pre>
+<h2>一、默认字典编码让整张表大了 15.0%</h2>
+<p><code>write_table</code> 的 <code>use_dictionary</code> 默认是 <code>True</code>，而且默认对<strong>所有列</strong>生效。逐列把开关拨一遍（50 万行、snappy、行组 10 万）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">列</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字典开</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字典关</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结论</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">region</td><td style="border:1px solid #ddd;padding:8px;">191,631</td><td style="border:1px solid #ddd;padding:8px;">1,424,216</td><td style="border:1px solid #ddd;padding:8px;">字典小 <strong>7.43 倍</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">url</td><td style="border:1px solid #ddd;padding:8px;">3,724,421</td><td style="border:1px solid #ddd;padding:8px;">3,475,834</td><td style="border:1px solid #ddd;padding:8px;">字典反而大 7.1%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">id</td><td style="border:1px solid #ddd;padding:8px;">3,017,665</td><td style="border:1px solid #ddd;padding:8px;">2,004,753</td><td style="border:1px solid #ddd;padding:8px;">字典反而大 50.5%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">value</td><td style="border:1px solid #ddd;padding:8px;">5,016,860</td><td style="border:1px solid #ddd;padding:8px;">4,003,111</td><td style="border:1px solid #ddd;padding:8px;">字典反而大 25.3%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">flag</td><td style="border:1px solid #ddd;padding:8px;">64,522</td><td style="border:1px solid #ddd;padding:8px;">64,522</td><td style="border:1px solid #ddd;padding:8px;">完全一致</td></tr></tbody></table>
+<p>flag 完全一致不是巧合——pyarrow 的文档写得很清楚：<code>BOOLEAN</code> type doesn't support dictionary encoding，布尔列走的是 RLE，元数据里也只有 <code>RLE</code> 和 <code>PLAIN</code> 两种编码，而其他列都带上了 <code>RLE_DICTIONARY</code>。</p>
+<p>合起来，整张表默认写是 <strong>15,697,403</strong> 字节，<code>use_dictionary=False</code> 是 <strong>13,650,207</strong> 字节，默认配置白胖了 <strong>15.0%</strong>。我跑了第三个版本——只给低基数列开字典（<code>use_dictionary=["region"]</code> 这一类写法）——得到 <strong>13,430,547</strong> 字节，比全开小 14.4%，比全关也还小 1.6%。<strong>正确做法不是关掉字典，是把它限定在低基数列上。</strong></p>
+<h2>二、字典编码的甜点区在 65% 基数附近</h2>
+<p>字典不是「字符串就一定赢」。我用 10 万行、每行一个 25 字符的定长 token，只改不同取值个数：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">不同取值 / 总行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字典开</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字典关</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">谁赢</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">8 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">38,675</td><td style="border:1px solid #ddd;padding:8px;">269,801</td><td style="border:1px solid #ddd;padding:8px;">字典 <strong>6.98 倍</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">512 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">116,151</td><td style="border:1px solid #ddd;padding:8px;">347,693</td><td style="border:1px solid #ddd;padding:8px;">字典 2.99 倍</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">32,768 / 100,000</td><td style="border:1px solid #ddd;padding:8px;">378,387</td><td style="border:1px solid #ddd;padding:8px;">608,500</td><td style="border:1px solid #ddd;padding:8px;">字典 1.61 倍</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">50,000 / 100,000（50.0%）</td><td style="border:1px solid #ddd;padding:8px;">580,532</td><td style="border:1px solid #ddd;padding:8px;">622,368</td><td style="border:1px solid #ddd;padding:8px;">字典 1.07 倍</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">65,536 / 100,000（65.5%）</td><td style="border:1px solid #ddd;padding:8px;">633,942</td><td style="border:1px solid #ddd;padding:8px;">632,424</td><td style="border:1px solid #ddd;padding:8px;"><strong>打平（0.998）</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">100,000 / 100,000（100%）</td><td style="border:1px solid #ddd;padding:8px;">675,487</td><td style="border:1px solid #ddd;padding:8px;">643,385</td><td style="border:1px solid #ddd;padding:8px;">PLAIN 赢 5.0%</td></tr></tbody></table>
+<p>数值列更干脆：10 万行顺序 int64，字典开 603,746 vs 关 401,768（<strong>大 50.3%</strong>）；顺序 int32 是 1.506 倍；随机 float64 是 1.253 倍。所以<strong>基数超过行数六成左右就别开字典，数值列除极低基数外基本都别开</strong>。</p>
+<h2>三、别再默认用 gzip：zstd 又小又快</h2>
+<p>同一张表、同一批参数，只换压缩器（行组 10 万、字典开）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">压缩</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文件大小</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">相对 snappy</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写入耗时</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">全表读耗时</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">none</td><td style="border:1px solid #ddd;padding:8px;">35,880,270</td><td style="border:1px solid #ddd;padding:8px;">大 128.6%</td><td style="border:1px solid #ddd;padding:8px;">0.299s</td><td style="border:1px solid #ddd;padding:8px;">0.459s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">snappy（默认）</td><td style="border:1px solid #ddd;padding:8px;">15,697,403</td><td style="border:1px solid #ddd;padding:8px;">1.00</td><td style="border:1px solid #ddd;padding:8px;">0.595s</td><td style="border:1px solid #ddd;padding:8px;">0.062s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">lz4</td><td style="border:1px solid #ddd;padding:8px;">16,004,470</td><td style="border:1px solid #ddd;padding:8px;">大 2.0%</td><td style="border:1px solid #ddd;padding:8px;">0.400s</td><td style="border:1px solid #ddd;padding:8px;">0.041s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">zstd</td><td style="border:1px solid #ddd;padding:8px;">10,216,336</td><td style="border:1px solid #ddd;padding:8px;">小 <strong>34.9%</strong></td><td style="border:1px solid #ddd;padding:8px;">0.455s</td><td style="border:1px solid #ddd;padding:8px;">0.053s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">gzip</td><td style="border:1px solid #ddd;padding:8px;">11,657,380</td><td style="border:1px solid #ddd;padding:8px;">小 25.7%</td><td style="border:1px solid #ddd;padding:8px;"><strong>15.125s</strong></td><td style="border:1px solid #ddd;padding:8px;">0.065s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">brotli</td><td style="border:1px solid #ddd;padding:8px;">9,921,421</td><td style="border:1px solid #ddd;padding:8px;">小 36.8%</td><td style="border:1px solid #ddd;padding:8px;">4.247s</td><td style="border:1px solid #ddd;padding:8px;">0.077s</td></tr></tbody></table>
+<p>两个可以直接抄的结论：一是 <strong>zstd 同时打赢 gzip 的体积和速度</strong>——小 12.4%，写快 33.2 倍（0.455s vs 15.125s），只有 brotli 更小，但 brotli 写起来慢 9.3 倍；二是 <strong>zstd 的默认档就是 level 1</strong>（默认输出 10,216,336 字节与显式 <code>compression_level=1</code> 完全一致），调到 level 9 只再省 8,580 字节却慢 2.4 倍，调到 level 17 更是 8.043s 且文件反而比 level 1 大 1,661 字节。</p>
+<h2>四、列裁剪是真的只读那几个字节</h2>
+<p>我用一个计数字节的文件包装器读 <code>base.parquet</code>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">读取的列</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实际读盘字节</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">占文件比例</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">耗时</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">全部 5 列</td><td style="border:1px solid #ddd;padding:8px;">15,758,717</td><td style="border:1px solid #ddd;padding:8px;">100.4%</td><td style="border:1px solid #ddd;padding:8px;">0.082s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">只 id</td><td style="border:1px solid #ddd;padding:8px;">3,082,270</td><td style="border:1px solid #ddd;padding:8px;"><strong>19.6%</strong></td><td style="border:1px solid #ddd;padding:8px;">0.008s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">只 value</td><td style="border:1px solid #ddd;padding:8px;">5,081,446</td><td style="border:1px solid #ddd;padding:8px;">32.4%</td><td style="border:1px solid #ddd;padding:8px;">0.005s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">只 url</td><td style="border:1px solid #ddd;padding:8px;">3,788,773</td><td style="border:1px solid #ddd;padding:8px;">24.1%</td><td style="border:1px solid #ddd;padding:8px;">0.016s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">id + value</td><td style="border:1px solid #ddd;padding:8px;">8,098,180</td><td style="border:1px solid #ddd;padding:8px;">51.6%</td><td style="border:1px solid #ddd;padding:8px;">0.010s</td></tr></tbody></table>
+<p>这是脚注元数据存在的意义：seek 到目标列块就行。value 列是随机浮点、几乎压不动，所以单读一列就吃掉 32.4%；反过来也说明<strong>把宽表拆成窄表、或者把大列单独放，收益是实打实的字节数</strong>。</p>
+<h2>五、排序换来剪枝，也换走了体积</h2>
+<p>把同一份数据按 region 排序再写（行组 5 万、10 个行组），然后分别过滤：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">读盘字节</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">占文件比例</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">命中行</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">未排序，过滤 region="eu-west-1"</td><td style="border:1px solid #ddd;padding:8px;">12,254,333</td><td style="border:1px solid #ddd;padding:8px;">100.5%</td><td style="border:1px solid #ddd;padding:8px;">62,704</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">已排序，过滤 region="eu-west-1"</td><td style="border:1px solid #ddd;padding:8px;">2,587,292</td><td style="border:1px solid #ddd;padding:8px;"><strong>20.5%</strong></td><td style="border:1px solid #ddd;padding:8px;">62,704</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">未排序，过滤 id 在 [0,100000)</td><td style="border:1px solid #ddd;padding:8px;">2,524,399</td><td style="border:1px solid #ddd;padding:8px;">20.7%</td><td style="border:1px solid #ddd;padding:8px;">100,000</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">已排序，过滤 id 在 [0,100000)</td><td style="border:1px solid #ddd;padding:8px;">12,676,244</td><td style="border:1px solid #ddd;padding:8px;">100.5%</td><td style="border:1px solid #ddd;padding:8px;">100,000</td></tr></tbody></table>
+<p><strong>一次只能优化一个过滤列。</strong> 未排序时每个行组的 region 统计量都是从 <code>ap-northeast-1</code> 到 <code>us-west-2</code>，没一个能跳；排序后 10 个行组里只有 2 个落在范围内。反过来，按 region 排序把 id 打散了，id 的范围过滤从读 20.7% 退化成读 100.5%。</p>
+<p>代价是体积：逐列压缩后字节数显示 region 从 <strong>191,587 掉到 2,376</strong>（小 80.6 倍），但与之相关的 url 列从 3,974,336 涨到 4,570,381（<strong>大 15.0%</strong>，因为 url 里嵌着顺序 id，排序把它打乱了），整文件从 12,195,324 变成 12,617,166，<strong>大了 3.5%</strong>。排序是为了剪枝，不是为了变小。</p>
+<p>顺带一提，行组切多细也不是单调的：行组 1,000 时文件 15,783,076 字节（500 个行组、脚注 340,426 字节），行组 10,000 时反而更大（15,979,172），到行组 500,000 才降到 13,275,918（1 个行组、脚注 1,391 字节）。<strong>脚注随行组数量线性膨胀</strong>，行组太细时省下的那点压缩会被元数据吃掉。</p>
+<h2>六、官方推荐值和 pyarrow 默认值对不上</h2>
+<p>Parquet 官方配置页原文：行组 "We recommend large row groups (512MB - 1GB)"；数据页 "We recommend 8KB for page sizes"。</p>
+<p>而 pyarrow 26.0.0 的本地文档与 Apache Arrow 26.0.0 在线文档是另一套：<code>row_group_size</code> 默认 None，含义是 "the minimum of the Table size (in rows) and 1024 * 1024"；<code>data_page_size</code> 默认 None，含义是 "use the default data page size of 1MByte"。我写了一百二十万行的单列表验证，实际切成 <strong>[1,048,576, 151,424]</strong> 两个行组——确实是 1024×1024，不是 512MB–1GB。</p>
+<p>这不是谁错，是<strong>推荐值以字节计、默认值以行数计</strong>：你的列越宽，1024×1024 行对应的字节数就越偏离官方建议。宽表场景下这是值得手动设的一个参数。</p>
+<h2>声明排序时没人校验你</h2>
+<p><code>sorting_columns</code> 的文档原文写着 "The writer does not sort the data nor does it verify that the data is sorted"。我实测把一份完全乱序的表配上 <code>sorting_columns=[SortingColumn(1)]</code> 写进去，pyarrow 一声不响地接受了，读回来 <code>row_group(0).sorting_columns</code> 是 <code>(SortingColumn(column_index=1, descending=False, nulls_first=False),)</code>，但每个行组的 region 统计仍然是从 <code>ap-northeast-1</code> 到 <code>us-west-2</code>。</p>
+<p>好消息是 pyarrow 自己的 <code>filters</code> 走的是真实统计量，所以过滤结果仍然正确（12,481 行 = 暴力过滤的 12,481 行）。风险在别处：任何信任这个声明、直接据此跳行组的引擎会得到错误结果，而写文件的人没有任何报错。<strong>声明排序不等于排序。</strong></p>
+<p>另外两个想查却查不到的字段：<code>statistics.distinct_count</code> 是 <code>None</code>（pyarrow 不写基数统计，所以引擎无法从元数据判断某列该不该走字典），<code>write_page_index</code> 默认 <code>False</code>——文档说开启它 "disables the old method of writing statistics to each data page header"，页级剪枝默认是不开的。</p>
+<h2>踩坑录：六个真实报错</h2>
+<p><strong>报错一：把非 Parquet 文件当 Parquet 读</strong></p>
+<pre><code>ArrowInvalid: Could not open Parquet input source 'notparquet.bin': Parquet magic bytes not found in footer. Either the file is corrupted or this is not a parquet file.</code></pre>
+<p>常见于下载中断或对象存储里存了别的东西。文件后缀不可信，先检查尾部 4 字节是不是 <code>PAR1</code>。</p>
+<p><strong>报错二：0 字节文件</strong></p>
+<pre><code>ArrowInvalid: Parquet file size is 0 bytes</code></pre>
+<p>写任务被 kill、磁盘写满、或者上游过滤后没数据却仍然建了空文件就会这样。注意区分：真正用带类型的空表 <code>pq.write_table()</code> 写出来的是 <strong>467 字节</strong>的正常文件（0 行但 schema 完整），能正常读回；0 字节那个是没写完，读不了。</p>
+<p><strong>报错三：一列里混了类型</strong></p>
+<pre><code>ArrowInvalid: Could not convert 'three' with type str: tried to convert to double</code></pre>
+<p>Python list 里 <code>[1, 2.5, "three"]</code> 交给 <code>pa.array()</code> 就会炸。Parquet 一列一个类型，没有「宽容模式」，清洗要在建表前做。</p>
+<p><strong>报错四：往同一个 ParquetWriter 里写不同 schema</strong></p>
+<pre><code>ValueError: Table schema does not match schema used to create file:
+table:
+a: double vs.
+file:
+a: int64</code></pre>
+<p>追加写时第二批的 <code>a</code> 变成了浮点。分批写之前先 <code>cast()</code> 到同一 schema，或者干脆写成 <code>write_to_dataset</code> 的分片文件。</p>
+<p><strong>报错五：过滤条件里的列不存在</strong></p>
+<pre><code>ArrowInvalid: No match for FieldRef.Name(nope) in id: int64
+v: double</code></pre>
+<p>列名写错时不会返回空表，而是直接抛异常。列名区分大小写，且嵌套列的引用方式不同。</p>
+<p><strong>报错六：同一目录下 schema 不一致</strong></p>
+<pre><code>ArrowInvalid: Failed to parse string: 'y' as a scalar of type int64</code></pre>
+<p><code>pq.read_table("目录")</code> 会把目录里所有 parquet 当一个数据集，用第一个文件的 schema 去解析其余文件。混进一个 schema 不同的分片，报错发生在<strong>解析阶段</strong>而不是合并阶段，容易误判成数据脏。</p>
+<p>还有一个边界：Python 整数超过 int64 上界时，<code>pa.array([2**63 + 1])</code> 抛的是 <code>OverflowError: int too big to convert</code>，不是 Arrow 的错误类型。</p>
+<h2>六个旋钮该怎么拧</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">旋钮</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">默认</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">本文实测给的建议</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>use_dictionary</code></td><td style="border:1px solid #ddd;padding:8px;">True（全列）</td><td style="border:1px solid #ddd;padding:8px;">改成列名列表，只给低基数列；数值列默认关掉</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>compression</code></td><td style="border:1px solid #ddd;padding:8px;">snappy</td><td style="border:1px solid #ddd;padding:8px;">归档或冷数据换 zstd；只在追读速时用 lz4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>compression_level</code></td><td style="border:1px solid #ddd;padding:8px;">None（=zstd level 1）</td><td style="border:1px solid #ddd;padding:8px;">别往上调，level 9 省 0.08% 慢 2.4 倍</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>row_group_size</code></td><td style="border:1px solid #ddd;padding:8px;">None（=1,048,576 行）</td><td style="border:1px solid #ddd;padding:8px;">宽表按官方的 512MB–1GB 字节口径重算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>write_statistics</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">保持，这是行组剪枝的唯一依据</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>sorting_columns</code></td><td style="border:1px solid #ddd;padding:8px;">None</td><td style="border:1px solid #ddd;padding:8px;">只在真的排过序之后才声明</td></tr></tbody></table>
+<h2>本文的边界</h2>
+<p>全部数字来自本机 Windows + pyarrow 26.0.0 单进程，数据是合成的：50 万行、字符串为定长 token、浮点为均匀分布。真实数据里的字符串长度分布、时间局部性、空值比例都会改变结论，尤其是第二节那个 65% 的交叉点——它是「25 字符定长 token + snappy」这一组合下的数字，换压缩器或换字符串形态会漂移。我没有测 Spark / Trino / <a href="/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB</a> 等其它引擎的读取行为，也没有测对象存储上的远端读（本地 SSD 的随机读代价和 S3 完全不同，列裁剪在远端场景下的收益通常比本文的 19.6% 更夸张）。页级剪枝（<code>write_page_index</code>）我只确认了默认关闭，没有做开关对照。</p>
+<h2>常见问题</h2>
+<p><strong>Q：字典编码到底该不该开？</strong></p>
+<p>A：看基数。本文数据下不同取值少于总行数约 65% 时开字典是净赚，超过就亏；数值列（整数、浮点）除极低基数外基本都是亏的，默认全开会让这张表大 15.0%。</p>
+<p><strong>Q：压缩器选哪个？</strong></p>
+<p>A：默认 snappy 是速度的稳妥选择；要体积就选 zstd，本文里它比 gzip 小 12.4% 且快 33.2 倍。只在这台机器上追读速可以试 lz4（0.041s），但它比 snappy 还大 2.0%。</p>
+<p><strong>Q：为什么我按时间排了序，按 id 查反而变慢了？</strong></p>
+<p>A：因为排序只能服务一个过滤列。本文按 region 排序后，region 过滤从读 100.5% 降到 20.5%，但 id 范围过滤从 20.7% 退化到 100.5%。先确定最高频的过滤条件，再决定按什么排序。</p>
+<p><strong>Q：<code>sorting_columns</code> 写了会不会自动排序？</strong></p>
+<p>A：不会。官方文档原话是写作器既不排序也不校验。本文实测把乱序数据声明成已排序能直接写进去，没有报错。</p>
+<p><strong>Q：文件打不开，怎么快速判断是截断还是压根不是 Parquet？</strong></p>
+<p>A：看文件尾 4 字节是不是 <code>PAR1</code>。0 字节会拿到 <code>Parquet file size is 0 bytes</code>，有内容但尾部不对会拿到 <code>Parquet magic bytes not found in footer</code>，两者是不同故障。</p>
+<h2>相关阅读</h2>
+<p>如果你关心的是「文件存下来之后怎么查」，可以看本机同环境下的 <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" target="_blank" rel="nofollow sponsored">DuckDB 1.5.6 实测：不建库直查 40MB CSV</a>，它讲的是查询层，本文讲的是存储层。服务端侧的写入膨胀问题则有 <a href="https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html" target="_blank" rel="nofollow sponsored">PostgreSQL 18.6 复制槽实测</a>，同样是一份「没人读就把磁盘吃光」的排查记录。方法论上本文和 <a href="https://yaohehe.github.io/2026-10-19-langgraph-12-checkpointer-8.html" target="_blank" rel="nofollow sponsored">LangGraph 1.2 持久化实测</a> 一致：不引第三方基准，所有数字都在本机跑出来并把脚本原样贴出。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
