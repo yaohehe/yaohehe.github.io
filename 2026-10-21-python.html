@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 依赖约束踩坑：~= 位数差一位、== 会忽略本地版本 - TechPassive</title>
+  <meta name="description" content="Python 依赖约束踩坑：~= 位数差一位会锁死整个 patch 段，写 ==1.1 又会放过带本地标签的构建，而 pip 冲突报错里那句「无可用分发」经实测是误报。本文用 packaging 25.0 与 pip 26.1.2 逐条对拍 PEP 440 规范原文，给出六个可复制的真实报错与可直接运行的排查命令。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>PEP 440 版本约束：~= 位数、== 零填充与 pip 误报复盘</h1>
+  <div class="post-tags">
+    <span class="tag">Python依赖</span><span class="tag">PEP440</span><span class="tag">pip排错</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR：</strong> 我把六条真实报错和三个静默失效的约束写法逐一复现了一遍，最大的坑不在报错里，而在报错之外：pip 那句「Additionally, some packages ... have no matching distributions available」经实测是<strong>误报</strong>——它列出的包在索引里明明有版本。</p>
+<ul><li><code>~=2.2</code> 放行 2.9 但挡住 3.0，<code>~=2.2.0</code> 直接把 minor 锁死。差一位，语义完全不同。</li><li><code>==1.1</code> 会<strong>接受</strong> <code>1.1+downstream1</code>，因为 PEP 440 规定当约束里写的是公共版本号时，本地标签被整体忽略。</li><li><code><1.7</code> 不会接受 <code>1.7.0a1</code>，但 <code><1.7rc1</code> 会接受 <code>1.7a1</code>——想放行预发布必须写到具体 rc 号。</li><li><code>Specifier("~=1")</code> 直接抛 <code>InvalidSpecifier</code>，单段版本号禁止用 <code>~=</code>。</li><li>packaging 官方文档站展示的是 26.x 的 API，而本机 25.0 上 <code>is_unsatisfiable</code>、<code>to_range</code> 等六个方法<strong>全部不存在</strong>。</li></ul>
+<p>本文所有数字都是在 Python 3.13.14 + packaging 25.0 + pip 26.1.2 上跑出来的，脚本原文都给在正文里，你可以逐条复算。</p>
+<h2>先说清楚本文的验证环境</h2>
+<p>这一节很重要，因为本文的每条结论都跟版本绑定：</p>
+<ul><li>Python <strong>3.13.14</strong></li><li>独立的 packaging 库版本 <strong>25.0</strong></li><li>pip 版本 <strong>26.1.2</strong>，它内部 vendored 的 packaging 是 <strong>26.2</strong></li></ul>
+<p>注意最后一条：同一台机器上同时存在两个 packaging（一个 25.0 是你自己装的，一个 26.2 被 pip 打包进去了）。本文讲 Specifier 行为的结论来自<strong>独立的 25.0</strong>，pip 的报错则来自 pip 26.1.2 自己的解析器。这两个版本对预发布的默认处理并不完全一致，后面会专门讲。</p>
+<p>另外，本文所有 pip 报错都是在本机用<strong>手工构造的本地 wheel</strong> 复现的（不联网、不装 setuptools），因为出网受限。命令全部可以直接复制运行。</p>
+<h2>一、~= 的位数就是兼容范围的开关</h2>
+<p><code>~=</code> 是最容易写错的一个运算符，因为它允许的上界<strong>完全由你写了多少段数字决定</strong>。</p>
+<p>PEP 440 原文的表述是：对于 <code>V.N</code>，兼容发布子句「approximately equivalent to the pair of comparison clauses」<code>>= V.N, == V.*</code>。</p>
+<p>实测对照（本机 packaging 25.0）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.2</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.9</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">3.0</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.1.9</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>~=2.2</code></td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;">不命中</td><td style="border:1px solid #ddd;padding:8px;">不命中</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>~=2.2.0</code></td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;"><strong>不命中</strong></td><td style="border:1px solid #ddd;padding:8px;">不命中</td><td style="border:1px solid #ddd;padding:8px;">不命中</td></tr></tbody></table>
+<p>差一个 <code>.0</code>，就把允许范围从整个 2.x 收窄到 2.2.x。同样的事在 patch 段更夸张：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.5</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.6</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.9</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.5.0</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5</code></td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;">不命中</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5.0</code></td><td style="border:1px solid #ddd;padding:8px;">命中</td><td style="border:1px solid #ddd;padding:8px;"><strong>不命中</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>不命中</strong></td><td style="border:1px solid #ddd;padding:8px;">不命中</td></tr></tbody></table>
+<p><code>~=1.4.5.0</code> 只放行 <code>1.4.5.x</code> 这一条线，<code>1.4.6</code> 都进不来。</p>
+<p>还有两个容易忽略的细节。第一，带后缀时后缀只影响<strong>下界</strong>，上界仍按数字段算：</p>
+<pre><code>SpecifierSet("~=2.2.post3")：2.2 不命中（低于下界），2.9 命中，3.0 不命中
+SpecifierSet("~=1.4.5a4")：1.4.5a4 命中，1.4.9 命中，2.0 不命中</code></pre>
+<p>PEP 440 对此有专门说明：如果预发布、后发布或开发发布以 <code>V.N.suffix</code> 形式出现，「the suffix is ignored when determining the required prefix match」——后缀在判断前缀时被忽略。</p>
+<p>第二，单段版本号是硬错误：</p>
+<pre><code>>>> from packaging.specifiers import Specifier
+>>> Specifier("~=1")
+packaging.specifiers.InvalidSpecifier: Invalid specifier: '~=1'</code></pre>
+<p>PEP 440 用的是 MUST NOT 级别的措辞：「This operator MUST NOT be used with a single segment version number such as <code>~=1</code>」。</p>
+<p>可以直接跑这段对照：</p>
+<pre><code>from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
+for spec in ["~=2.2", "~=2.2.0", "~=1.4.5", "~=1.4.5.0"]:
+    ss = SpecifierSet(spec)
+    row = ", ".join(
+        f"{c}={'Y' if Version(c) in ss else 'N'}"
+        for c in ["1.4.5", "1.4.6", "1.4.9", "1.5.0"]
+    )
+    print(f"{spec:12} -> {row}")</code></pre>
+<h2>二、== 的零填充，以及它为什么放过了本地版本</h2>
+<p><code>==</code> 的比较不是纯字符串相等。PEP 440 规定它会做唯一一处替换：「The *only* substitution performed is the zero padding of the release segment」。</p>
+<p>所以：</p>
+<pre><code>>>> Version("1.1.0") == Version("1.1")
+True</code></pre>
+<p>但也就仅此一项。下面这些<strong>全部不等于</strong> <code>1.1</code>：</p>
+<pre><code>Version("1.1.dev1")  # False
+Version("1.1a1")     # False
+Version("1.1.post1") # False
+Version("1.1.1")     # False
+Version("1.1+local") # False</code></pre>
+<p>真正坑人的是本地版本号。PEP 440 写得很清楚：「If the specified version identifier is a public version identifier (no local version label), then the local version label of any candidate versions MUST be ignored when matching versions」。</p>
+<p>后果就是 <code>==1.0</code> 会<strong>同时接受</strong>这三个版本：</p>
+<pre><code>ss = SpecifierSet("==1.0")
+Version("1.0")              in ss   # True
+Version("1.0+downstream1")  in ss   # True
+Version("1.0+ubuntu.1")     in ss   # True
+Version("1.0.1")            in ss   # False</code></pre>
+<p>如果你在给一台机器做可复现部署，写 <code>==1.0</code> 想表达「就是这个上游版本」，实际上下游打包者重新构建的 <code>1.0+downstream1</code> 也会被接受——而 PEP 440 自己就警告过，本地版本号「does indicate that it may not contain the exact same code as the corresponding upstream release」。</p>
+<p>PEP 440 推荐的写法是 <code>===1.0</code>，它做的是纯字符串相等：</p>
+<pre><code>ss = SpecifierSet("===1.0")
+Version("1.0")              in ss   # True
+Version("1.0+downstream1")  in ss   # False
+Version("1.0+ubuntu.1")     in ss   # False</code></pre>
+<h3>但 === 有个反直觉的代价</h3>
+<p>PEP 440 说 <code>===</code> 是给「non-PEP-440-compliant versions」准备的逃生舱。问题是：一旦你真的用它去匹配一个非规范字符串，<code>in</code> 运算符会<strong>抛异常而不是返回 False</strong>：</p>
+<pre><code>>>> Version("foobar")
+packaging.version.InvalidVersion: Invalid version: 'foobar'
+>>> "foobar" in Specifier("===foobar")
+Traceback (most recent call last):
+  ...
+  File ".../packaging/specifiers.py", line 267, in prereleases
+    if Version(version).is_prerelease:
+packaging.version.InvalidVersion: Invalid version: 'foobar'</code></pre>
+<p>栈是从 <code>__contains__</code> → <code>contains</code> → 读 <code>self.prereleases</code> 属性一路下来的，根因是读这个属性时先要把字符串解析成 Version，还没走到 <code>===</code> 的字符串比较分支就炸了。所以 <code>===</code> 的正确用法是<strong>只用规范字符串</strong>（比如 <code>===1.0</code>），不要真拿它去兜任意历史版本号。</p>
+<h2>三、< 和 > 对同版本号的特殊排除</h2>
+<p><code>></code> 和 <code><</code> 不是简单的字典序比较，它们各自排除了一类「同版本号」的变体。</p>
+<p>PEP 440 对 <code>></code> 的两条规则是：不得接受指定版本的 post-release（除非 <code>V</code> 本身就是 post-release），也不得接受指定版本的 local version。实测：</p>
+<pre><code>SpecifierSet(">1.7")：  1.7.1 命中 / 1.7.0.post1 不命中 / 1.7.post1 不命中
+SpecifierSet(">=1.7")： 1.7.0.post1 命中 / 1.7.1 命中 / 1.7+local 命中
+SpecifierSet(">1.0")：  1.0 不命中 / 1.0+downstream1 不命中 / 1.0.1 命中</code></pre>
+<p>对 <code><</code> 的规则是：不得接受指定版本的 pre-release（除非指定版本本身就是 pre-release）：</p>
+<pre><code>SpecifierSet("<1.7")：     1.6.9 命中 / 1.7.0a1 不命中 / 1.7 不命中
+SpecifierSet("<1.7rc1")：  1.7a1 命中 / 1.7rc1 不命中 / 1.7 不命中</code></pre>
+<p>这解释了一个非常常见的求助：「我写 <code><1.7</code> 就是想允许任何 1.7 之前的预览版，为什么装不上 1.7.0a1？」答案就是要把上界写到具体的 rc 号——<code><1.7rc1</code> 才能放行 <code>1.7a1</code>。</p>
+<h2>四、预发布默认被排除（以及 25.0 与 26.x 的差异）</h2>
+<p>PEP 440 的默认规则是：「Pre-releases of any kind, including developmental releases, are implicitly excluded from all version specifiers」，除非它已经在系统里、用户明确要求、或者它是唯一能满足约束的版本。</p>
+<p>实测：</p>
+<pre><code>ss = SpecifierSet(">=1.0")
+Version("1.0")     in ss   # True
+Version("1.3.0a1") in ss   # False
+Version("2.0rc1")  in ss   # False</code></pre>
+<p>而 filter() 会把「唯一解就是预发布」的情况救回来：</p>
+<pre><code>Specifier(">=1.2.3").filter(["1.2", "1.5a1"])   # ['1.5a1']  ← 没有正式版，预发布入选
+Specifier(">=1.2.3").filter(["1.3", "1.5a1"])   # ['1.3']     ← 有正式版，预发布被排除
+Specifier(">=1.2.3").filter(["1.3", "1.5a1"], prereleases=True)   # ['1.3', '1.5a1']</code></pre>
+<p>⚠️ 这里有个版本坑：packaging 官方文档现在展示的是 26.x 的行为，写着 <code>contains(item, installed=True)</code> 可以接受已安装的预发布。但在我本机的 <strong>25.0</strong> 上，这个参数存在却不生效——<code>SpecifierSet(">=1.0", prereleases=False).contains("1.5a1", installed=True)</code> 返回的是 <strong>False</strong>。更彻底的问题是文档里推荐的 <code>is_unsatisfiable()</code>、<code>to_range()</code>、<code>is_subset()</code>、<code>is_superset()</code>、<code>is_disjoint()</code>、<code>__replace__()</code> 这六个方法，在 25.0 上<strong>一个都没有</strong>：</p>
+<pre><code>from packaging.specifiers import SpecifierSet
+for api in ["is_unsatisfiable", "is_subset", "is_superset",
+            "is_disjoint", "to_range", "__replace__"]:
+    print(api, hasattr(SpecifierSet, api))</code></pre>
+<p>输出全是 False。所以抄 packaging 官方文档的代码前，先确认自己的版本。</p>
+<h2>五、规范原文的排序示例可以逐项复算</h2>
+<p>PEP 440 给了一段 20 个版本的未排序列表，用来定义完整排序。本机跑一遍 sorted()，结果与文档<strong>逐项相同</strong>：</p>
+<pre><code>from packaging.version import Version
+
+pep = ["1.dev0", "1.0.dev456", "1.0a1", "1.0a2.dev456", "1.0a12.dev456",
+       "1.0a12", "1.0b1.dev456", "1.0b2", "1.0b2.post345.dev456",
+       "1.0b2.post345", "1.0rc1.dev456", "1.0rc1", "1.0", "1.0+abc.5",
+       "1.0+abc.7", "1.0+5", "1.0.post456.dev34", "1.0.post456",
+       "1.0.15", "1.1.dev1"]
+
+got = [str(v) for v in sorted(Version(x) for x in pep)]
+print(got == pep)   # True</code></pre>
+<p>这段是很好的自检基线——如果你换了 packaging 版本或换到别的语言实现，用它对拍一次就知道排序行为有没有变。</p>
+<p>顺带一个基础但反直觉的点：数字段是<strong>按数值比较，不是按字符串</strong>。PEP 440 明确要求「All numeric components MUST be interpreted and ordered according to their numeric value, not as text strings」。</p>
+<pre><code>Version("1.0a12") > Version("1.0a2")   # True</code></pre>
+<p>如果按字符串比，<code>"a12" < "a2"</code>，结果会反过来。</p>
+<p>另外 epoch 段的威力值得单独说：<code>Version("1!0.1") > Version("99.99")</code> 是 <strong>True</strong>。epoch 的作用就是让项目换了编号体系之后，新版本排在所有旧版本之后。</p>
+<h2>Troubleshooting: 六个真实报错与根因</h2>
+<p>下面的报错全部是我在本机实际跑出来的，可以用原文命令复现。</p>
+<h3>报错一：ResolutionImpossible，以及那句骗人的「无可用分发」</h3>
+<p>这是本篇最有价值的一条。先看完整输出（多因果冲突的完整模板）：</p>
+<pre><code>ERROR: Cannot install -r r-cd.txt (line 1) and -r r-cd.txt (line 2) because these package versions have conflicting dependencies.
+
+The conflict is caused by:
+    demo-c 1.0 depends on demo-b>=2.0
+    demo-d 1.0 depends on demo-b<2.0
+
+Additionally, some packages in these conflicts have no matching distributions available for your environment:
+    demo-b
+
+To fix this you could try to:
+1. loosen the range of package versions you've specified
+2. remove package versions to allow pip to attempt to solve the dependency conflict
+
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts</code></pre>
+<p><strong>现象</strong>：明明索引里有两个版本，pip 却说 demo-b「no matching distributions available for your environment」。</p>
+<p><strong>原因</strong>：我先用 pip 自己的命令查了候选：</p>
+<pre><code>python -m pip index versions demo-b --no-index --find-links tmp/wheels
+# demo-b (2.0)
+# Available versions: 2.0, 1.0</code></pre>
+<p>demo-b 明明有 1.0 和 2.0 两个真实分发文件。原因在 pip 自己的源码 factory.py：判断「这个包有没有候选」的函数长这样——</p>
+<pre><code>def _has_any_candidates(self, project_name: str) -> bool:
+    return any(
+        self.find_candidates(
+            project_name,
+            requirements={project_name: []},   # ← 传的是空列表
+            incompatibilities={},
+            constraint=Constraint.empty(),
+            prefers_installed=True,
+            is_satisfied_by=lambda r, c: True,
+        )
+    )</code></pre>
+<p>requirements 是空的，于是 find_candidates 拿到的 ireqs 也是空的，紧接着 <code>_iter_found_candidates</code> 的第一句就是 <code>if not ireqs: return ()</code>。any 空元组恒为 False，取反为 True——只要这个包的名字出现在冲突原因集合里，就一定会被列进 no_candidates。</p>
+<p>我直接把这个私有方法调出来验证过，它确实恒返回 False，并且确实收到了空列表：</p>
+<pre><code>from pip._internal.resolution.resolvelib.factory import Factory
+f = Factory.__new__(Factory)
+print(f._has_any_candidates("demo-b"))   # False</code></pre>
+<p>⚠️ 需要说明的是：我没有找到对应的上游 issue 记录，所以这里只陈述「pip 26.1.2 在本机的实测行为 + 源码定位」，不把它说成是社区公认的问题。</p>
+<p><strong>可复制解决方案</strong>：别信那句「无可用分发」，用可靠命令自己确认：</p>
+<pre><code>python -m pip index versions <包名>
+python -m pip download --no-deps -d ./probe <包名></code></pre>
+<p>真要确认是不是环境问题，再加 <code>--python-version</code> 和 <code>--platform</code> 试一次，很多「找不到分发」其实是平台或 Python 版本标签不匹配。</p>
+<h3>报错二：只有一个冲突时，报错会变成另一种形态</h3>
+<p>同样是不可满足的约束，但如果因果只有一个，pip 会走另一条分支，输出短得多，而且<strong>完全没有</strong> Cannot install 那句话：</p>
+<pre><code>INFO: pip is looking at multiple versions of demo-a to determine which version is compatible with other requirements. This could take a while.
+ERROR: Could not find a version that satisfies the requirement demo-b>=2.0 (from demo-a) (from versions: 1.0)
+ERROR: No matching distribution found for demo-b>=2.0</code></pre>
+<p><strong>原因</strong>：pip 源码里 <code>if len(e.causes) == 1: return self._report_single_requirement_conflict(req, parent)</code>——单因果走短路，直接把候选列表打出来。</p>
+<p><strong>这其实是好事</strong>：<code>(from versions: 1.0)</code> 直接告诉你索引里到底有什么，比多因果那个模板有用得多。所以遇到解析失败时，<strong>把冲突收敛到单一来源</strong>（比如先单独装那个冲突包）能得到更好的报错信息。</p>
+<h3>报错三：Invalid requirement 提示的分号是误导</h3>
+<pre><code>ERROR: Invalid requirement: 'flask=>=2.0': Expected semicolon (after name with no version specifier) or end
+    flask=>=2.0
+         ^ (from line 1 of r3.txt)</code></pre>
+<p><strong>现象</strong>：提示说「期望一个分号」，但我的文件里本来就没有分号，也不需要分号。</p>
+<p><strong>原因</strong>：真实错误是 <code>=></code> 拼错了——<code>>=</code> 多了个 <code>></code>。pip 的需求行解析器把 <code>=</code> 当成了「名字结束、进入可选的分号部分」，于是走进了「期望 semicolon」的分支。箭头位置也正好指在 <code>=></code> 的第二个字符上。</p>
+<p><strong>可复制解决方案</strong>：这类报错<strong>不要照字面修</strong>。Expected semicolon 在实践中几乎总是意味着运算符拼错。直接用 Python 校验整份文件：</p>
+<pre><code>from packaging.requirements import Requirement, InvalidRequirement
+for i, line in enumerate(open("requirements.txt", encoding="utf-8"), 1):
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    try:
+        Requirement(line)
+    except InvalidRequirement as e:
+        print(f"第 {i} 行有问题: {line!r} -> {e}")</code></pre>
+<p>同样的错误也出现在漏写版本号的时候：</p>
+<pre><code>ERROR: Invalid requirement: 'requests==': Expected semicolon (after name with no version specifier) or end</code></pre>
+<h3>报错四：hash 校验失败（可复现的供应链护栏）</h3>
+<pre><code>ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE. If you have updated the package versions, please update the hashes. Otherwise, examine the package contents carefully; someone may have tampered with them.
+    demo-b==2.0 from file:///.../demo_b-2.0-py3-none-any.whl (from -r r-hash.txt (line 1)):
+        Expected sha256 deadbeef0000000000000000000000000000000000000000000000000000000000000000
+             Got        905dc748929ed9057f8cea05d55fa1d1a0f5ffa2e4b1c90fd833264a15376183</code></pre>
+<p><strong>原因</strong>：--hash 写错了，Got 那行才是文件真实的 sha256。</p>
+<p><strong>可复制解决方案</strong>：算出真实值再回填。</p>
+<pre><code>python -m pip download --no-deps -d ./whl "demo-b==2.0"
+python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" ./whl/demo_b-2.0-py3-none-any.whl</code></pre>
+<h3>报错五：--require-hashes 下漏写 ==</h3>
+<pre><code>ERROR: In --require-hashes mode, all requirements must have their versions pinned with ==. These do not:
+    demo-b from file:///.../demo_b-2.0-py3-none-any.whl (from -r r-h2.txt (line 1))</code></pre>
+<p><strong>原因</strong>：我在 requirements 里只写了 demo-b，没写版本。--require-hashes 模式下所有依赖都必须用 == 固定，包括间接依赖。</p>
+<p><strong>可复制解决方案</strong>：用 pip-tools 从 .in 文件生成带 hash 的锁文件，别手写：</p>
+<pre><code>pip-compile --generate-hashes requirements.in -o requirements.txt</code></pre>
+<h3>报错六：非法约束字符，8 种写法全被拒</h3>
+<p>这一条不涉及 pip，直接用 packaging 就能验证。下面 8 种写法全部抛 InvalidSpecifier：</p>
+<pre><code>from packaging.specifiers import SpecifierSet, InvalidSpecifier
+for bad in ["~=1", "==1.0.dev1.*", "==1.0+foo.*", "== ", "1.0", "=>1.0", ">=1.0.*", "~=1.0+local"]:
+    try:
+        SpecifierSet(bad)
+        print(f"{bad!r:16} 通过")
+    except InvalidSpecifier as e:
+        print(f"{bad!r:16} 拒绝: {e}")</code></pre>
+<pre><code>'~=1'            拒绝: Invalid specifier: '~=1'
+'==1.0.dev1.*'   拒绝: Invalid specifier: '==1.0.dev1.*'
+'==1.0+foo.*'    拒绝: Invalid specifier: '==1.0+foo.*'
+'== '            拒绝: Invalid specifier: '=='
+'1.0'            拒绝: Invalid specifier: '1.0'
+'=>1.0'          拒绝: Invalid specifier: '=>1.0'
+'>=1.0.*'        拒绝: Invalid specifier: '>=1.0.*'
+'~=1.0+local'   拒绝: Invalid specifier: '~=1.0+local'</code></pre>
+<p>有两条值得注意。<code>>=1.0.*</code> 被拒是因为 PEP 440 只给 <code>==</code> 和 <code>!=</code> 定义了 <code>.*</code> 前缀匹配。<code>~=1.0+local</code> 被拒是因为兼容发布子句里不允许本地版本号。另外 <code>"== "</code> 这一行的报错串里<strong>空格被吞了</strong>，显示成 <code>'=='</code>，所以别指望从报错信息里看出你到底多打了什么。</p>
+<h2>一份能直接抄的约束速查</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你想表达</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">不要写</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">应该写</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">允许补丁级升级，不跨 minor</td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4</code></td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.0</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">只允许 1.4.5 这条线的补丁</td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5</code></td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5.0</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">锁死上游原版，拒绝下游重打包</td><td style="border:1px solid #ddd;padding:8px;"><code>==1.0</code></td><td style="border:1px solid #ddd;padding:8px;"><code>===1.0</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">允许 1.7 之前的所有预览版</td><td style="border:1px solid #ddd;padding:8px;"><code><1.7</code></td><td style="border:1px solid #ddd;padding:8px;"><code><1.7rc1</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">明确允许预发布</td><td style="border:1px solid #ddd;padding:8px;">依赖默认行为</td><td style="border:1px solid #ddd;padding:8px;">加 --pre 或 prereleases=True</td></tr></tbody></table>
+<h2>三个静默失效的写法（没有报错，但结果是错的）</h2>
+<p>这三类问题的共同点是<strong>不会报错</strong>，所以必须在评审阶段人工看。</p>
+<p><strong>一、<code>>=2.0</code> 看起来像锁了版本，其实锁不住 major。</strong> 这是本文实测的第一条：</p>
+<pre><code>Version("3.1.2") in SpecifierSet(">=2.0")        # True
+Version("3.1.2") in SpecifierSet(">=2.0,<3")     # False</code></pre>
+<p><strong>二、规范文档 ≠ 你装的版本。</strong> packaging 官网展示 26.x 的 API，本机 25.0 上六个方法全缺。抄文档之前先 hasattr。</p>
+<p><strong>三、--require-hashes 之外，没有任何默认的完整性校验。</strong> pip 默认信任索引给你的字节。如果你的部署流程关心这件事，得自己加 --require-hashes 或者对制品做签名验证。</p>
+<h2>本文的边界</h2>
+<p>有几件事我没做，需要明确说明：</p>
+<ul><li><strong>出网受限</strong>，所以没有对真实 PyPI 做端到端解析实测。六个 pip 报错全部用<strong>手工构造的本地 wheel</strong> 配合 --no-index --find-links 复现——报错是真的，但不是公网场景。</li><li><strong>两个 packaging 版本并存</strong>。pip 26.1.2 vendored 的是 26.2，本文 Specifier 行为结论来自独立的 25.0。</li><li><strong>没覆盖</strong>：多解释器与平台 tag 差异、--no-binary、私有索引的认证流程、以及 uv / poetry 等新解析器的行为差异。</li></ul>
+<p>站内另一篇讲本地分析栈底层格式的文章可以配合看：<a href="https://yaohehe.github.io/2026-10-21-parquet-15.html" class="internal-link">Parquet 与 Arrow 实测</a> 同样是不联网纯本机跑数，那篇讲的是存储编码层；想理解为什么约束要写对在数据管道里尤其要紧，可以先看 <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 1.5.6 直查 CSV</a>。</p>
+<p>联盟披露：本文不含推广内容，也不指向任何具体商品。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
