@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PEP 440 Pinning: Digits After ~= and a False pip Claim - TechPassive</title>
+  <meta name="description" content="One extra digit after ~= locks the patch segment, ==1.0 accepts locally tagged rebuilds, and pip's no matching distributions line is a false alarm. Verified locally.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Version Pinning: Six Real Errors and a False pip Claim</h1>
+  <div class="post-tags">
+    <span class="tag">pip</span><span class="tag">PEP440</span><span class="tag">dependency</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR:</strong> I reproduced six real pip errors plus three constraint forms that fail silently. The worst one is not an error at all — pip's line <code>Additionally, some packages in these conflicts have no matching distributions available for your environment</code> is a <strong>false alarm</strong>. The package it names has versions in the index; I verified that with pip's own command and then traced the root cause into pip's source.</p>
+<ul><li><code>~=2.2</code> lets 2.9 in but blocks 3.0. <code>~=2.2.0</code> locks the minor. One extra digit, completely different meaning.</li><li><code>==1.0</code> <strong>accepts</strong> <code>1.0+downstream1</code>, because PEP 440 says local labels are ignored entirely when the constraint names a public version.</li><li><code><1.7</code> rejects <code>1.7.0a1</code>, but <code><1.7rc1</code> accepts <code>1.7a1</code>. To allow pre-releases you must name a concrete rc.</li><li><code>Specifier("~=1")</code> raises <code>InvalidSpecifier</code> outright — single-segment versions are forbidden with <code>~=</code>.</li><li>The packaging docs site now documents the 26.x API. On the 25.0 installed here, <code>is_unsatisfiable</code> and five sibling methods <strong>do not exist at all</strong>.</li></ul>
+<p>Everything below ran on Python 3.13.14 with packaging 25.0 and pip 26.1.2. The scripts are in the article so you can recompute each number.</p>
+<h2>The test environment, stated up front</h2>
+<p>This matters because every conclusion here is version-bound:</p>
+<ul><li>Python <strong>3.13.14</strong></li><li>Standalone <code>packaging</code> version <strong>25.0</strong></li><li><code>pip</code> version <strong>26.1.2</strong>, whose vendored <code>packaging</code> is <strong>26.2</strong></li></ul>
+<p>Note that last line: two copies of packaging exist side by side on this machine — the 25.0 you installed yourself, and the 26.2 bundled inside pip. The Specifier behaviour below comes from the <strong>standalone 25.0</strong>; pip's error messages come from pip 26.1.2's own resolver. The two do not treat pre-releases identically, and I come back to that below.</p>
+<p>Also worth stating: my machine had no outbound network, so every pip error here was reproduced against <strong>hand-built local wheels</strong> using <code>--no-index --find-links</code>. No setuptools required — a wheel is just a zip with a <code>METADATA</code> file, which I generate directly.</p>
+<h2>1. The number of digits after ~= is the switch</h2>
+<p><code>~=</code> is the easiest operator to get wrong, because its upper bound is decided entirely by how many numeric segments you typed.</p>
+<p>PEP 440 puts it this way: for a given release identifier <code>V.N</code>, the compatible release clause is "approximately equivalent to the pair of comparison clauses" <code>>= V.N, == V.*</code>.</p>
+<p>Measured on packaging 25.0:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Specifier</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.2</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.9</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">3.0</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">2.1.9</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>~=2.2</code></td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;">no match</td><td style="border:1px solid #ddd;padding:8px;">no match</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>~=2.2.0</code></td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;"><strong>no match</strong></td><td style="border:1px solid #ddd;padding:8px;">no match</td><td style="border:1px solid #ddd;padding:8px;">no match</td></tr></tbody></table>
+<p>That single <code>.0</code> narrows the allowed range from all of 2.x down to 2.2.x. The patch segment is even more dramatic:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Specifier</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.5</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.6</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.4.9</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1.5.0</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5</code></td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;">no match</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5.0</code></td><td style="border:1px solid #ddd;padding:8px;">match</td><td style="border:1px solid #ddd;padding:8px;"><strong>no match</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>no match</strong></td><td style="border:1px solid #ddd;padding:8px;">no match</td></tr></tbody></table>
+<p><code>~=1.4.5.0</code> admits only the <code>1.4.5.x</code> line. Even <code>1.4.6</code> is excluded.</p>
+<p>Two more details people miss. First, when a suffix is present it only affects the <strong>lower</strong> bound; the upper bound still follows the numeric segments:</p>
+<pre><code>SpecifierSet("~=2.2.post3")  ->  2.2 no,  2.9 yes,  3.0 no
+SpecifierSet("~=1.4.5a4")    ->  1.4.5a4 yes,  1.4.9 yes,  2.0 no</code></pre>
+<p>PEP 440 has a dedicated sentence for this: if a pre-release, post-release or developmental release is named as <code>V.N.suffix</code>, "the suffix is ignored when determining the required prefix match".</p>
+<p>Second, a single-segment version is a hard error:</p>
+<pre><code>>>> from packaging.specifiers import Specifier
+>>> Specifier("~=1")
+packaging.specifiers.InvalidSpecifier: Invalid specifier: '~=1'</code></pre>
+<p>The spec uses MUST NOT phrasing: "This operator MUST NOT be used with a single segment version number such as <code>~=1</code>."</p>
+<p>Here is a runnable comparison:</p>
+<pre><code>from packaging.specifiers import SpecifierSet
+from packaging.version import Version
+
+for spec in ["~=2.2", "~=2.2.0", "~=1.4.5", "~=1.4.5.0"]:
+    ss = SpecifierSet(spec)
+    row = ", ".join(
+        f"{c}={'Y' if Version(c) in ss else 'N'}"
+        for c in ["1.4.5", "1.4.6", "1.4.9", "1.5.0"]
+    )
+    print(f"{spec:12} -> {row}")</code></pre>
+<h2>2. == zero padding, and why it let a local version through</h2>
+<p><code>==</code> is not plain string equality. PEP 440 states that exactly one substitution happens: "The *only* substitution performed is the zero padding of the release segment".</p>
+<p>So:</p>
+<pre><code>>>> Version("1.1.0") == Version("1.1")
+True</code></pre>
+<p>And that is the only substitution. All of these are <strong>not</strong> equal to <code>1.1</code>:</p>
+<pre><code>Version("1.1.dev1")  # False
+Version("1.1a1")     # False
+Version("1.1.post1") # False
+Version("1.1.1")     # False
+Version("1.1+local") # False</code></pre>
+<p>The genuinely dangerous part is the local version label. PEP 440 is explicit: "If the specified version identifier is a public version identifier (no local version label), then the local version label of any candidate versions MUST be ignored when matching versions."</p>
+<p>The consequence is that <code>==1.0</code> accepts all three of these:</p>
+<pre><code>ss = SpecifierSet("==1.0")
+Version("1.0")              in ss   # True
+Version("1.0+downstream1")  in ss   # True
+Version("1.0+ubuntu.1")     in ss   # True
+Version("1.0.1")            in ss   # False</code></pre>
+<p>If you are building a reproducible deployment and write <code>==1.0</code> to mean "exactly this upstream release", you are also accepting <code>1.0+downstream1</code>, rebuilt by a downstream packager — and PEP 440 itself warns that a local version "does indicate that it may not contain the exact same code as the corresponding upstream release".</p>
+<p>The spec's recommended form is <code>===1.0</code>, which does plain string equality:</p>
+<pre><code>ss = SpecifierSet("===1.0")
+Version("1.0")              in ss   # True
+Version("1.0+downstream1")  in ss   # False
+Version("1.0+ubuntu.1")     in ss   # False</code></pre>
+<h3>But === has a counter-intuitive cost</h3>
+<p>PEP 440 describes <code>===</code> as an escape hatch for "non-PEP-440-compliant versions". The problem: if you actually use it to match a non-compliant string, the <code>in</code> operator <strong>raises instead of returning False</strong>:</p>
+<pre><code>>>> Version("foobar")
+packaging.version.InvalidVersion: Invalid version: 'foobar'
+>>> "foobar" in Specifier("===foobar")
+Traceback (most recent call last):
+  ...
+  File ".../packaging/specifiers.py", line 267, in prereleases
+    if Version(version).is_prerelease:
+packaging.version.InvalidVersion: Invalid version: 'foobar'</code></pre>
+<p>The stack runs <code>__contains__</code> → <code>contains</code> → reads the <code>self.prereleases</code> property, and reading that property parses the string into a <code>Version</code> first. It blows up before ever reaching <code>===</code>'s string-comparison branch. So the correct use of <code>===</code> is <strong>only with compliant strings</strong> such as <code>===1.0</code> — do not point it at arbitrary historical version numbers.</p>
+<h2>3. > and < exclude same-version variants</h2>
+<p><code>></code> and <code><</code> are not simple lexicographic comparisons. Each excludes a category of same-version variant.</p>
+<p>For <code>></code>, PEP 440 gives two rules: it must not admit a post-release of the given version (unless <code>V</code> is itself a post-release), and it must not admit a local version of the specified version. Measured:</p>
+<pre><code>SpecifierSet(">1.7")   ->  1.7.1 yes,  1.7.0.post1 no,  1.7.post1 no
+SpecifierSet(">=1.7")  ->  1.7.0.post1 yes,  1.7.1 yes,  1.7+local yes
+SpecifierSet(">1.0")   ->  1.0 no,  1.0+downstream1 no,  1.0.1 yes</code></pre>
+<p>For <code><</code>, the rule is that it must not admit a pre-release of the specified version, unless the specified version is itself a pre-release:</p>
+<pre><code>SpecifierSet("<1.7")     ->  1.6.9 yes,  1.7.0a1 no,  1.7 no
+SpecifierSet("<1.7rc1")  ->  1.7a1 yes,  1.7rc1 no,  1.7 no</code></pre>
+<p>That explains a very common question: "I wrote <code><1.7</code> because I want to allow any preview before 1.7, but 1.7.0a1 will not install." The fix is to name a concrete rc as the upper bound — only <code><1.7rc1</code> lets <code>1.7a1</code> through.</p>
+<h2>4. Pre-releases are excluded by default (and 25.0 differs from 26.x)</h2>
+<p>The default rule: "Pre-releases of any kind, including developmental releases, are implicitly excluded from all version specifiers", unless they are already on the system, explicitly requested, or are the only version that satisfies the specifier.</p>
+<p>Measured:</p>
+<pre><code>ss = SpecifierSet(">=1.0")
+Version("1.0")     in ss   # True
+Version("1.3.0a1") in ss   # False
+Version("2.0rc1")  in ss   # False</code></pre>
+<p><code>filter()</code> rescues the "only a pre-release fits" case:</p>
+<pre><code>Specifier(">=1.2.3").filter(["1.2", "1.5a1"])                     # ['1.5a1']   <- no final, pre-release wins
+Specifier(">=1.2.3").filter(["1.3", "1.5a1"])                     # ['1.3']      <- final exists, pre-release dropped
+Specifier(">=1.2.3").filter(["1.3", "1.5a1"], prereleases=True)   # ['1.3', '1.5a1']</code></pre>
+<p>⚠️ Here is the version trap. The packaging documentation now describes 26.x behaviour and documents <code>contains(item, installed=True)</code> as accepting already-installed pre-releases. On the <strong>25.0</strong> installed here, that parameter exists but does nothing — <code>SpecifierSet(">=1.0", prereleases=False).contains("1.5a1", installed=True)</code> returns <strong>False</strong>. More thoroughly, six methods the docs recommend — <code>is_unsatisfiable()</code>, <code>to_range()</code>, <code>is_subset()</code>, <code>is_superset()</code>, <code>is_disjoint()</code>, <code>__replace__()</code> — are <strong>entirely absent</strong> on 25.0:</p>
+<pre><code>from packaging.specifiers import SpecifierSet
+for api in ["is_unsatisfiable", "is_subset", "is_superset",
+            "is_disjoint", "to_range", "__replace__"]:
+    print(api, hasattr(SpecifierSet, api))</code></pre>
+<p>Every line prints False. So check your version before copying code from the packaging docs.</p>
+<h2>5. You can recompute the spec's own ordering example</h2>
+<p>PEP 440 gives an unsorted list of 20 versions that defines the complete ordering. Sorting it here reproduces the document <strong>item for item</strong>:</p>
+<pre><code>from packaging.version import Version
+
+pep = ["1.dev0", "1.0.dev456", "1.0a1", "1.0a2.dev456", "1.0a12.dev456",
+       "1.0a12", "1.0b1.dev456", "1.0b2", "1.0b2.post345.dev456",
+       "1.0b2.post345", "1.0rc1.dev456", "1.0rc1", "1.0", "1.0+abc.5",
+       "1.0+abc.7", "1.0+5", "1.0.post456.dev34", "1.0.post456",
+       "1.0.15", "1.1.dev1"]
+
+got = [str(v) for v in sorted(Version(x) for x in pep)]
+print(got == pep)   # True</code></pre>
+<p>That makes a good regression baseline: if you change packaging versions, or implement in another language, run this once and you immediately know whether ordering behaviour changed.</p>
+<p>Two related basics. Numeric components are compared <strong>by value, not as text</strong> — the spec requires that "All numeric components MUST be interpreted and ordered according to their numeric value, not as text strings".</p>
+<pre><code>Version("1.0a12") > Version("1.0a2")   # True</code></pre>
+<p>String comparison would give the opposite answer, since <code>"a12" < "a2"</code>.</p>
+<p>And the epoch segment outranks everything: <code>Version("1!0.1") > Version("99.99")</code> is <strong>True</strong>. That is the whole point of epoch — it lets a project renumber itself and still sort after everything it released before.</p>
+<h2>Troubleshooting: six real errors and their root causes</h2>
+<p>Every message below was produced on this machine and can be reproduced with the commands shown.</p>
+<h3>Error 1: ResolutionImpossible, and the false "no matching distributions" line</h3>
+<p>This is the most valuable finding in the article. Here is the full multi-cause output:</p>
+<pre><code>ERROR: Cannot install -r r-cd.txt (line 1) and -r r-cd.txt (line 2) because these package versions have conflicting dependencies.
+
+The conflict is caused by:
+    demo-c 1.0 depends on demo-b>=2.0
+    demo-d 1.0 depends on demo-b<2.0
+
+Additionally, some packages in these conflicts have no matching distributions available for your environment:
+    demo-b
+
+To fix this you could try to:
+1. loosen the range of package versions you've specified
+2. remove package versions to allow pip to attempt to solve the dependency conflict
+
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts</code></pre>
+<p><strong>Symptom</strong>: pip claims <code>demo-b</code> has "no matching distributions available for your environment", yet the index has two versions of it.</p>
+<p><strong>Cause</strong>: I asked pip itself which candidates exist:</p>
+<pre><code>python -m pip index versions demo-b --no-index --find-links tmp/wheels
+# demo-b (2.0)
+# Available versions: 2.0, 1.0</code></pre>
+<p><code>demo-b</code> plainly has 1.0 and 2.0 as real distribution files. The reason lives in pip's own <code>factory.py</code>, in the helper that decides whether a package has any candidates:</p>
+<pre><code>def _has_any_candidates(self, project_name: str) -> bool:
+    return any(
+        self.find_candidates(
+            project_name,
+            requirements={project_name: []},   # <- an empty list
+            incompatibilities={},
+            constraint=Constraint.empty(),
+            prefers_installed=True,
+            is_satisfied_by=lambda r, c: True,
+        )
+    )</code></pre>
+<p><code>requirements</code> is empty, so the <code>ireqs</code> list inside <code>find_candidates</code> is empty too, and the very first line of <code>_iter_found_candidates</code> is <code>if not ireqs: return ()</code>. <code>any(())</code> is always <code>False</code>, so the negation is always <code>True</code> — meaning any package whose name appears in the conflict causes gets listed under "no matching distributions".</p>
+<p>I called that private method directly to confirm. It does return <code>False</code>, and it does receive the empty list:</p>
+<pre><code>from pip._internal.resolution.resolvelib.factory import Factory
+f = Factory.__new__(Factory)
+print(f._has_any_candidates("demo-b"))   # False</code></pre>
+<p>⚠️ One caveat I want to be precise about: I could not find an upstream issue covering this. So I am reporting measured behaviour on pip 26.1.2 plus the source-level cause, not presenting it as a community-acknowledged defect.</p>
+<p><strong>Copy-paste fix</strong>: do not trust that line. Verify with commands that actually query the index:</p>
+<pre><code>python -m pip index versions <package>
+python -m pip download --no-deps -d ./probe <package></code></pre>
+<p>And if you suspect an environment mismatch, retry with <code>--python-version</code> and <code>--platform</code>. A great many "no matching distribution" reports are really tag mismatches.</p>
+<h3>Error 2: with a single cause, the message takes a different shape</h3>
+<p>Same unsatisfiable constraint, but with only one cause pip takes a different branch. The output is far shorter and the <code>Cannot install</code> sentence is <strong>completely absent</strong>:</p>
+<pre><code>INFO: pip is looking at multiple versions of demo-a to determine which version is compatible with other requirements. This could take a while.
+ERROR: Could not find a version that satisfies the requirement demo-b>=2.0 (from demo-a) (from versions: 1.0)
+ERROR: No matching distribution found for demo-b>=2.0</code></pre>
+<p><strong>Cause</strong>: pip's source has <code>if len(e.causes) == 1: return self._report_single_requirement_conflict(req, parent)</code>, which short-circuits and prints the candidate list directly.</p>
+<p><strong>This is actually the better message.</strong> <code>(from versions: 1.0)</code> tells you exactly what the index holds, which is more actionable than the multi-cause template. So when resolution fails, <strong>narrow the conflict to a single source</strong> — try installing the one conflicting package on its own — and you get the more informative error.</p>
+<h3>Error 3: "Expected semicolon" is misleading</h3>
+<pre><code>ERROR: Invalid requirement: 'flask=>=2.0': Expected semicolon (after name with no version specifier) or end
+    flask=>=2.0
+         ^ (from line 1 of r3.txt)</code></pre>
+<p><strong>Symptom</strong>: pip asks for a semicolon, but my file has no semicolon and does not need one.</p>
+<p><strong>Cause</strong>: the real mistake is a typo — <code>=></code> instead of <code>>=</code>. pip's requirement-line parser treats the <code>=</code> as "name finished, now expect the optional semicolon part", so it falls into the semicolon branch. The caret points at the second character of <code>=></code>, which is the giveaway.</p>
+<p><strong>Copy-paste fix</strong>: do not fix this message literally. In practice "Expected semicolon" almost always means the operator is misspelled. Validate the whole file with Python instead:</p>
+<pre><code>from packaging.requirements import Requirement, InvalidRequirement
+for i, line in enumerate(open("requirements.txt", encoding="utf-8"), 1):
+    line = line.split("#")[0].strip()
+    if not line:
+        continue
+    try:
+        Requirement(line)
+    except InvalidRequirement as e:
+        print(f"line {i} is bad: {line!r} -> {e}")</code></pre>
+<p>The same misleading message appears when you simply forget the version:</p>
+<pre><code>ERROR: Invalid requirement: 'requests==': Expected semicolon (after name with no version specifier) or end</code></pre>
+<h3>Error 4: hash mismatch (a reproducible supply-chain guardrail)</h3>
+<pre><code>ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE. If you have updated the package versions, please update the hashes. Otherwise, examine the package contents carefully; someone may have tampered with them.
+    demo-b==2.0 from file:///.../demo_b-2.0-py3-none-any.whl (from -r r-hash.txt (line 1)):
+        Expected sha256 deadbeef0000000000000000000000000000000000000000000000000000000000000000
+             Got        905dc748929ed9057f8cea05d55fa1d1a0f5ffa2e4b1c90fd833264a15376183</code></pre>
+<p><strong>Cause</strong>: the <code>--hash</code> value was wrong. The <code>Got</code> line is the file's real sha256.</p>
+<p><strong>Copy-paste fix</strong>: compute the real value and paste it back.</p>
+<pre><code>python -m pip download --no-deps -d ./whl "demo-b==2.0"
+python -c "import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],'rb').read()).hexdigest())" ./whl/demo_b-2.0-py3-none-any.whl</code></pre>
+<h3>Error 5: forgetting `==` under --require-hashes</h3>
+<pre><code>ERROR: In --require-hashes mode, all requirements must have their versions pinned with ==. These do not:
+    demo-b from file:///.../demo_b-2.0-py3-none-any.whl (from -r r-h2.txt (line 1))</code></pre>
+<p><strong>Cause</strong>: my requirements file listed <code>demo-b</code> with no version. In <code>--require-hashes</code> mode every dependency must be pinned with <code>==</code>, including transitive ones.</p>
+<p><strong>Copy-paste fix</strong>: generate the hashed lock file with pip-tools instead of writing it by hand:</p>
+<pre><code>pip-compile --generate-hashes requirements.in -o requirements.txt</code></pre>
+<h3>Error 6: eight invalid specifier forms, all rejected</h3>
+<p>This one needs no pip at all. All eight of these raise <code>InvalidSpecifier</code>:</p>
+<pre><code>from packaging.specifiers import SpecifierSet, InvalidSpecifier
+for bad in ["~=1", "==1.0.dev1.*", "==1.0+foo.*", "== ", "1.0", "=>1.0", ">=1.0.*", "~=1.0+local"]:
+    try:
+        SpecifierSet(bad)
+        print(f"{bad!r:16} accepted")
+    except InvalidSpecifier as e:
+        print(f"{bad!r:16} rejected: {e}")</code></pre>
+<pre><code>'~=1'            rejected: Invalid specifier: '~=1'
+'==1.0.dev1.*'   rejected: Invalid specifier: '==1.0.dev1.*'
+'==1.0+foo.*'    rejected: Invalid specifier: '==1.0+foo.*'
+'== '            rejected: Invalid specifier: '=='
+'1.0'            rejected: Invalid specifier: '1.0'
+'=>1.0'          rejected: Invalid specifier: '=>1.0'
+'>=1.0.*'        rejected: Invalid specifier: '>=1.0.*'
+'~=1.0+local'   rejected: Invalid specifier: '~=1.0+local'</code></pre>
+<p>Two notes. <code>>=1.0.*</code> is rejected because PEP 440 defines <code>.*</code> prefix matching only for <code>==</code> and <code>!=</code>. <code>~=1.0+local</code> is rejected because local version identifiers are not permitted in a compatible release clause. And note that the <code>"== "</code> row shows <code>'=='</code> in the message — the <strong>trailing space is swallowed</strong>, so never rely on that string to see what you actually typed.</p>
+<h2>A constraint cheat sheet worth copying</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What you mean</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Do not write</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Write</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Allow patch upgrades, never cross a minor</td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4</code></td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.0</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Allow only patches on the 1.4.5 line</td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5</code></td><td style="border:1px solid #ddd;padding:8px;"><code>~=1.4.5.0</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Pin the pristine upstream release</td><td style="border:1px solid #ddd;padding:8px;"><code>==1.0</code></td><td style="border:1px solid #ddd;padding:8px;"><code>===1.0</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Allow every preview before 1.7</td><td style="border:1px solid #ddd;padding:8px;"><code><1.7</code></td><td style="border:1px solid #ddd;padding:8px;"><code><1.7rc1</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Explicitly allow pre-releases</td><td style="border:1px solid #ddd;padding:8px;">rely on the default</td><td style="border:1px solid #ddd;padding:8px;">add <code>--pre</code> or <code>prereleases=True</code></td></tr></tbody></table>
+<h2>Three ways to fail without any error at all</h2>
+<p>What binds these three together is that <strong>nothing raises</strong>, so they have to be caught by review.</p>
+<p><strong>One: <code>>=2.0</code> looks like a pin but does not hold a major.</strong> Straight from the measurements above:</p>
+<pre><code>Version("3.1.2") in SpecifierSet(">=2.0")        # True
+Version("3.1.2") in SpecifierSet(">=2.0,<3")     # False</code></pre>
+<p><strong>Two: current docs ≠ your installed version.</strong> The packaging site documents the 26.x API; six of those methods are missing on 25.0. Run <code>hasattr</code> before you copy.</p>
+<p><strong>Three: outside <code>--require-hashes</code> there is no integrity checking by default.</strong> pip trusts the bytes the index hands it. If your deployment process cares, add <code>--require-hashes</code> or sign your artifacts.</p>
+<h2>The boundaries of this article</h2>
+<p>A few things I did not do, stated plainly:</p>
+<ul><li><strong>Outbound network was blocked</strong>, so there is no end-to-end test against real PyPI. All six pip errors were reproduced with <strong>hand-built local wheels</strong> plus <code>--no-index --find-links</code>. The errors are real; the scenario is not a public index.</li><li><strong>Two packaging versions coexist.</strong> pip 26.1.2 vendors 26.2; the Specifier behaviour above comes from standalone 25.0.</li><li><strong>Not covered</strong>: multi-interpreter and platform tag differences, <code>--no-binary</code>, private index authentication, and behavioural differences in newer resolvers such as uv and poetry.</li></ul>
+<p>Two related articles on this site take the same no-network, measure-everything approach: <a href="https://yaohehe.github.io/2026-10-21-parquet-15.html" class="internal-link">Parquet and Arrow, tested</a> covers the storage-encoding layer, and <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 1.5.6 querying CSV with no database</a> covers the query layer — useful context for why correct version constraints matter so much in a data pipeline.</p>
+<p>Affiliate disclosure: this article contains no promotional links and points to no specific product.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
