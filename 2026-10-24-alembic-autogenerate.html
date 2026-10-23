@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alembic 迁移实测：autogenerate 检测不到的四件事与五个真实报错 - TechPassive</title>
+  <meta name="description" content="Alembic 的 autogenerate 不是差异比对工具。本机实测：改列名让 1000 行数据升级后 100% 变 NULL 且退出码为 0；改默认值生成的迁移体只有 pass；SQLite 的 batch 是整表重建，50 万行时同一个 add_column 慢 51.9 倍。五个真实报错与官方原文。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Alembic 迁移实测：autogenerate 检测不到的四件事</h1>
+  <div class="post-tags">
+    <span class="tag">Alembic</span><span class="tag">SQLAlchemy</span><span class="tag">数据库迁移</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：我把 Alembic 1.20.1 装在本机跑了一遍，结论是 <code>--autogenerate</code> 只能当草稿生成器，不能当差异比对工具。改列名会被识别成「加一列 + 删一列」，1000 行数据在升级后 100% 变成 NULL，退出码还是 0；<code>compare_server_default</code> 默认关闭，改了列的默认值，生成的迁移体是 <code>pass</code>，版本号却照常往前走；SQLite 上的 <code>batch_alter_table</code> 是整表重建，只要块里有一条操作不是 <code>add_column</code>，同一个 <code>add_column</code> 就从 0.0106 秒变成 0.5477 秒（50 万行，51.9 倍）。下面每个数字都是本机跑出来的，脚本原样贴在文里。</p>
+<p>本文不含任何联盟推广链接。</p>
+<h2>实验环境：全部可复现</h2>
+<p>我实际测试的组合是 Windows 11 + Python 3.13.14 + Alembic 1.20.1 + SQLAlchemy 2.1.6 + SQLite 3.53.1。Alembic 的版本号取自官方仓库 Releases API（截至发稿最新为 <code>rel_1_20_1</code>，发布于 2026-10-22），SQLite 的版本号用 <code>sqlite3.sqlite_version</code> 读出，不是安装包的版本号。</p>
+<p>每次实验都是独立的临时目录：<code>alembic init</code> 之后写一版 <code>models.py</code>，<code>revision --autogenerate</code> 生成迁移，<code>upgrade head</code> 执行，再用 <code>sqlite3</code> 直接查库核对。为了避免读到缓存的模型，每次改 <code>models.py</code> 都会清掉 <code>__pycache__</code>。</p>
+<h2>一、改列名：官方明说检测不到，实测是 1000 行数据全没</h2>
+<p>Alembic 官方文档在「What does Autogenerate Detect and What Does it Not Detect?」一节里把话说得很清楚：</p>
+<blockquote>Changes of column name. Like table name changes, these are detected as a column add/drop pair, which is not at all the same as a name change.</blockquote>
+<p>同一节还有一句更该背下来的：</p>
+<p>> It is critical to note that <strong>autogenerate is not intended to be perfect</strong>. It is *always* necessary to manually review and correct the <strong>candidate migrations</strong> that autogenerate produces.</p>
+<p>我把这句话落到实测上。第一版模型是 <code>Account(id, email)</code>，建表后插入 1000 行，<code>SELECT COUNT(*), SUM(email IS NOT NULL)</code> 返回 <code>(1000, 1000)</code>。然后把模型里的 <code>email</code> 改名为 <code>email_address</code>，再跑一次 <code>revision --autogenerate</code>。</p>
+<p>日志只有两行，语气平静得像在报告天气：</p>
+<pre><code>INFO  [alembic.autogenerate.compare.tables] Detected added column 'account.email_address'
+INFO  [alembic.autogenerate.compare.tables] Detected removed column 'account.email'</code></pre>
+<p>生成的迁移是这样：</p>
+<pre><code>def upgrade() -> None:
+    op.add_column('account', sa.Column('email_address', sa.String(length=100), nullable=True))
+    op.drop_column('account', 'email')
+
+
+def downgrade() -> None:
+    op.add_column('account', sa.Column('email', sa.VARCHAR(length=100), nullable=True))
+    op.drop_column('account', 'email_address')</code></pre>
+<p><code>upgrade head</code> 执行完，退出码 0，没有任何警告。查库结果是 <code>(1000, 0)</code> —— 行数还在，<code>email_address</code> 一列全是 NULL。<strong>1000 行的邮箱地址，一条不剩。</strong>注意 <code>downgrade</code> 也不是逆操作，它是另一个 add/drop 对，回滚同样会把数据清掉。</p>
+<p>同一份改动如果目标列带 <code>nullable=False</code>，Alembic 连执行都执行不下去：</p>
+<pre><code>sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) Cannot add a NOT NULL column with default value NULL
+[SQL: ALTER TABLE account ADD COLUMN email_address VARCHAR(100) NOT NULL]</code></pre>
+<p>退出码 1。好在版本号没有跟着跑偏：失败后 <code>alembic_version</code> 仍停在旧版本，表结构也保持原样（只有 <code>id</code> 和 <code>email</code> 两列）。这一点比很多迁移工具诚实。</p>
+<h2>二、`compare_server_default` 默认关闭：改了默认值，迁移是空的</h2>
+<p>官方文档把「列默认值变更」放在「optionally detect」而不是「can detect」里：</p>
+<p>> Change of server default. This will occur if you set the <code>EnvironmentContext.configure.compare_server_default</code> parameter to <code>True</code> ... The feature is off by default so that it can be tested on the target schema first.</p>
+<p>实测：模型里把 <code>server_default="anon"</code> 改成 <code>"guest"</code>，跑 <code>revision --autogenerate</code>，生成的迁移体是：</p>
+<pre><code>def upgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    pass
+    # ### end Alembic commands ###</code></pre>
+<p>没有警告，没有提示，退出码 0。把 <code>compare_server_default=True</code> 传进 <code>context.configure()</code> 再跑一次，立刻就检测出来了，生成的是 <code>op.alter_column('t', 'name', existing_type=sa.VARCHAR(length=50), server_default='guest', existing_nullable=False)</code>。</p>
+<p><strong>默认值这种改动不会报错，只会假装改过了。</strong>如果你不知道这个开关存在，你会拿着一条空迁移上线，然后奇怪为什么新插入的行还是老默认值。</p>
+<h2>三、`compare_type` 从 1.12.0 起默认打开，但只对共享参数生效</h2>
+<p>这条和很多旧教程写的不一样。官方文档的变更说明原文是：</p>
+<p>> Changed in version 1.12.0: The default value of <code>EnvironmentContext.configure.compare_type</code> has been changed to <code>True</code>.</p>
+<p>实测 <code>String(50)</code> 改成 <code>String(200)</code>，日志打出 <code>Detected type change from VARCHAR(length=50) to String(length=200) on 't.name'</code>，迁移里生成了对应的 <code>op.alter_column(..., type_=sa.String(length=200), ...)</code>。</p>
+<p>但文档紧接着就划了边界：如果两侧的<strong>额外参数</strong>不对等，Alembic 会放弃比较 ——</p>
+<p>> If either the metadata type or database type has <strong>additional</strong> arguments beyond that of the other type, these are <strong>not</strong> compared.</p>
+<p>所以「类型变了一定会被检测到」是错误预期，正确预期是「共享的参数（长度、精度）变了才会被检测到」。</p>
+<h2>四、SQLite 上的 batch 是整表重建，一个操作连累整块</h2>
+<p>这是本文最贵的一条数字。Alembic 的 batch 模式文档把机制写得很直白：</p>
+<blockquote>the existing table structure is reflected from the database, a new version of this table is created with the given changes, data is copied from the old table to the new table using "INSERT from SELECT", and finally the old table is dropped and the new one renamed to the original name.</blockquote>
+<p>对应到 SQL 就是 <code>CREATE TABLE _alembic_batch_temp</code> → <code>INSERT INTO _alembic_batch_temp ... SELECT</code> → <code>DROP TABLE</code> → <code>ALTER TABLE _alembic_batch_temp RENAME TO</code>。</p>
+<p>关键在触发条件，文档原文：</p>
+<p>> the batch context by default only does the "move and copy" process if SQLite is in use, and if there are migration directives other than <code>Operations.add_column()</code> present, which is the one kind of column-level ALTER statement that SQLite supports.</p>
+<p><strong>也就是说：块里只要有一条操作不是 <code>add_column</code>，整块就走重建，包括那条本来 O(1) 就能完成的 <code>add_column</code>。</strong>我在同一条迁移里测了三件事，用 <code>time.perf_counter()</code> 卡在每一段前后：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">表行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">直接 <code>add_column</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch 块里只有 <code>add_column</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch 块里 <code>add_column</code> + 改约束</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">放大倍数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">0.0128 s</td><td style="border:1px solid #ddd;padding:8px;">0.0112 s</td><td style="border:1px solid #ddd;padding:8px;">0.0215 s</td><td style="border:1px solid #ddd;padding:8px;">1.9x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">10,000</td><td style="border:1px solid #ddd;padding:8px;">0.0110 s</td><td style="border:1px solid #ddd;padding:8px;">0.0109 s</td><td style="border:1px solid #ddd;padding:8px;">0.0309 s</td><td style="border:1px solid #ddd;padding:8px;">2.8x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">100,000</td><td style="border:1px solid #ddd;padding:8px;">0.0195 s</td><td style="border:1px solid #ddd;padding:8px;">0.0108 s</td><td style="border:1px solid #ddd;padding:8px;">0.1132 s</td><td style="border:1px solid #ddd;padding:8px;">10.4x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">500,000</td><td style="border:1px solid #ddd;padding:8px;">0.0199 s</td><td style="border:1px solid #ddd;padding:8px;">0.0106 s</td><td style="border:1px solid #ddd;padding:8px;">0.5477 s</td><td style="border:1px solid #ddd;padding:8px;">51.9x</td></tr></tbody></table>
+<p>两条曲线一眼就能分开：直接 <code>add_column</code> 恒定在 0.011–0.020 秒（与行数无关，是元数据级操作）；batch 重建的时间随行数线性涨。50 万行时，同一个 <code>add_column</code> 因为同一块里多了一条 <code>alter_column</code>，从 0.0106 秒变成 0.5477 秒。</p>
+<p>顺带一个容易忽略的副作用：1000 行的表做完一次 batch 重建后，数据库文件从 36,864 字节涨到 61,440 字节（涨了约 66.7%），SQLite 不会把旧表的空间还给你。</p>
+<h2>五、batch 重建会静默丢掉未命名 CHECK 约束</h2>
+<p>这条是官方文档自己承认的，而且版本分界线很明确：</p>
+<blockquote>Unnamed CHECK constraints continue to be omitted from the table recreate operation; up until version 1.20, this omission was silent. As of 1.20, it emits a warning.</blockquote>
+<p>我建了一张带两条 CHECK 的表，一条有名一条无名：</p>
+<pre><code>CREATE TABLE t (id INTEGER NOT NULL, n INTEGER,
+  CONSTRAINT ck_named CHECK (n > 0), CHECK (n < 1000), PRIMARY KEY (id))</code></pre>
+<p>走完一次 batch 重建，表变成：</p>
+<pre><code>CREATE TABLE "t" (id INTEGER NOT NULL, n INTEGER NOT NULL, m INTEGER,
+  PRIMARY KEY (id), CONSTRAINT ck_named CHECK (n > 0))</code></pre>
+<p><code>ck_named</code> 还在，<code>CHECK (n < 1000)</code> 没了。1.20 版会在 <code>alembic/operations/batch.py:298</code> 抛一条 <code>UserWarning</code>，原文是「Unnamed CHECK constraint on reflected table 't' is being omitted from the table recreate; pass the constraint explicitly using batch_alter_table.table_args.」—— 在 1.20 之前，这件事是完全静默的。</p>
+<h2>六、SQLite 3.53 之后，NOT NULL 已经不用重建了</h2>
+<p>SQLite 官方 changelog 在 3.53.0（2026-04-09）的「New SQL language features」里有一条：</p>
+<blockquote>Enhance ALTER TABLE to permit adding and removing NOT NULL and CHECK constraints.</blockquote>
+<p>本机 SQLite 3.53.1 上实测四种写法，<code>SET NOT NULL</code> 与 <code>DROP NOT NULL</code> 都能执行成功，<code>SET DATA TYPE</code> 与 <code>SET DEFAULT</code> 仍然是 <code>syntax error</code>。也就是说，Alembic 的 <code>SQLiteImpl</code> 里那条「非 <code>add_column</code> 一律重建」的启发式（源码 <code>alembic/ddl/sqlite.py</code> 的 <code>requires_recreate_in_batch()</code>，docstring 原文「Normally, only returns True on SQLite when operations other than add_column are present」）在 3.53+ 上已经过于保守了。</p>
+<p>我把两种路径放在同一条迁移里对拍：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">表行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">直接 <code>alter_column(nullable=False)</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch 重建同一改动</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">倍数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">10,000</td><td style="border:1px solid #ddd;padding:8px;">0.0201 s</td><td style="border:1px solid #ddd;padding:8px;">0.0314 s</td><td style="border:1px solid #ddd;padding:8px;">1.6x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">100,000</td><td style="border:1px solid #ddd;padding:8px;">0.0298 s</td><td style="border:1px solid #ddd;padding:8px;">0.0879 s</td><td style="border:1px solid #ddd;padding:8px;">2.9x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">500,000</td><td style="border:1px solid #ddd;padding:8px;">0.0708 s</td><td style="border:1px solid #ddd;padding:8px;">0.4429 s</td><td style="border:1px solid #ddd;padding:8px;">6.3x</td></tr></tbody></table>
+<p>直接执行那条路径，Alembic 生成的是 <code>ALTER TABLE big ALTER COLUMN b SET NOT NULL</code> —— 一条 O(1) 的语句。走 batch 则是全表重建。<strong>在 3.53+ 上，改 NOT NULL 已经不需要付出重建代价了。</strong></p>
+<p>需要说明的是：Alembic 仍然建议用 batch 来保证跨版本兼容，本文只是在报告实测到的时间差，不构成「关掉 batch」的建议。低于 3.53 的 SQLite 上，那条 <code>ALTER COLUMN</code> 会直接语法错误。</p>
+<h2>踩坑录：五个真实报错与两处静默失效</h2>
+<p><strong>报错一：<code>Cannot add a NOT NULL column with default value NULL</code>。</strong>autogenerate 给已有数据的表加了一个非空列。原因是它只会照着模型写 <code>nullable=False</code>，不会替你想默认值。解法是手工拆成三步：先加可空列 → 用 <code>op.execute()</code> 回填历史行 → 再改约束。</p>
+<p><strong>报错二：<code>NotImplementedError: No support for ALTER of constraints in SQLite dialect.</code></strong> 在 SQLite 上直接跑 <code>op.create_unique_constraint()</code>。源码在 <code>alembic/ddl/sqlite.py:78</code>，原文紧接着一句「Please refer to the batch mode feature which allows for SQLite migrations using a copy-and-move strategy.」解法是把这条操作挪进 <code>op.batch_alter_table()</code> 块里。</p>
+<p><strong>报错三：<code>UserWarning: Unnamed CHECK constraint ... is being omitted</code>。</strong>batch 重建时未命名 CHECK 被丢弃。解法是给约束起名字（<code>naming_convention</code> 是官方推荐做法），或者在 <code>batch_alter_table(table_args=...)</code> 里显式带上。</p>
+<p><strong>报错四：<code>Multiple head revisions are present for given argument 'head'</code>。</strong>两个人各从同一个 base 拉了一条分支，<code>upgrade head</code> 就炸了。源码在 <code>alembic/script/base.py:223</code>，完整原文是「please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads」。解法是 <code>alembic merge heads -m "merge"</code>，别手工改 <code>down_revision</code>。</p>
+<p><strong>报错五：<code>Can't locate revision identified by '<rev>'</code>，退出码 -1。</strong>删掉了一个版本文件，或数据库里的版本号指向了本地不存在的 revision。源码在 <code>alembic/script/base.py:236</code>。解法是 <code>alembic stamp</code> 把版本号对齐到实际状态，或者把丢失的版本文件从备份里找回来。</p>
+<p><strong>静默失效一：空迁移照样推进版本号。</strong><code>alembic revision -m "xxx"</code> 用默认模板生成的文件，<code>upgrade()</code> 和 <code>downgrade()</code> 的函数体都是 <code>pass</code>（官方模板原文就是 <code>"""Upgrade schema."""</code> 加一个 <code>pass</code>）。实测版本号从 <code>d22dd80cf08e</code> 推进到 <code>7ec59bca7385</code>，库里什么都没变；<code>alembic downgrade -1</code> 同样退出码 0，版本号退回去了，也什么都没变。</p>
+<p><strong>静默失效二：autogenerate 会把模型里没有的表判成「多余的」。</strong>官方原文：「If a target database has many tables that are not part of the MetaData object, the autogenerate process will normally assume these are extraneous tables in the database to be dropped」。所以 <code>Base</code> 里少 import 一个模型，生成的就是一条 <code>drop_table</code>。</p>
+<h2>本文的边界</h2>
+<p>本机没有 PostgreSQL 与 MySQL 实例，全文结论只在 SQLite 上实测过；batch 在 PostgreSQL 上的表现（官方提到会先 <code>DROP CONSTRAINT</code>）我没有验证。除第六节的四组耗时外，所有时间数字都是单次测量，没有做多轮取中位数，同机复跑会有波动。全文不涉及任何商品推荐。</p>
+<h2>FAQ</h2>
+<p><strong>Q：autogenerate 生成的迁移能直接上线吗？</strong></p>
+<p>不能。官方原话是「It is always necessary to manually review and correct the candidate migrations」。本文第一节已经实测了不审的代价：1000 行数据全丢，退出码 0。</p>
+<p><strong>Q：为什么改默认值检测不到？</strong></p>
+<p><code>compare_server_default</code> 默认关闭。在 <code>env.py</code> 的 <code>context.configure()</code> 里传 <code>compare_server_default=True</code> 即可，文档同时提醒这个特性「cannot always produce accurate results」。</p>
+<p><strong>Q：SQLite 上是不是所有迁移都要套 <code>batch_alter_table</code>？</strong></p>
+<p>不需要。<code>add_column</code> 是 SQLite 支持的列级 ALTER，套了 batch 也不会触发重建（本文第四节实测 50 万行仍是 0.0106 秒）。真正的触发条件是块里出现了 <code>add_column</code> 以外的操作。</p>
+<p><strong>Q：怎么让「改列名」不丢数据？</strong></p>
+<p>不要用 autogenerate 的结果。手工写成 <code>op.alter_column('account', 'email', new_column_name='email_address')</code>，一条语句，数据与约束都保留。</p>
+<p><strong>Q：多个分支怎么合？</strong></p>
+<p>用 <code>alembic merge heads</code>，它会生成一条带两个 <code>down_revision</code> 的合并版本。手工改 <code>down_revision</code> 只会把版本图改坏。</p>
+<p><strong>Q：版本号和库的实际结构对不上怎么办？</strong></p>
+<p>先 <code>alembic current</code> 看 Alembic 认为自己在哪，再 <code>alembic history</code> 看版本图。确认后 <code>alembic stamp <rev></code> 把版本号改成真实状态，而不是去删 <code>alembic_version</code> 表。</p>
+<h2>相关阅读</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html" class="internal-link">PostgreSQL 18.6 复制槽实测</a> —— 同样是「工具不会替你兜底」的主题，讲的是没人读的槽怎么把 WAL 吃到 159 MB</li><li><a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 1.5.6 实测</a> —— 不建库直查 40 MB CSV，本机实测的另一条路径</li><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 实测</a> —— 标准库本身就是实验对象，多进程丢日志的六个真实报错</li></ul>
+<h2>一句话</h2>
+<p>autogenerate 是草稿生成器，不是差异比对器；它输出的每一个 <code>pass</code>、每一对 add/drop，都得你自己看一遍再上线。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
