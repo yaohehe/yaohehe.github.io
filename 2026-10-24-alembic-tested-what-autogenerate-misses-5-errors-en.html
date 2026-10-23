@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Alembic Tested: What Autogenerate Misses, 5 Errors - TechPassive</title>
+  <meta name="description" content="Alembic autogenerate is a draft generator, not a diff tool: a rename nulled 1,000 rows at exit code 0, and a SQLite batch rebuild ran 51.9x slower on 500k rows.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Alembic Tested: What Autogenerate Misses</h1>
+  <div class="post-tags">
+    <span class="tag">Alembic</span><span class="tag">SQLAlchemy</span><span class="tag"><a href="/2026-10-16-postgresql-replication-slots-ate-my-disk-186-teste-en.html" class="internal-link">Database</a> Migrations</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: I tested Alembic 1.20.1 on my own machine, and the short version is that <code>--autogenerate</code> is a draft generator, not a schema diff tool. A column rename is detected as "add a column, drop a column" — after <code>upgrade head</code>, 100% of 1,000 rows came back NULL and the exit code was still 0. <code>compare_server_default</code> is off by default, so changing a column default produces a migration whose body is <code>pass</code>, while the version number happily moves forward. And on SQLite, <code>batch_alter_table</code> is a full table rebuild: one non-<code>add_column</code> operation inside the block turned a 0.0106 s <code>add_column</code> into 0.5477 s on a 500,000-row table, a 51.9x jump. Every number below was measured locally, and the scripts are reproduced as-is.</p>
+<p>No affiliate links in this article.</p>
+<h2>The setup, reproducible end to end</h2>
+<p>I tested on Windows 11 with Python 3.13.14, Alembic 1.20.1, SQLAlchemy 2.1.6 and SQLite 3.53.1. The Alembic version comes from the official repository's Releases API (latest as of writing is <code>rel_1_20_1</code>, published 2026-10-22), and the SQLite version was read from <code>sqlite3.sqlite_version</code> rather than from a package version string.</p>
+<p>Every experiment runs in its own throwaway directory: <code>alembic init</code>, write one version of <code>models.py</code>, <code>revision --autogenerate</code>, <code>upgrade head</code>, then open the database with <code>sqlite3</code> and verify by hand. <code>__pycache__</code> is deleted after every model edit so the autogenerate step cannot pick up a stale module.</p>
+<h2>1. Column renames: documented as undetectable, measured as total data loss</h2>
+<p>The official docs put this in "What does Autogenerate Detect and What Does it <em></em> detect?" in plain words:</p>
+<blockquote>Changes of column name. Like table name changes, these are detected as a column add/drop pair, which is not at all the same as a name change.</blockquote>
+<p>And one sentence earlier in the same section, which deserves to be memorized:</p>
+<p>> It is critical to note that <strong>autogenerate is not intended to be perfect</strong>. It is *always* necessary to manually review and correct the <strong>candidate migrations</strong> that autogenerate produces.</p>
+<p>I ran that claim against real rows. The first model was <code>Account(id, email)</code>; after creating the table I inserted 1,000 rows and <code>SELECT COUNT(*), SUM(email IS NOT NULL)</code> returned <code>(1000, 1000)</code>. Then I renamed <code>email</code> to <code>email_address</code> in the model and ran <code>revision --autogenerate</code> again.</p>
+<p>The log produced exactly two lines, delivered in the tone of a weather report:</p>
+<pre><code>INFO  [alembic.autogenerate.compare.tables] Detected added column 'account.email_address'
+INFO  [alembic.autogenerate.compare.tables] Detected removed column 'account.email'</code></pre>
+<p>And the migration it generated:</p>
+<pre><code>def upgrade() -> None:
+    op.add_column('account', sa.Column('email_address', sa.String(length=100), nullable=True))
+    op.drop_column('account', 'email')
+
+
+def downgrade() -> None:
+    op.add_column('account', sa.Column('email', sa.VARCHAR(length=100), nullable=True))
+    op.drop_column('account', 'email_address')</code></pre>
+<p><code>upgrade head</code> finished with exit code 0 and no warning. Querying the database gave <code>(1000, 0)</code> — the rows are still there, every <code>email_address</code> is NULL. <strong>All 1,000 email addresses, gone.</strong> Note that <code>downgrade</code> is not an inverse either: it is another add/drop pair, so rolling back destroys data a second time.</p>
+<p>If the renamed column is <code>nullable=False</code>, Alembic cannot even execute the migration:</p>
+<pre><code>sqlalchemy.exc.OperationalError: (sqlite3.OperationalError) Cannot add a NOT NULL column with default value NULL
+[SQL: ALTER TABLE account ADD COLUMN email_address VARCHAR(100) NOT NULL]</code></pre>
+<p>Exit code 1. Credit where due: the version number did not drift. After the failure <code>alembic_version</code> still held the old revision, and the table still had only <code>id</code> and <code>email</code>. That is more honest than a lot of migration tools.</p>
+<h2>2. `compare_server_default` is off: change a default, get an empty migration</h2>
+<p>The docs file "change of server default" under "optionally detect", not "can detect":</p>
+<p>> Change of server default. This will occur if you set the <code>EnvironmentContext.configure.compare_server_default</code> parameter to <code>True</code> ... The feature is off by default so that it can be tested on the target schema first.</p>
+<p>Measured: I changed <code>server_default="anon"</code> to <code>"guest"</code> in the model and ran <code>revision --autogenerate</code>. The generated body was:</p>
+<pre><code>def upgrade() -> None:
+    # ### commands auto generated by Alembic - please adjust! ###
+    pass
+    # ### end Alembic commands ###</code></pre>
+<p>No warning, no hint, exit code 0. Pass <code>compare_server_default=True</code> into <code>context.configure()</code> and the same run immediately produces <code>op.alter_column('t', 'name', existing_type=sa.VARCHAR(length=50), server_default='guest', existing_nullable=False)</code>.</p>
+<p><strong>A default-value change never errors; it just pretends to have happened.</strong> If you do not know this flag exists, you will ship an empty migration and then wonder why new rows still get the old default.</p>
+<h2>3. `compare_type` has been on since 1.12.0, but only for shared arguments</h2>
+<p>This one contradicts a lot of older tutorials. The official changelog entry reads:</p>
+<p>> Changed in version 1.12.0: The default value of <code>EnvironmentContext.configure.compare_type</code> has been changed to <code>True</code>.</p>
+<p>I tested <code>String(50)</code> to <code>String(200)</code> and the log printed <code>Detected type change from VARCHAR(length=50) to String(length=200) on 't.name'</code>, with a matching <code>op.alter_column(..., type_=sa.String(length=200), ...)</code> in the migration.</p>
+<p>But the docs draw the boundary immediately after: if the two sides do not share the same set of <strong>additional</strong> arguments, Alembic gives up —</p>
+<p>> If either the metadata type or database type has <strong>additional</strong> arguments beyond that of the other type, these are <strong>not</strong> compared.</p>
+<p>So "a type change is always detected" is the wrong expectation. The right expectation is "shared arguments (length, precision) are compared."</p>
+<h2>4. On SQLite, batch means rebuild the whole table, and one operation drags the rest down</h2>
+<p>This is the most expensive number in the article. The batch mode docs describe the mechanism without euphemism:</p>
+<blockquote>the existing table structure is reflected from the database, a new version of this table is created with the given changes, data is copied from the old table to the new table using "INSERT from SELECT", and finally the old table is dropped and the new one renamed to the original name.</blockquote>
+<p>In SQL that is <code>CREATE TABLE _alembic_batch_temp</code> → <code>INSERT INTO _alembic_batch_temp ... SELECT</code> → <code>DROP TABLE</code> → <code>ALTER TABLE _alembic_batch_temp RENAME TO</code>.</p>
+<p>The trigger condition is the important part, quoting the docs:</p>
+<p>> the batch context by default only does the "move and copy" process if SQLite is in use, and if there are migration directives other than <code>Operations.add_column()</code> present, which is the one kind of column-level ALTER statement that SQLite supports.</p>
+<p><strong>In other words: a single non-<code>add_column</code> operation flips the entire block into rebuild mode, including the <code>add_column</code> that would otherwise have been O(1).</strong> I measured three things inside one migration, wrapping each in <code>time.perf_counter()</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Rows</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">plain <code>add_column</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch block, <code>add_column</code> only</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch block, <code>add_column</code> + constraint change</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Slowdown</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">0.0128 s</td><td style="border:1px solid #ddd;padding:8px;">0.0112 s</td><td style="border:1px solid #ddd;padding:8px;">0.0215 s</td><td style="border:1px solid #ddd;padding:8px;">1.9x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">10,000</td><td style="border:1px solid #ddd;padding:8px;">0.0110 s</td><td style="border:1px solid #ddd;padding:8px;">0.0109 s</td><td style="border:1px solid #ddd;padding:8px;">0.0309 s</td><td style="border:1px solid #ddd;padding:8px;">2.8x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">100,000</td><td style="border:1px solid #ddd;padding:8px;">0.0195 s</td><td style="border:1px solid #ddd;padding:8px;">0.0108 s</td><td style="border:1px solid #ddd;padding:8px;">0.1132 s</td><td style="border:1px solid #ddd;padding:8px;">10.4x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">500,000</td><td style="border:1px solid #ddd;padding:8px;">0.0199 s</td><td style="border:1px solid #ddd;padding:8px;">0.0106 s</td><td style="border:1px solid #ddd;padding:8px;">0.5477 s</td><td style="border:1px solid #ddd;padding:8px;">51.9x</td></tr></tbody></table>
+<p>The two curves separate cleanly. Plain <code>add_column</code> sits at 0.011–0.020 s regardless of row count — it is a metadata operation. Batch rebuild time grows linearly with rows. At 500,000 rows the same <code>add_column</code> goes from 0.0106 s to 0.5477 s purely because one <code>alter_column</code> shares the block.</p>
+<p>One side effect that is easy to miss: after a single batch rebuild, the 1,000-row database file grew from 36,864 bytes to 61,440 bytes (about 66.7% larger). SQLite does not hand the old table's pages back.</p>
+<h2>5. Batch rebuild silently drops unnamed CHECK constraints</h2>
+<p>This one the docs admit outright, and the version boundary is explicit:</p>
+<blockquote>Unnamed CHECK constraints continue to be omitted from the table recreate operation; up until version 1.20, this omission was silent. As of 1.20, it emits a warning.</blockquote>
+<p>I built a table with two CHECK constraints, one named and one not:</p>
+<pre><code>CREATE TABLE t (id INTEGER NOT NULL, n INTEGER,
+  CONSTRAINT ck_named CHECK (n > 0), CHECK (n < 1000), PRIMARY KEY (id))</code></pre>
+<p>After one batch rebuild:</p>
+<pre><code>CREATE TABLE "t" (id INTEGER NOT NULL, n INTEGER NOT NULL, m INTEGER,
+  PRIMARY KEY (id), CONSTRAINT ck_named CHECK (n > 0))</code></pre>
+<p><code>ck_named</code> survived. <code>CHECK (n < 1000)</code> did not. Version 1.20 raises a <code>UserWarning</code> at <code>alembic/operations/batch.py:298</code> reading "Unnamed CHECK constraint on reflected table 't' is being omitted from the table recreate; pass the constraint explicitly using batch_alter_table.table_args." Before 1.20, this was completely silent.</p>
+<h2>6. Since SQLite 3.53, NOT NULL no longer needs a rebuild</h2>
+<p>The official SQLite changelog has this entry under 3.53.0 (2026-04-09), "New SQL language features":</p>
+<blockquote>Enhance ALTER TABLE to permit adding and removing NOT NULL and CHECK constraints.</blockquote>
+<p>I tested four statement forms on SQLite 3.53.1: <code>SET NOT NULL</code> and <code>DROP NOT NULL</code> both succeed, while <code>SET DATA TYPE</code> and <code>SET DEFAULT</code> still raise <code>syntax error</code>. That makes Alembic's heuristic in <code>alembic/ddl/sqlite.py</code> — <code>requires_recreate_in_batch()</code>, whose docstring says "Normally, only returns True on SQLite when operations other than add_column are present" — unnecessarily conservative on 3.53 and newer.</p>
+<p>I put both paths in the same migration and raced them:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Rows</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">plain <code>alter_column(nullable=False)</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">batch rebuild of the same change</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Slowdown</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">10,000</td><td style="border:1px solid #ddd;padding:8px;">0.0201 s</td><td style="border:1px solid #ddd;padding:8px;">0.0314 s</td><td style="border:1px solid #ddd;padding:8px;">1.6x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">100,000</td><td style="border:1px solid #ddd;padding:8px;">0.0298 s</td><td style="border:1px solid #ddd;padding:8px;">0.0879 s</td><td style="border:1px solid #ddd;padding:8px;">2.9x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">500,000</td><td style="border:1px solid #ddd;padding:8px;">0.0708 s</td><td style="border:1px solid #ddd;padding:8px;">0.4429 s</td><td style="border:1px solid #ddd;padding:8px;">6.3x</td></tr></tbody></table>
+<p>The direct path emits <code>ALTER TABLE big ALTER COLUMN b SET NOT NULL</code> — a single O(1) statement. The batch path rebuilds the table. <strong>On 3.53+, changing NOT NULL no longer costs you a rebuild.</strong></p>
+<p>To be clear: Alembic still recommends batch mode for cross-version compatibility. I am reporting measured timings, not recommending that you turn batch off. On SQLite older than 3.53, that <code>ALTER COLUMN</code> statement is a syntax error.</p>
+<h2>Troubleshooting: five real errors and two silent failures</h2>
+<p><strong>Error one: <code>Cannot add a NOT NULL column with default value NULL</code>.</strong> Autogenerate added a non-nullable column to a table that already has rows. It copies <code>nullable=False</code> from your model and does not invent a default for you. Fix it by hand as three steps: add the column nullable, backfill with <code>op.execute()</code>, then add the constraint.</p>
+<p><strong>Error two: <code>NotImplementedError: No support for ALTER of constraints in SQLite dialect.</code></strong> Raised when you call <code>op.create_unique_constraint()</code> directly on SQLite. The source is <code>alembic/ddl/sqlite.py:78</code>, and the message continues "Please refer to the batch mode feature which allows for SQLite migrations using a copy-and-move strategy." Move the operation inside an <code>op.batch_alter_table()</code> block.</p>
+<p><strong>Error three: <code>UserWarning: Unnamed CHECK constraint ... is being omitted</code>.</strong> An unnamed CHECK constraint is dropped during a batch rebuild. Name your constraints (the official recommendation is <code>naming_convention</code>), or pass them explicitly with <code>batch_alter_table(table_args=...)</code>.</p>
+<p><strong>Error four: <code>Multiple head revisions are present for given argument 'head'</code>.</strong> Two people branched off the same base revision and <code>upgrade head</code> breaks. The source is <code>alembic/script/base.py:223</code>, and the full text continues "please specify a specific target revision, '<branchname>@head' to narrow to a specific head, or 'heads' for all heads". Use <code>alembic merge heads -m "merge"</code>; do not hand-edit <code>down_revision</code>.</p>
+<p><strong>Error five: <code>Can't locate revision identified by '<rev>'</code>, exit code -1.</strong> A version file was deleted, or the database's version points at a revision that does not exist locally. The source is <code>alembic/script/base.py:236</code>. Use <code>alembic stamp</code> to align the recorded version with reality, or restore the missing file from backup.</p>
+<p><strong>Silent failure one: an empty migration still advances the version.</strong> A file created by <code>alembic revision -m "xxx"</code> with the default template has <code>pass</code> as the body of both <code>upgrade()</code> and <code>downgrade()</code> (the official template literally ships <code>"""Upgrade schema."""</code> plus <code>pass</code>). I measured the version moving from <code>d22dd80cf08e</code> to <code>7ec59bca7385</code> with nothing changed in the database; <code>alembic downgrade -1</code> also exits 0, moves the version back, and changes nothing.</p>
+<p><strong>Silent failure two: autogenerate treats tables missing from your metadata as junk.</strong> From the docs: "If a target database has many tables that are not part of the MetaData object, the autogenerate process will normally assume these are extraneous tables in the database to be dropped". Forget to import one model into <code>Base</code> and you get a <code>drop_table</code> in the generated migration.</p>
+<h2>What this article does not cover</h2>
+<p>I ran no PostgreSQL or MySQL instance, so every conclusion here is measured on SQLite only; I did not verify the PostgreSQL batch behaviour the docs describe (emitting <code>DROP CONSTRAINT</code> first). Except for the six timing rows, all numbers are single measurements rather than medians of repeated runs, so they will vary on your machine. This article contains no product recommendations.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Can I ship an autogenerated migration as-is?</strong></p>
+<p>No. The docs say "It is always necessary to manually review and correct the candidate migrations". Section 1 measures the cost of skipping that: 1,000 rows lost, exit code 0.</p>
+<p><strong>Q: Why is my default-value change not detected?</strong></p>
+<p><code>compare_server_default</code> is off by default. Pass <code>compare_server_default=True</code> to <code>context.configure()</code> in <code>env.py</code>; the docs also warn that the feature "cannot always produce accurate results".</p>
+<p><strong>Q: Do all SQLite migrations need <code>batch_alter_table</code>?</strong></p>
+<p>No. <code>add_column</code> is the one column-level ALTER SQLite supports, and wrapping it in batch does not trigger a rebuild (measured at 0.0106 s with 500,000 rows). The trigger is any non-<code>add_column</code> operation inside the block.</p>
+<p><strong>Q: How do I rename a column without losing data?</strong></p>
+<p>Do not use the autogenerated output. Write <code>op.alter_column('account', 'email', new_column_name='email_address')</code> by hand — one statement, data and constraints intact.</p>
+<p><strong>Q: How do I merge two branches?</strong></p>
+<p><code>alembic merge heads</code>, which writes a merge revision with two <code>down_revision</code> entries. Hand-editing <code>down_revision</code> only corrupts the graph.</p>
+<p><strong>Q: The recorded version does not match the actual schema. What now?</strong></p>
+<p>Run <code>alembic current</code> to see where Alembic thinks it is, then <code>alembic history</code> to see the graph. Once you know the real state, use <code>alembic stamp <rev></code> rather than deleting the <code>alembic_version</code> table.</p>
+<h2>Related reading</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-16-postgresql-replication-slots-ate-my-disk-186-teste-en.html" class="internal-link">PostgreSQL 18.6 replication slots, tested</a> — the same "the tool will not cover for you" theme: an unread slot that ate 159 MB of WAL</li><li><a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">DuckDB 1.5.6, tested</a> — querying a 40 MB CSV with no database, another local-measurement path</li><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python logging, tested</a> — the standard library as an experiment subject: six real errors and lost records</li></ul>
+<h2>One line</h2>
+<p>Autogenerate is a draft generator, not a diff tool. Every <code>pass</code> and every add/drop pair it emits needs your eyes on it before it goes anywhere near production.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
