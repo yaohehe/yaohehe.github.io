@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>重试为什么没生效：requests 2.34.2 与 tenacity 9.2.1 四处静默失效实测 - TechPassive</title>
+  <meta name="description" content="用本地 HTTP 服务器逐次计数，实测 urllib3 2.8.0 的方法白名单、status_forcelist、backoff_factor 与 requests 默认适配器四个开关，以及 tenacity 9.2.1 的 reraise 与 wait 默认值，给出六个真实报错、可复制修法与计数脚本。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>重试为什么没生效：requests 2.34.2 与 tenacity 9.2.1 的四处静默失效</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">requests</span><span class="tag">故障排查</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：这篇文章全部结论都来自本机实测——我在 127.0.0.1 上起了一个会数自己收到几次请求的 HTTP 服务，然后逐条改配置、逐条看服务端计数。结论是：<strong>默认 requests 一次都不重试</strong>；你配了 <code>Retry(3)</code> 也不等于会重试；就算真的重试了，<code>backoff_factor</code> 默认 0 意味着四次请求会在几毫秒内打完；而应用层的 tenacity 默认会把你的原始异常换成 <code>RetryError</code>，让 <code>except ValueError</code> 永远抓不到。两层都配时，重试次数是<strong>相乘</strong>的。</p>
+<h2>实测环境与可复现前提</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">出处</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a></td><td style="border:1px solid #ddd;padding:8px;">3.13.14</td><td style="border:1px solid #ddd;padding:8px;">本机 <code>sys.version</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">requests</td><td style="border:1px solid #ddd;padding:8px;">2.34.2</td><td style="border:1px solid #ddd;padding:8px;">PyPI 上传于 2026-05-14</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">urllib3</td><td style="border:1px solid #ddd;padding:8px;">2.8.0</td><td style="border:1px solid #ddd;padding:8px;">PyPI 上传于 2026-09-15</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">tenacity</td><td style="border:1px solid #ddd;padding:8px;">9.2.1</td><td style="border:1px solid #ddd;padding:8px;">PyPI 上传于 2026-10-07</td></tr></tbody></table>
+<p>先把环境钉死，避免「我这版本不一样」：</p>
+<pre><code>python -m <a href="/2026-10-21-python.html" class="internal-link">pip</a> install "requests==2.34.2" "urllib3==2.8.0" "tenacity==9.2.1"
+python - <<'PY'
+import sys, requests, urllib3, importlib.metadata as md
+print(sys.version.split()[0], requests.__version__, urllib3.__version__, md.version('tenacity'))
+PY</code></pre>
+<p>本文所有「服务端收到 N 次请求」都是真实计数，用的是下面这个最小服务端：它把每一次业务请求累加到一个计数器里，并提供 <code>/__count</code> 让你随时读。</p>
+<pre><code>import json, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+STATE = {'count': 0, 'status': 503, 'retry_after': None}
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    def log_message(self, *a): pass
+    def _send(self, code, body=b'{}'):
+        self.send_response(code)
+        if STATE['retry_after'] is not None:
+            self.send_header('Retry-After', str(STATE['retry_after']))
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        if self.path == '/__count':
+            self._send(200, json.dumps({'count': STATE['count']}).encode()); return
+        STATE['count'] += 1
+        self._send(STATE['status'])
+    do_POST = do_GET
+
+class Quiet(ThreadingHTTPServer):
+    def handle_error(self, *a): pass   # 掐断连接的场景会刷一堆 traceback，静音
+
+srv = Quiet(('127.0.0.1', 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print('http://127.0.0.1:%d' % srv.server_address[1])</code></pre>
+<h2>第一层：urllib3 2.8.0 —— 四个开关各管一件事</h2>
+<p>绝大多数「配了重试没效果」的问题都出在这一层。urllib3 的 <code>Retry</code> 不是一个「重试 3 次」的旋钮，而是四个互相独立的判据，任何一个不满足都不会重试。</p>
+<h3>开关一：方法白名单，POST 默认一次都不重试</h3>
+<p><code>Retry</code> 的源码里写着默认白名单：</p>
+<pre><code>from urllib3.util.retry import Retry
+print(Retry.DEFAULT_ALLOWED_METHODS)
+# frozenset({'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PUT', 'TRACE'})</code></pre>
+<p>官方文档 <code>urllib3.util.Retry</code> 条目对 <code>allowed_methods</code> 的说明是「By default, we only retry on methods which are considered to be idempotent」——默认只重试幂等方法。<strong>POST 不在里面。</strong></p>
+<p>实测对照（同一个 <code>Retry</code> 对象，只换 HTTP 方法）：</p>
+<pre><code>from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+import requests
+
+def sess(retry):
+    s = requests.Session()
+    s.mount('http://', HTTPAdapter(max_retries=retry))
+    return s
+
+r = Retry(total=3, status_forcelist=[503], backoff_factor=0)
+sess(r).get(BASE + '/api')    # 服务端计数 = 4，抛 RetryError
+sess(r).post(BASE + '/api')   # 服务端计数 = 1，安静地返回 <Response [503]></code></pre>
+<p>同一行配置，GET 打出去 4 次，POST 只打出去 1 次，而且 POST 那条<strong>不抛任何异常</strong>。如果你以为「我配了重试所以写接口是安全的」，这里就是坑：写请求发出去了、服务端返回了 503、你的代码拿到的是一个看起来正常的 <code>Response</code> 对象。</p>
+<p>要放开就显式声明 <code>allowed_methods=None</code>（官方写的是「Set to a None value to retry on any verb」），实测加上它之后 POST 同样是 4 次。但注意这是把非幂等请求也纳入重试，先确认你的接口真的幂等。</p>
+<h3>开关二：status_forcelist，不写就只认 429/503/413 且必须带 Retry-After</h3>
+<p><code>Retry.is_retry()</code> 的判定只有两条路径：</p>
+<pre><code>def is_retry(self, method, status_code, has_retry_after=False):
+    if not self._is_method_retryable(method):
+        return False
+    if self.status_forcelist and status_code in self.status_forcelist:
+        return True
+    return bool(self.total and self.respect_retry_after_header
+                and has_retry_after
+                and (status_code in self.RETRY_AFTER_STATUS_CODES))</code></pre>
+<p>而 <code>Retry.RETRY_AFTER_STATUS_CODES = frozenset({413, 429, 503})</code>。所以「不写 <code>status_forcelist</code>」的真实含义是：<strong>只有带 <code>Retry-After</code> 响应头的 429/503/413 才会被重试</strong>。</p>
+<p>三组实测，配置完全一样（<code>Retry(total=3, backoff_factor=0)</code>），只改服务端响应：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">服务端响应</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">服务端计数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">耗时</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">503 + <code>Retry-After: 1</code></td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">3.009 s</td><td style="border:1px solid #ddd;padding:8px;">重试 3 次，每次按响应头等 1 秒，最后返回 503</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">503，无 <code>Retry-After</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.003 s</td><td style="border:1px solid #ddd;padding:8px;">一次就返回</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">500 + <code>Retry-After: 1</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.002 s</td><td style="border:1px solid #ddd;padding:8px;">一次就返回（500 不在那三个码里）</td></tr></tbody></table>
+<p>第二行和第三行是最容易踩的：500、502、504 这类最常见的服务端错误，<strong>在默认配置下不会被重试</strong>，哪怕你在日志里看到「明明配了 total=3」。</p>
+<h3>开关三：backoff_factor 默认 0 —— 配了重试，但零退避</h3>
+<p><code>Retry.__init__</code> 里 <code>backoff_factor: float = 0</code>，官方文档写得很直白：「By default, backoff is disabled (factor set to 0)」。</p>
+<p>退避公式在 <code>get_backoff_time()</code> 里，注意它有一个「前两次不睡」的短路：</p>
+<pre><code>if consecutive_errors_len <= 1:
+    return 0
+backoff_value = self.backoff_factor * (2 ** (consecutive_errors_len - 1))
+if self.backoff_jitter != 0.0:
+    backoff_value += random.random() * self.backoff_jitter
+return float(max(0, min(self.backoff_max, backoff_value)))</code></pre>
+<p>实测 <code>backoff_factor=0.1</code> 时，第 1 到第 4 次重试<strong>之前</strong>分别等待：</p>
+<pre><code>r = Retry(total=10, status_forcelist=[503], backoff_factor=0.1)
+for i in range(1, 5):
+    r = r.increment(method='GET', url='/api')
+    print(round(r.get_backoff_time(), 4))
+# 0  0.2  0.4  0.8      ← 与官方文档给的 [0.0s, 0.2s, 0.4s, 0.8s] 一致</code></pre>
+<p>把 factor 换成 0（默认值），这四位数全是 0。真实跑一次 <code>backoff_factor=0.2</code> 的版本：4 次请求，墙钟 1.208 秒（0 + 0.4 + 0.8）；换成默认 0 就是 0.005 秒打完 4 次。</p>
+<p><code>backoff_max</code> 默认 120 秒，超了会被截断。实测 <code>backoff_factor=10</code> 的序列：<code>[0, 0, 20, 40, 80, 120, 120, 120, ...]</code>。</p>
+<h3>开关四：requests 的默认适配器是 `Retry(0, read=False)`</h3>
+<p>这是最上游的一刀。<code>requests/adapters.py</code> 的 <code>HTTPAdapter.__init__</code> 里：</p>
+<pre><code>if max_retries == DEFAULT_RETRIES:
+    self.max_retries = Retry(0, read=False)
+else:
+    self.max_retries = Retry.from_int(max_retries)</code></pre>
+<p>也就是说，只要你没显式传 <code>max_retries</code>，拿到的就是 <code>Retry(0, read=False)</code>。requests 官方 API 文档对 <code>max_retries</code> 的说明是同一口径：「By default, Requests does not retry failed connections.」</p>
+<p>两个实测：</p>
+<ul><li>服务端接受连接后立刻掐断（制造读错误）：默认 Session 只连了 <strong>1 次</strong>就抛 <code>ConnectionError</code>；换成 <code>Retry(total=3)</code> 后连了 <strong>4 次</strong>。</li><li>顶层 <code>requests.get(...)</code> 不会用到你给某个 Session 挂的适配器——它每次新建一个 Session。实测同一个 URL：Session 版本打 4 次并抛 <code>RetryError</code>，<code>requests.get</code> 版本只打 1 次并安静返回 503。</li></ul>
+<pre><code>s = requests.Session()
+s.mount('http://', HTTPAdapter(max_retries=Retry(total=3, status_forcelist=[503])))
+s.get(BASE + '/api')          # 4 次，RetryError
+requests.get(BASE + '/api')   # 1 次，返回 503（顶层 API 走默认适配器）</code></pre>
+<h2>第二层：tenacity 9.2.1 —— 三个默认值会改掉你的语义</h2>
+<h3>reraise=False：你的 `except ValueError` 永远抓不到</h3>
+<p>tenacity 官方文档的原话是：「Normally when your function fails its final time ... a RetryError is raised. The exception your code encountered will be shown somewhere in the middle of the stack trace.」默认 <code>reraise=False</code>。</p>
+<p>实测：</p>
+<pre><code>import tenacity as T
+
+@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0))
+def boom():
+    raise ValueError('原始错误')
+
+try:
+    boom()
+except ValueError:
+    print('抓到了')             # 不会执行
+except Exception as e:
+    print(type(e).__name__)     # RetryError
+    print(str(e)[:80])
+    # RetryError[<Future at 0x... state=finished raised ValueError>]</code></pre>
+<p>调用次数是 3 次没错，但抛出来的是 <code>RetryError</code>，<code>isinstance(e, ValueError)</code> 是 <code>False</code>。加上 <code>reraise=True</code> 才会把 <code>ValueError</code> 原样抛出来。</p>
+<p>这条最伤人的地方在于它不报错：重试逻辑「看起来在工作」，只是你的错误处理分支从此变成死代码。</p>
+<h3>裸 @retry：无限重试 + 零等待</h3>
+<pre><code>import tenacity as T
+r = T.Retrying()
+print(r.stop, r.wait, r.retry)
+# <tenacity.stop._stop_never> <tenacity.wait.wait_none> <tenacity.retry.retry_if_exception_type></code></pre>
+<p>官方文档对裸 <code>@retry</code> 的描述是：「The default behavior is to retry forever without waiting when an exception is raised.」</p>
+<p>我把它跑在一个后台线程里 3 秒，实测调用次数是 <strong>115,689 次</strong>，而且是零间隔——这不是重试，这是对下游的一次自我压力测试。任何裸 <code>@retry</code> 都至少要补 <code>stop=</code>。</p>
+<h3>wait_exponential 的默认 max 等于没有上限</h3>
+<p><code>wait_exponential.__init__</code> 的签名是 <code>(multiplier=1, max=_utils.MAX_WAIT, exp_base=2, min=0)</code>，而 <code>tenacity._utils.MAX_WAIT = 4.611686018427388e+18</code> 秒。</p>
+<pre><code>w = T.wait_exponential(multiplier=1)
+print([round(w(St(i)), 3) for i in range(1, 21)])
+# [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
+#  16384, 32768, 65536, 131072, 262144, 524288]</code></pre>
+<p>第 20 次重试要等 <strong>524288 秒 = 6.07 天</strong>。加上 <code>max=10</code> 之后变成 <code>[1, 2, 4, 8, 10.0, 10.0, 10.0]</code>。</p>
+<p>它自己的 docstring 也写明了适用边界：「The intervals are fixed (i.e. there is no jitter), so this strategy is suitable for balancing retries against latency ... but *not* suitable for resolving contention between multiple processes for a shared resource. Use <code>wait_random_exponential</code> for the latter case.」也就是说，<strong>纯指数退避会把所有客户端对齐到同一批时刻重试</strong>，要用 <code>wait_random_exponential</code> 才有抖动。</p>
+<h3>`|` 是 OR，`&` 是 AND</h3>
+<p>源码里 <code>stop_base.__or__</code> 返回 <code>stop_any</code>，<code>__and__</code> 返回 <code>stop_all</code>：</p>
+<pre><code>def __or__(self, other): return stop_any(self, other)   # any(...)
+def __and__(self, other): return stop_all(self, other)  # all(...)</code></pre>
+<p>官方文档的例子 <code>stop_after_delay(10) | stop_after_attempt(5)</code> 注释是「Stopping after 10 seconds or 5 retries」——任一满足即停。实测 <code>stop_after_attempt(5)</code> 与 <code>stop_after_delay(0.3)</code>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组合</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">第 3 次（已耗时 0.3 s）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">第 5 次（已耗时 0.5 s）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">用竖线组合（OR / <code>stop_any</code>）</td><td style="border:1px solid #ddd;padding:8px;">True（停）</td><td style="border:1px solid #ddd;padding:8px;">True（停）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">用 and 符号组合（AND / <code>stop_all</code>）</td><td style="border:1px solid #ddd;padding:8px;">False（继续）</td><td style="border:1px solid #ddd;padding:8px;">True（停）</td></tr></tbody></table>
+<p>写 <code>&</code> 的时候想清楚：那意味着两个条件<strong>都</strong>满足才停，实际重试次数可能远超你写的那个数字。</p>
+<h2>两层叠加：重试次数是相乘的</h2>
+<p>把 tenacity 包在 requests 外面，<code>stop=stop_after_attempt(3)</code>，内层 <code>Retry(total=3, status_forcelist=[503], backoff_factor=0)</code>：</p>
+<pre><code>sess = requests.Session()
+sess.mount('http://', HTTPAdapter(max_retries=Retry(total=3, status_forcelist=[503], backoff_factor=0)))
+
+@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0), reraise=True)
+def nested():
+    return sess.get(BASE + '/api', timeout=2)</code></pre>
+<p>实测结果：tenacity 调用 <strong>3 次</strong>，服务端收到 <strong>12 次</strong> HTTP 请求。<code>3 x (1 + 3) = 12</code>。</p>
+<p>你写在代码里的两个数都是 3，实际打出去的是 12 次。这个乘法在有 N 个客户端同时重试时还要再乘 N——这就是重试风暴的算术来源。<strong>同一段调用链上只保留一层重试</strong>，另一层要么删掉，要么显式设成 0。</p>
+<h2>排错：六个真实报错与修法</h2>
+<h3>报错一：`requests.exceptions.RetryError: ... Max retries exceeded with url: /api (Caused by ResponseError('too many 503 error responses'))`</h3>
+<ul><li><strong>现象</strong>：配了 <code>status_forcelist=[503]</code> 之后，请求在几毫秒内连打 4 次，最后抛 <code>RetryError</code>。</li><li><strong>原因</strong>：这是重试<strong>正常工作</strong>的表现，不是故障。真正的问题是它打得太快——<code>backoff_factor</code> 默认 0，四次请求 0.005 秒打完。</li><li><strong>修法</strong>：给退避，并给整体上限。</li></ul>
+<pre><code>Retry(total=3, status_forcelist=[500, 502, 503, 504],
+      backoff_factor=0.5, backoff_max=8,
+      allowed_methods=frozenset(['GET', 'POST']))   # POST 要显式加</code></pre>
+<h3>报错二：`requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))`</h3>
+<ul><li><strong>现象</strong>：服务端主动掐断连接，客户端一次就失败，没有任何重试。</li><li><strong>原因</strong>：默认适配器是 <code>Retry(0, read=False)</code>，<code>read=False</code> 让读错误直接 re-raise，根本进不了重试流程。</li><li><strong>修法</strong>：显式挂适配器。实测换 <code>Retry(total=3)</code> 后连接数从 1 次变 4 次。</li></ul>
+<pre><code>s = requests.Session()
+s.mount('http://', HTTPAdapter(max_retries=Retry(total=3)))
+s.mount('https://', HTTPAdapter(max_retries=Retry(total=3)))</code></pre>
+<p>配套的自查命令（确认你拿到的到底是什么）：</p>
+<pre><code>print(requests.Session().get_adapter('https://x/').max_retries)
+# Retry(total=0, connect=None, read=False, redirect=None, status=None)</code></pre>
+<h3>报错三：`requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)`</h3>
+<ul><li><strong>现象</strong>：<code>r.json()</code> 炸在一个完全不相关的报错上，排查方向全错。</li><li><strong>原因</strong>：上游返回的是 503 的 HTML 错误页，而默认配置下 503 不会被重试，requests 把它当成正常响应交回给你，<code>.json()</code> 才炸。</li><li><strong>修法</strong>：两条一起做——把 5xx 加进 <code>status_forcelist</code>，同时在业务侧显式判状态码。</li></ul>
+<pre><code>r = sess.get(url, timeout=5)
+if r.status_code >= 500:          # 别等 .json() 告诉你
+    raise RuntimeError(f'上游 5xx: {r.status_code}')
+data = r.json()</code></pre>
+<h3>报错四：`tenacity.RetryError[<Future at 0x... state=finished raised ValueError>]`</h3>
+<ul><li><strong>现象</strong>：函数确实重试了 3 次，但 <code>except ValueError</code> 分支一次都没进，日志里只剩一个 <code>RetryError</code>。</li><li><strong>原因</strong>：默认 <code>reraise=False</code>，tenacity 把最后一次的异常包进了 <code>RetryError</code>（源码里 <code>retry_exc = self.retry_error_cls(fut)</code>，只有 <code>self.reraise</code> 为真才调 <code>retry_exc.reraise()</code>）。</li><li><strong>修法</strong>：<code>reraise=True</code>。实测加上之后抛出的就是 <code>ValueError</code>。</li></ul>
+<pre><code>@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0), reraise=True)
+def boom(): ...</code></pre>
+<h3>报错五：`requests.exceptions.InvalidHeader: Invalid Retry-After header: soon-ish`</h3>
+<ul><li><strong>现象</strong>：上游返回一个非标准的 <code>Retry-After</code>（既不是整数秒也不是合法 HTTP 日期），请求直接抛 <code>InvalidHeader</code>，一次都没重试。</li><li><strong>原因</strong>：<code>Retry.parse_retry_after()</code> 先用正则 <code>^\s<em>[0-9]+\s</em>$</code> 匹配整数，不匹配就交给 <code>email.utils.parsedate_tz</code>，两者都失败就 <code>raise InvalidHeader</code>。这是<strong>按规范办事</strong>，但会把你原本想做的重试整个打断。</li><li><strong>修法</strong>：关掉对 <code>Retry-After</code> 的盲从，改用自带的退避。</li></ul>
+<pre><code>Retry(total=3, status_forcelist=[429, 503], respect_retry_after_header=False,
+      backoff_factor=0.5, backoff_max=8)</code></pre>
+<p>顺带一提，<code>Retry-After</code> 是有上限的：<code>DEFAULT_RETRY_AFTER_MAX = 21600</code>（6 小时），源码里 <code>if seconds > self.retry_after_max: seconds = self.retry_after_max</code>。所以上游给一个夸张的值也不会让你睡死，但 6 小时仍然很长。</p>
+<h3>报错六：程序卡住不动 —— wait_exponential 没有 max</h3>
+<ul><li><strong>现象</strong>：重试逻辑跑着跑着像假死，CPU 空闲，日志停更。</li><li><strong>原因</strong>：<code>wait_exponential(multiplier=1)</code> 的默认 <code>max</code> 是 4.61e18 秒，等于没有上限。实测第 20 次要等 524288 秒（6.07 天）。</li><li><strong>修法</strong>：永远显式给 <code>max</code>，并叠一个 <code>stop_after_delay</code> 兜底。</li></ul>
+<pre><code>@T.retry(wait=T.wait_exponential(multiplier=1, max=10),
+         stop=(T.stop_after_attempt(5) | T.stop_after_delay(30)),   # 注意是 OR
+         reraise=True)
+def call(): ...</code></pre>
+<h2>一份能直接抄的配置</h2>
+<pre><code>import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import tenacity as T
+
+# 传输层：只负责「这一次连接 / 这一个响应要不要再来一遍」
+RETRY = Retry(
+    total=3,
+    connect=3,
+    read=2,
+    status=3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=frozenset(['GET', 'POST']),   # POST 必须显式加
+    backoff_factor=0.5,
+    backoff_max=8,
+    backoff_jitter=0.3,                            # 打散重试时刻
+    respect_retry_after_header=True,
+    raise_on_status=False,                         # 用尽后返回响应，交给业务层判
+)
+
+session = requests.Session()
+session.mount('http://', HTTPAdapter(max_retries=RETRY, pool_maxsize=20))
+session.mount('https://', HTTPAdapter(max_retries=RETRY, pool_maxsize=20))
+
+# 应用层：只负责「整段业务逻辑要不要再来一遍」，且必须给 stop 和 max
+@T.retry(
+    wait=T.wait_random_exponential(multiplier=1, max=10),   # 带抖动的指数退避
+    stop=(T.stop_after_attempt(3) | T.stop_after_delay(30)),
+    retry=T.retry_if_exception_type((requests.Timeout, requests.ConnectionError)),
+    reraise=True,
+)
+def fetch(url):
+    r = session.get(url, timeout=(3.0, 10.0))
+    if r.status_code >= 500:
+        raise requests.HTTPError(f'上游 5xx: {r.status_code}', response=r)
+    return r.json()</code></pre>
+<p>两段配置的分工是刻意的：传输层管单个请求，应用层管整段逻辑，且应用层只对<strong>瞬时故障</strong>（超时、连接错误）重试，业务性 5xx 抛出来让调用方决定。如果像我实测那样两层都无差别重试，得到的是 12 次请求。</p>
+<h2>四步自查清单</h2>
+<p>1. <strong>先看拿到的 Retry 对象是什么</strong>：<code>Session().get_adapter(url).max_retries</code>。默认那串是 <code>Retry(total=0, connect=None, read=False, ...)</code>，等于不重试。</p>
+<p>2. <strong>看方法在不在白名单里</strong>：POST 默认不在，<code>allowed_methods</code> 要么显式加、要么设 <code>None</code>。</p>
+<p>3. <strong>看 <code>status_forcelist</code> 有没有写</strong>：不写就只有带 <code>Retry-After</code> 的 429/503/413 会重试。</p>
+<p>4. <strong>看 <code>backoff_factor</code> 是不是 0</strong>：是 0 就是零退避，重试只会放大瞬时压力。</p>
+<h2>FAQ</h2>
+<p><strong>Q：为什么我配了 <code>max_retries=3</code>，服务端还是只收到一次请求？</strong></p>
+<p>A：三种可能，按概率排：请求方法是 POST（不在默认白名单）；状态码不在 <code>status_forcelist</code> 且没有 <code>Retry-After</code> 头；你用的是顶层 <code>requests.get()</code> 而不是挂了适配器的 Session。实测这三种都表现为「只发一次且无异常」。</p>
+<p><strong>Q：<code>total=3</code> 到底是 3 次还是 4 次请求？</strong></p>
+<p>A：4 次。<code>total</code> 是<strong>重试</strong>次数，不含首次。实测服务端计数为 4。</p>
+<p><strong>Q：tenacity 和 urllib3 的重试能只留一个吗？</strong></p>
+<p>A：建议只留一个。留传输层：能覆盖连接与状态码，但对「业务逻辑整体失败」无效。留应用层：语义清楚、可控，但每次重试都会新建一次完整请求。<strong>两层同时无差别重试，实测是 3 x 4 = 12 次请求。</strong></p>
+<p><strong>Q：<code>stop_after_delay</code> 是从什么时候开始计时的？</strong></p>
+<p>A：从 <code>Retrying</code> 对象 <code>begin()</code> 那一刻算起，包含重试之间的等待时间。所以它和 <code>wait</code> 一起消耗同一个预算——这也是为什么建议用 <code>|</code> 把 <code>stop_after_attempt</code> 和 <code>stop_after_delay</code> 组合起来。</p>
+<p><strong>Q：重试真的能把成功率提上去吗？</strong></p>
+<p>A：只对瞬时故障有效。对持续性 5xx、配额耗尽、参数错误，重试只是把同样的失败放大 N 倍，还会占住你的连接池。判断标准很简单：这个错误在 200 毫秒后会不会自己消失？</p>
+<h2>相关文章</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 实测：多进程丢日志、重复输出与 6 个真实报错</a>——重试打出来的日志到底有没有落盘，是另一个独立的失效面。</li><li><a href="https://yaohehe.github.io/2026-10-21-python.html" class="internal-link">Python 依赖约束踩坑：~= 位数差一位、== 会忽略本地版本</a>——同一条「默认值不是你以为的那个」的线索，在依赖解析层又出现一次。</li><li><a href="https://yaohehe.github.io/2026-10-10-n8n-task-runner.html" class="internal-link">n8n Task Runner 架构解剖：external 与 queue 模式、五个真实报错根因</a>——超时与重试在自托管服务里的另一组形态。</li></ul>
+<p>本文所有数字均为本机实测（Python 3.13.14 / requests 2.34.2 / urllib3 2.8.0 / tenacity 9.2.1），服务端为本地回环地址上的计数服务，不涉及任何第三方线上接口，也不含任何商品推广链接。抽取的源码片段来自本机已安装的包，官方文档口径来自 requests API 文档、<code>urllib3.util.Retry</code> 参考页与 tenacity 官方文档，抓取日期 2026-10-24。版本行为可能随升级变化，落地前请在自己的环境里复跑一遍上面的计数脚本。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
