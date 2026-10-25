@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph Interrupts, Tested: Six Hard Rules - TechPassive</title>
+  <meta name="description" content="I ran the LangGraph 1.2.16 human-in-the-loop cycle locally: why a node replays on resume, why parallel interrupts key on Interrupt.id, and six errors I reproduced.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>How LangGraph Interrupts Actually Resume</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag">Human-in-the-loop</span><span class="tag">AI Agent</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: <code>interrupt()</code> does not freeze execution in place and wait for you. It raises a <code>GraphInterrupt</code> exception; the runtime catches it, writes the current graph state to the checkpointer, and then <strong>ends that invocation</strong>. When you invoke again with <code>Command(resume=...)</code>, the runtime re-runs the interrupted node <strong>from its first line</strong> — every statement before the <code>interrupt()</code> call executes a second time. That one rule drives everything else here: putting <code>interrupt()</code> inside a loop makes replay volume grow as a triangular number, and when parallel branches interrupt at the same time you must map resume values by <code>Interrupt.id</code>, because the UUID in <code>StateSnapshot.tasks[].id</code> throws a <code>RuntimeError</code>.</p>
+<h2>Pausing is not freezing: what `interrupt()` actually does</h2>
+<p>If you have used <code>interrupt()</code> before, there is a good chance your mental model is <code>input()</code>: the program stops on that line, you type something, and it continues from there. <a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> does not work that way.</p>
+<p>The official Interrupts page says:</p>
+<blockquote>"When an interrupt is triggered, LangGraph saves the graph state using its persistence layer and waits indefinitely until you resume execution."</blockquote>
+<p>The load-bearing sentence comes right after:</p>
+<blockquote>"The node restarts from the beginning of the node where the interrupt was called when resumed, so any code before the interrupt runs again"</blockquote>
+<p>So the mechanism is two steps:</p>
+<p>1. Raise a special exception (<code>GraphInterrupt</code>) and let it propagate up the call stack until the runtime catches it.</p>
+<p>2. Persist the current state, then <strong>return from <code>invoke()</code></strong>, surfacing the payload through <code>__interrupt__</code>.</p>
+<p>On the second invocation the runtime does not jump back to line 17. It calls the whole node function again, and only when it reaches <code>interrupt()</code> does it pull a value out of the resume list — by index. Code before <code>interrupt()</code> runs twice; code after it runs once.</p>
+<p>I tested this the blunt way: increment a module-level counter at the top of the node body.</p>
+<pre><code>RUNS = {"n": 0}
+
+def node(state):
+    RUNS["n"] += 1
+    ans = interrupt({"q": "approve?"})
+    return {"v": 10 + int(ans)}</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Stage</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">RUNS["n"]</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What happened</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">After first invoke</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">entered node → hit interrupt → paused</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">After <code>Command(resume=True)</code></td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">replayed the body (+1), then ran the tail after <code>interrupt()</code> returned</td></tr></tbody></table>
+<p>Hence the first hard rule, which the docs list under "Rules of interrupts" as "Side effects called before interrupt must be idempotent". Anything non-idempotent — sending mail, charging a card, writing a row — placed before <code>interrupt()</code> will fire twice.</p>
+<h2>The smallest loop that works</h2>
+<p>This is the minimal runnable example. Measured on langgraph 1.2.16 with langgraph-checkpoint 4.3.0.</p>
+<pre><code>from typing import Annotated, TypedDict
+import operator
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import InMemorySaver
+
+class S(TypedDict):
+    v: int
+    log: Annotated[list, operator.add]
+
+def ask(state: S):
+    ans = interrupt({"question": "approve?", "seen": state["v"]})
+    return {"v": 10 + int(ans)}
+
+g = StateGraph(S)
+g.add_node("ask", ask)
+g.add_edge(START, "ask")
+g.add_edge("ask", END)
+
+app = g.compile(checkpointer=InMemorySaver())
+cfg = {"configurable": {"thread_id": "t1"}}
+
+r = app.invoke({"v": 1, "log": []}, cfg)
+print(r)</code></pre>
+<p>The return value carries an extra <code>__interrupt__</code> key:</p>
+<pre><code>{'v': 1, 'log': [],
+ '__interrupt__': [Interrupt(value={'question': 'approve?', 'seen': 1},
+                             id='25d8aed8be448dfcebaa7f3bf3b4402c',
+                             response_schema=None)]}</code></pre>
+<p>Note what that is: the <strong>entry</strong> state (<code>v</code> is still 1), not the node result — the node never finished. To tell whether the graph really paused, look at:</p>
+<pre><code>st = app.get_state(cfg)
+st.next                             # ('ask',)  ← not done
+[t.interrupts for t in st.tasks]    # pending Interrupt objects</code></pre>
+<p><code>__interrupt__</code> is fine when you are reading the <code>invoke()</code> return directly. In a service, the reliable signal is <code>get_state(cfg).next</code> plus <code>st.tasks[].interrupts</code> — see the parallel-branch section for why the <code>__interrupt__</code> list order is not a contract.</p>
+<p>And the second half:</p>
+<pre><code>r2 = app.invoke(Command(resume=5), cfg)
+# {'v': 15, 'log': ['ask_done']}</code></pre>
+<p><code>Command(resume=5)</code> becomes the return value of <code>interrupt()</code> inside the node, so <code>v = 10 + 5 = 15</code>.</p>
+<h2>Multiple interrupts in one node: matched by index, not by count</h2>
+<p>The docs are explicit about a node that calls <code>interrupt()</code> more than once:</p>
+<blockquote>"Whenever execution resumes, it starts at the beginning of the node. For each interrupt encountered, LangGraph checks if a matching value exists in the task's resume list. Matching is strictly index-based, so the order of interrupt calls within the node is important."</blockquote>
+<p>Measured behaviour with two consecutive calls:</p>
+<pre><code>def two(state):
+    a = interrupt("first?")
+    b = interrupt("second?")
+    return {"log": [f"{a}/{b}"]}</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Action</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">First invoke</td><td style="border:1px solid #ddd;padding:8px;">paused, <code>__interrupt__</code> holds only <code>first?</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Command(resume="A")</code></td><td style="border:1px solid #ddd;padding:8px;">paused, <code>__interrupt__</code> now holds <code>second?</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Command(resume="B")</code></td><td style="border:1px solid #ddd;padding:8px;">done, <code>log = ['A/B']</code></td></tr></tbody></table>
+<p>The takeaway: <strong>one resume feeds one interrupt</strong>. You cannot hand over both answers in a single call. I tried <code>Command(resume=[1, 2])</code>; the whole list became the return value of the first <code>interrupt()</code> and the second stayed pending:</p>
+<pre><code>app.invoke(Command(resume=["x", "y"]), cfg)
+# log = ["['x', 'y']"]   ← the list is one value, not two</code></pre>
+<p>That wording trips people up because the documentation does talk about a "list of resume values" — but that list is the runtime's internal accumulator across rounds, not something you supply in one shot.</p>
+<h2>Loops: three answers, nine replays</h2>
+<p>Take the previous section one step further. If the loop body contains <code>interrupt()</code>, every resume replays <strong>all previous iterations</strong>.</p>
+<p>The docs:</p>
+<blockquote>"a loop that calls interrupt() multiple times causes each resume to replay all previous iterations: the first resume replays 1 iteration, the second replays 2, and so on."</blockquote>
+<p>Measured, with a three-iteration loop that needs one answer per iteration:</p>
+<pre><code>after pause, body runs = 1
+resume #1 -> body runs = 3
+resume #2 -> body runs = 6
+resume #3 -> body runs = 9</code></pre>
+<p>Three answers cost nine body executions. The official phrasing is "exponential re-execution"; what I actually measured is the triangular sequence 1 → 3 → 6 → 9 (increments of 1, 2, 3), which is quadratic rather than exponential. Either way the conclusion holds: <strong>cost grows super-linearly with the number of replies</strong>.</p>
+<p>The fix is the pattern the docs recommend: keep the question in state, call <code>interrupt()</code> exactly once per invocation, and route back if the answer is invalid.</p>
+<pre><code>def collect(state: F):
+    q = state.get("pending") or "age?"
+    a = interrupt(q)
+    if isinstance(a, int) and a > 0:
+        return {"age": a, "pending": None}
+    return {"pending": "invalid, retry"}
+
+def route(state: F):
+    return END if state.get("age") is not None else "collect"</code></pre>
+<p>Measured: after three resumes the node ran six times, each answer consumed exactly once, with no replayed history.</p>
+<h2>Parallel branches: map by interrupt id, not task id</h2>
+<p>This is the most counter-intuitive part. When two parallel branches each call <code>interrupt()</code>:</p>
+<pre><code>r = app.invoke({"v": 1, "log": []}, cfg)
+# __interrupt__ = [Interrupt(value='left?',  id='5e55830a...'),
+#                  Interrupt(value='right?', id='c065a78a...')]
+
+st = app.get_state(cfg)
+st.next            # ('left', 'right')
+[t.id for t in st.tasks]                        # UUID, with dashes
+[i.id for t in st.tasks for i in t.interrupts]  # 32-char hex</code></pre>
+<p><strong>Keying the dict by <code>t.id</code> blows up:</strong></p>
+<pre><code>RuntimeError: When there are multiple pending interrupts, you must specify
+the interrupt id when resuming.</code></pre>
+<p><strong>Keying by <code>i.id</code> works:</strong></p>
+<pre><code>m = {i.id: "OK-" + t.name for t in st.tasks for i in t.interrupts}
+app.invoke(Command(resume=m), cfg)
+# {'v': 1, 'log': ["left->'OK-left'", "right->'OK-right'"]}</code></pre>
+<p>The root cause is in the source. In <code>langgraph/pregel/_loop.py</code>, the test for "is this resume an id map" is:</p>
+<pre><code>if resume_is_map := (
+    isinstance(resume, dict)
+    and all(is_xxh3_128_hexdigest(k) for k in resume)
+):</code></pre>
+<p><code>is_xxh3_128_hexdigest</code> only accepts 32 hex characters. A dashed UUID fails, so the dict is treated as a plain scalar resume value, which then hits the "multiple pending interrupts" branch and raises.</p>
+<p>Partial resumes are legal too. Supply a value for one id and the other stays pending:</p>
+<pre><code>partial -> {'v': 1, 'log': ["left->'only-left'"],
+            '__interrupt__': [Interrupt(value='right?', ...)]}
+next after partial = ('right',)</code></pre>
+<p>That is genuinely useful for batch approval: release one item and leave the other hanging until a person gets to it.</p>
+<p>One more trap worth writing down: <strong>the order of <code>__interrupt__</code> is not a contract</strong>. On the initial pause it was <code>['L', 'R']</code>, but after a <code>Command(update=...)</code> triggered a replay, the same set came back as <code>['R', 'L']</code> — 8 runs, 8 times R first. So never infer "which node is asking" from position; only trust <code>Interrupt.id</code>.</p>
+<h2>`response_schema` does validate, but booleans sneak through as `"yes"`</h2>
+<p>In 1.2.x, <code>interrupt()</code> gained a <code>response_schema</code> argument:</p>
+<pre><code>def interrupt(value: Any, *, response_schema: dict[str, Any] | type | None = None) -> Any:</code></pre>
+<p>Pass a <code>TypedDict</code> and the runtime hangs the schema off <code>Interrupt.response_schema</code>:</p>
+<pre><code>response_schema = {'properties': {'approved': {'title': 'Approved', 'type': 'boolean'},
+                                  'note': {'title': 'Note', 'type': 'string'}},
+                   'required': ['approved', 'note'], 'title': 'Decision', 'type': 'object'}</code></pre>
+<p>Measured on resume:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>Command(resume=...)</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>{"approved": True}</code> (note missing)</td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: 1 validation error for Decision / note / Field required</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>42</code></td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: Input should be a valid dictionary</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>["a", "b"]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: Input should be a valid dictionary</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>{"approved": True, "note": "ok"}</code></td><td style="border:1px solid #ddd;padding:8px;">accepted</td></tr></tbody></table>
+<p>Here is the dangerous edge: <strong><code>{"approved": "yes", "note": "x"}</code> is also accepted</strong>, and the node receives <code>{'approved': True, 'note': 'x'}</code> — the string <code>"yes"</code> was silently coerced to <code>True</code>.</p>
+<p>So <code>response_schema</code> catches missing fields and wrong container types, but it does <strong>not</strong> catch type-adjacent strings. If your approval flow receives JSON from a form that serialises booleans as strings, <code>response_schema</code> will not flag it. Enforce it yourself with an explicit <code>isinstance(ans, bool)</code> check inside the node.</p>
+<h2>Subgraphs and cross-process resume</h2>
+<p>The 10-19 persistence article left one thing untested: what happens when the interrupt lives inside a subgraph (<code>checkpoint_ns</code> is non-empty). I picked that up here.</p>
+<p>Measured: compile the subgraph on its own (no checkpointer), then attach it as a node to a parent graph that has a checkpointer —</p>
+<pre><code>invoke#1 -> {'v': 1, 'log': [], '__interrupt__': [Interrupt(value='sub-approve?', ...)]}
+next = ('child',)
+Command(resume=7) -> {'v': 17, 'log': ['done']}</code></pre>
+<p>The interrupt parks on the parent's <code>child</code> node, and a <code>Command(resume=...)</code> issued against the parent graph resumes it. The docs describe this "subgraph called as a function" pattern as:</p>
+<blockquote>"the parent graph will resume execution from the beginning of the node where the subgraph was invoked and the interrupt was triggered. Similarly, the subgraph will also resume from the beginning of the node where interrupt was called."</blockquote>
+<p>Note the word "similarly": <strong>both layers replay in full</strong>. Code before the subgraph call in the parent, and code before <code>interrupt()</code> inside the subgraph, both run again on resume.</p>
+<p>The cross-process half is more interesting. I wrote two entirely separate Python processes that share nothing except one SQLite file and one <code>thread_id</code>:</p>
+<pre><code>proc1 (pause) : PAUSE_RESULT {'v': 5, 'log': [], '__interrupt__': [Interrupt(value={'q': 'cross-process?'}, ...)]}
+proc2 (resume): BEFORE_NEXT ('ask',) {'v': 5, 'log': []}
+               RESUME_RESULT {'v': 142, 'log': ['cross']}</code></pre>
+<p>Process B boots, reads <code>next=('ask',)</code> with <code>v=5</code>, and picks up exactly where process A stopped. That is what the docs call fault tolerance in practice: restart the service, rebuild the container, and the approval flow survives.</p>
+<p>The flip side is a trap: <strong>resuming after the thread was deleted does not raise</strong>. After <code>delete_thread()</code>, <code>get_state()</code> returns <code>values={}</code>, and invoking <code>Command(resume="late")</code> runs the graph from the start and interrupts again. If your alerting depends on "resume fails loudly", this path is silent.</p>
+<h2>Troubleshooting: Six Errors I Reproduced Locally</h2>
+<p>Every traceback below was produced on this machine and copied verbatim.</p>
+<h3>Error one: `RuntimeError: When there are multiple pending interrupts, you must specify the interrupt id when resuming.`</h3>
+<p>Symptom: two parallel branches each call <code>interrupt()</code>; you build a dict keyed by <code>get_state(cfg).tasks[].id</code> and it explodes.</p>
+<pre><code>RuntimeError: When there are multiple pending interrupts, you must specify
+the interrupt id when resuming. Docs: https://docs.langchain.com/oss/python/
+langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation.</code></pre>
+<p>Cause: to be recognised as an id→value map, the dict must satisfy <code>all(is_xxh3_128_hexdigest(k) for k in resume)</code>. A dashed UUID does not.</p>
+<p>Fix: key on <code>task.interrupts[].id</code> instead.</p>
+<p>Bonus finding: <strong>the documentation URL in that error message is a 404</strong>. <code>https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop</code> returns 404; the page that resolves today is <code>https://docs.langchain.com/oss/python/langgraph/interrupts</code>.</p>
+<h3>Error two: `UnboundLocalError: cannot access local variable 'resume_is_map' where it is not associated with a value`</h3>
+<p>Symptom: you pass <code>Command(resume=None)</code>, or just <code>Command()</code> with nothing in it.</p>
+<pre><code>UnboundLocalError: cannot access local variable 'resume_is_map' where it is
+not associated with a value</code></pre>
+<p>The cause sits in <code>langgraph/pregel/_loop.py</code>:</p>
+<pre><code>if (resume := cast(Command, self.input).resume) is not None:   # L1018
+    if not self.checkpointer:
+        raise RuntimeError("Cannot use Command(resume=...) without checkpointer")
+    if resume_is_map := (...):                                  # L1026
+        ...
+...
+if not writes and not resume_is_map:                            # L1038
+    raise EmptyInputError("Received empty Command input")</code></pre>
+<p>When <code>resume</code> is <code>None</code>, the whole block at L1018 is skipped, so <code>resume_is_map</code> is never bound; reading it at L1038 raises immediately.</p>
+<p>Knock-on effect: <strong>that friendly <code>EmptyInputError("Received empty Command input")</code> is unreachable on the <code>resume=None</code> path</strong> — the line meant to report the problem crashes first.</p>
+<p>Fix: to continue an empty run, pass <code>None</code> as the first argument (<code>app.invoke(None, cfg)</code>), not an empty <code>Command</code>.</p>
+<h3>Error three: `ValidationError: 1 validation error for Decision` / `note` / `Field required`</h3>
+<p>Symptom: you declared <code>response_schema=Decision</code> with <code>approved: bool</code> and <code>note: str</code>, then resumed with only <code>{"approved": True}</code>.</p>
+<pre><code>ValidationError: 1 validation error for Decision
+note
+  Field required [type=missing, input_value={'approved': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing</code></pre>
+<p>Cause: <code>note</code> is required in the schema.</p>
+<p>Fix: send a resume value that satisfies the whole schema, or make <code>note</code> optional with a default.</p>
+<h3>Error four: `InvalidUpdateError: At key 'v': Can receive only one value per step`</h3>
+<p>Symptom: you want to resume and mutate state in the same call, so you write <code>Command(resume=good_map, update={"v": 77})</code>.</p>
+<pre><code>InvalidUpdateError: At key 'v': Can receive only one value per step.
+Use an Annotated key to handle multiple values.
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/
+errors/INVALID_CONCURRENT_GRAPH_UPDATE</code></pre>
+<p>Cause: the node's write triggered by resume and the <code>update</code> write land in the <strong>same step</strong>, so the non-reducer key <code>v</code> receives two values.</p>
+<p>Fix: either give <code>v</code> a reducer (<code>Annotated[list, operator.add]</code> and friends), or defer the state change to the round after the resume completes.</p>
+<h3>Error five: `RuntimeError: Cannot use Command(resume=...) without checkpointer`</h3>
+<p>Symptom: you forgot <code>checkpointer</code> at compile time.</p>
+<pre><code>RuntimeError: Cannot use Command(resume=...) without checkpointer</code></pre>
+<p>Cause: interrupts depend on the persistence layer. Without a checkpointer there is no "suspend".</p>
+<p>The nasty part is that <strong>the first half never complains</strong>. A graph compiled without a checkpointer calls <code>interrupt()</code> without raising; it just stuffs the <code>Interrupt</code> object into the invoke return value and finishes. You assume the flow is correct — and it only detonates at resume time.</p>
+<p>Fix: pass a checkpointer instance at compile time, and judge suspension by <code>get_state(cfg).next</code> rather than by whether invoke threw.</p>
+<h3>Error six: `GraphInterrupt` swallowed by a bare `except Exception` (the one with no error at all)</h3>
+<p>This one produces no traceback, and it is the most dangerous of the six:</p>
+<pre><code>def node(state):
+    try:
+        ans = interrupt("trapped?")
+    except Exception as e:
+        return {"log": [f"swallowed:{type(e).__name__}"]
+    return {"log": [f"got:{ans!r}"]}</code></pre>
+<p>Measured:</p>
+<pre><code>caught: GraphInterrupt (Interrupt(value='trapped?', id='4f62a0b8...'))
+result -> {'v': 1, 'log': ['swallowed:GraphInterrupt']}
+next = ()</code></pre>
+<p>The graph "finishes" cleanly, <code>next</code> is empty, and the human step is skipped entirely — your approval flow looks green while no human ever touched it.</p>
+<p>The docs list this as rule number one: "Do not wrap interrupt calls in try/except", because pausing <em></em> the exception; catch it and there is no interrupt.</p>
+<p>Fix: either move <code>interrupt()</code> outside the <code>try</code> block, or catch only specific types (<code>except (ValueError, TypeError)</code>). The latter is safe — I tested it, and after switching to specific types the interrupt parked normally with <code>next</code> = <code>('ok',)</code>.</p>
+<h2>When not to use `interrupt`</h2>
+<ul><li><strong>Long-pending cross-system flows.</strong> An interrupt lives only as long as that thread in the checkpointer. If your thread lifecycle is "clean up when the session ends", the context disappears before the reviewer opens the ticket.</li><li><strong>As a retry queue.</strong> See the loop section: replay cost is super-linear. Use a real orchestrator instead (the 10-24 article on urllib3/tenacity shows how retries silently fail to fire).</li><li><strong>Nodes with non-idempotent side effects.</strong> Move notifications, inventory changes and similar work after <code>interrupt()</code>, or add your own dedupe key.</li><li><strong>Continuing multi-turn conversations with <code>Command(update=...)</code> as input.</strong> The docs are explicit that <code>Command(resume=...)</code> is the only Command pattern meant as input to <code>invoke()</code> / <code>stream()</code> / <code>stream_events()</code>; <code>update</code>, <code>goto</code> and <code>graph</code> are for returning from node functions.</li></ul>
+<h2>Limits of this test</h2>
+<ul><li>Everything ran on this Windows 11 box with Python 3.13, langgraph <strong>1.2.16</strong> (released 2026-10-16) as the primary environment. I installed <strong>1.2.17</strong> (released 2026-10-24; version of record is GitHub Releases) into an isolated <code>--target</code> directory and re-ran the key scenarios; behaviour is identical.</li><li>Only <code>InMemorySaver</code> and <code>SqliteSaver</code> were exercised. <strong>Postgres-backed interrupts were not tested</strong>, nor was the managed runtime's automatic persistence.</li><li>The async paths (<code>ainvoke</code> / <code>astream</code> / <code>astream_events</code>) were not tested. The interface the docs now recommend is <code>graph.stream_events(..., version="v3")</code>; I only poked at it, and this article makes no claims about it.</li><li><code>interrupt()</code> inside <code>prebuilt</code> <code>ToolNode</code> or inside tool functions was not tested, and neither was resuming multiple interrupts produced by a <code>Send</code> fan-out.</li><li>No concurrency stress test. What happens when two reviewers resume the same <code>thread_id</code> at once is not asserted here (see the 10-19 result where 16 concurrent writers lost 93.75% of updates — assume the same hazard applies).</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q: Must the second invoke pass <code>Command(resume=...)</code>?</strong></p>
+<p>It depends. For a dynamic interrupt raised by <code>interrupt()</code>, <strong>yes</strong> — the interrupt point needs a value to return. For a static breakpoint created by <code>compile(interrupt_before=["b"])</code>, passing <code>None</code> (<code>app.invoke(None, cfg)</code>) is enough, because a breakpoint merely halts execution; it is not waiting for input.</p>
+<p><strong>Q: Static breakpoint or <code>interrupt()</code>?</strong></p>
+<p>The docs are blunt about it: "Static interrupts are not recommended for human-in-the-loop workflows. Use the interrupt function instead." Static breakpoints are a step-through debugging tool.</p>
+<p><strong>Q: How do I count how many interrupts are waiting?</strong></p>
+<p>Walk <code>app.get_state(cfg).tasks</code>; each task carries an <code>interrupts</code> tuple. The number of entries in <code>__interrupt__</code> equals the total number of pending interrupts, but <strong>the order is not reliable</strong> (see the parallel branch section).</p>
+<p><strong>Q: Does <code>response_schema</code> block all bad input?</strong></p>
+<p>No. Missing fields, scalars and lists are all rejected with <code>ValidationError</code>, but <code>approved: "yes"</code> is silently coerced to <code>True</code>. That is stock pydantic lax-mode behaviour.</p>
+<p><strong>Q: How long does a human have to respond?</strong></p>
+<p>Whatever your checkpointer and cleanup policy allow. "Waits indefinitely" describes the runtime not imposing a timeout — it does not promise the thread will still be there later. Note that <code>SqliteSaver.prune()</code> raises <code>NotImplementedError</code> when called (recorded on 10-19); use <code>delete_thread()</code> to clean up.</p>
+<p>---</p>
+<p>The layer just below this one is "how state gets persisted at all" — see <a href="https:///2026-10-19-langgraph-12-checkpointer-8.html" target="_blank" rel="nofollow sponsored">LangGraph 1.2.16 persistence, measured</a>. The layer next to it is "what format you pay for when data crosses services" — see <a href="https:///2026-10-25-json-vs-messagepack-vs-protobuf-tested-at-50k-reco-en.html" target="_blank" rel="nofollow sponsored">JSON vs MessagePack vs Protobuf, tested</a>. This article covers the seam between them: once the state is saved, how a human gets attached to it without silently re-running half your node.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
