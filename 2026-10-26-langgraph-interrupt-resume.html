@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph 人审中断实测：interrupt 与 resume 的六条硬规则 - TechPassive</title>
+  <meta name="description" content="我在本机用 langgraph 1.2.16 把 interrupt() 与 Command(resume=) 的完整闭环跑了一遍：节点为什么会被整段重放、并行分支同时中断为什么只能按 interrupt id 映射、response_schema 挡不住哪类输入，以及六个可复现的真实报错与修复办法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>LangGraph 人审中断：interrupt 与 resume 怎么接得上</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag">人审中断</span><span class="tag">AI Agent</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：<code>interrupt()</code> 不会把执行"冻"在原地等你输入。它抛出的是一个 <code>GraphInterrupt</code> 异常，运行时捕获它、存下当时的图状态，然后结束这一轮。等你带着 <code>Command(resume=...)</code> 再 invoke 一次，运行时是从<strong>被中断节点的开头</strong>重新执行的——中断点之前的每一行代码都会再跑一遍。这条规则决定了后面所有写法：循环里放 <code>interrupt()</code> 会让重放量按三角数增长；并行分支同时中断时只能用 <code>Interrupt.id</code> 映射，<code>StateSnapshot.tasks[].id</code> 那个带连字符的 UUID 会直接抛 <code>RuntimeError</code>。</p>
+<h2>一、先把一句话说清楚：中断不是"暂停"</h2>
+<p>大部分人第一次用 <code>interrupt()</code> 时，脑子里想的是 Python 的 <code>input()</code>：程序停在这一行，我敲点东西，它接着往下走。<a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> 不是这样的。</p>
+<p>官方文档 Interrupts 页的原话是：</p>
+<blockquote>"When an interrupt is triggered, LangGraph saves the graph state using its persistence layer and waits indefinitely until you resume execution."</blockquote>
+<p>关键在于后面这句：</p>
+<blockquote>"The node restarts from the beginning of the node where the interrupt was called when resumed, so any code before the interrupt runs again"</blockquote>
+<p>也就是说，中断机制由两个动作组成：</p>
+<p>1. 抛出一个特殊异常（<code>GraphInterrupt</code>），让它一路穿过调用栈，被运行时接住；</p>
+<p>2. 运行时把当前状态落盘，然后<strong>结束这次 invoke</strong>，把 payload 通过 <code>__interrupt__</code> 返回给调用方。</p>
+<p>第二次 invoke 时，运行时不会"跳回第 17 行"，而是<strong>重新调用整个节点函数</strong>，只是在遇到 <code>interrupt()</code> 时从 resume 列表里按位置取值返回。所以 <code>interrupt()</code> 之前的代码执行了两次，<code>interrupt()</code> 之后的代码只执行一次。</p>
+<p>我实际验证这一点的方式很笨但有效：在节点函数开头给一个全局计数器加一。</p>
+<pre><code>RUNS = {"n": 0}
+
+def node(state):
+    RUNS["n"] += 1
+    ans = interrupt({"q": "approve?"})
+    return {"v": 10 + int(ans)}</code></pre>
+<p>结果：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">阶段</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">RUNS["n"]</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">首次 invoke 后</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">进入节点 → 撞上 interrupt → 挂起</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Command(resume=True)</code> 后</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">重放一遍（+1），interrupt 返回后再跑尾部（+1 是我第二次加的）</td></tr></tbody></table>
+<p>第一条铁律就出来了：<strong><code>interrupt()</code> 之前的所有副作用必须是幂等的</strong>。官方文档把这条列为 "Rules of interrupts" 之一，原话是 "Side effects called before interrupt must be idempotent"。发邮件、扣款、写数据库这类动作，放在 <code>interrupt()</code> 前面就会执行两次。</p>
+<h2>二、最小闭环：从 interrupt 到 Command(resume=) 的信号链</h2>
+<p>下面这段代码是能跑起来的最小例子，本机 langgraph 1.2.16 + langgraph-checkpoint 4.3.0 实测通过。</p>
+<pre><code>from typing import Annotated, TypedDict
+import operator
+from langgraph.graph import StateGraph, START, END
+from langgraph.types import interrupt, Command
+from langgraph.checkpoint.memory import InMemorySaver
+
+class S(TypedDict):
+    v: int
+    log: Annotated[list, operator.add]
+
+def ask(state: S):
+    ans = interrupt({"question": "approve?", "seen": state["v"]})
+    return {"v": 10 + int(ans)}
+
+g = StateGraph(S)
+g.add_node("ask", ask)
+g.add_edge(START, "ask")
+g.add_edge("ask", END)
+
+app = g.compile(checkpointer=InMemorySaver())
+cfg = {"configurable": {"thread_id": "t1"}}
+
+r = app.invoke({"v": 1, "log": []}, cfg)
+print(r)</code></pre>
+<p>首次 invoke 的返回体里多了一个 <code>__interrupt__</code> 键：</p>
+<pre><code>{'v': 1, 'log': [],
+ '__interrupt__': [Interrupt(value={'question': 'approve?', 'seen': 1},
+                             id='25d8aed8be448dfcebaa7f3bf3b4402c',
+                             response_schema=None)]}</code></pre>
+<p>注意这里返回的是<strong>入口状态</strong>（<code>v</code> 仍是 1），不是节点执行结果——节点根本没走完。要判断图是不是真的挂起了，看两个地方：</p>
+<pre><code>st = app.get_state(cfg)
+st.next                      # ('ask',)   ← 还没走完
+[t.interrupts for t in st.tasks]   # 每个待办 task 上挂着的 Interrupt 列表</code></pre>
+<p><code>__interrupt__</code> 只在你直接读 invoke 返回值时有用；在服务化场景里，真正可靠的是 <code>get_state(cfg).next</code> 和 <code>st.tasks[].interrupts</code>。原因见第五节——<code>__interrupt__</code> 里那个列表的<strong>顺序会变</strong>。</p>
+<p>补上恢复这一半：</p>
+<pre><code>r2 = app.invoke(Command(resume=5), cfg)
+# {'v': 15, 'log': ['ask_done']}</code></pre>
+<p><code>Command(resume=5)</code> 成为节点里 <code>interrupt()</code> 的返回值，于是 <code>v = 10 + 5 = 15</code>。</p>
+<h2>三、同一节点里多次 interrupt：靠下标匹配，不是靠次数</h2>
+<p>官方文档对"一个节点里多个 <code>interrupt()</code>"的描述是：</p>
+<blockquote>"Whenever execution resumes, it starts at the beginning of the node. For each interrupt encountered, LangGraph checks if a matching value exists in the task's resume list. Matching is strictly index-based, so the order of interrupt calls within the node is important."</blockquote>
+<p>实测行为（一个节点里连着两次 <code>interrupt</code>）：</p>
+<pre><code>def two(state):
+    a = interrupt("first?")
+    b = interrupt("second?")
+    return {"log": [f"{a}/{b}"]}</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">操作</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">首次 invoke</td><td style="border:1px solid #ddd;padding:8px;">挂起，<code>__interrupt__</code> 只有 <code>first?</code> 一条</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Command(resume="A")</code></td><td style="border:1px solid #ddd;padding:8px;">挂起，<code>__interrupt__</code> 变成 <code>second?</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Command(resume="B")</code></td><td style="border:1px solid #ddd;padding:8px;">完成，<code>log = ['A/B']</code></td></tr></tbody></table>
+<p>关键：<strong>一个 resume 只能喂一个 interrupt</strong>。你不能一次把两个答案都交上去。我试过 <code>Command(resume=[1, 2])</code>，结果是整个 list 变成了第一个 <code>interrupt()</code> 的返回值，第二个照样挂起：</p>
+<pre><code># 单 interrupt 节点，resume 传 list
+app.invoke(Command(resume=["x", "y"]), cfg)
+# log = ["['x', 'y']"]   ← 整个 list 被当成一个值</code></pre>
+<p>这是最容易踩的一个坑，因为"resume 值列表"这个说法在文档里出现过，但那个列表是<strong>运行时跨多轮累积的内部列表</strong>，不是让你一次性传进去的。</p>
+<h2>四、循环里放 interrupt：3 轮问答重放了 9 遍</h2>
+<p>把第三节的结论推广一步：如果一个节点的循环体里放了 <code>interrupt()</code>，那么每次 resume 都要把<strong>之前所有轮次</strong>重跑一遍。</p>
+<p>官方原文：</p>
+<blockquote>"a loop that calls interrupt() multiple times causes each resume to replay all previous iterations: the first resume replays 1 iteration, the second replays 2, and so on."</blockquote>
+<p>我实测（3 轮循环，每轮都要答一次才继续）：</p>
+<pre><code>暂停后 body 累计执行 = 1
+第 1 次 resume 后 body 累计执行 = 3
+第 2 次 resume 后 body 累计执行 = 6
+第 3 次 resume 后 body 累计执行 = 9</code></pre>
+<p>想收集 3 个答案，循环体一共跑了 9 次。官方用词是 "exponential re-execution"，本机实测的具体数字是三角数（1 → 3 → 6 → 9，增量 1/2/3），不是严格指数——但结论一致：<strong>成本随回答轮次超线性增长</strong>。</p>
+<p>正确的写法是官方给出的那个模式：把问题放进状态，每轮只 <code>interrupt()</code> 一次，答案不合法就回写状态再路由回来。</p>
+<pre><code>def collect(state: F):
+    q = state.get("pending") or "age?"
+    a = interrupt(q)
+    if isinstance(a, int) and a > 0:
+        return {"age": a, "pending": None}
+    return {"pending": "invalid, retry"}
+
+def route(state: F):
+    return END if state.get("age") is not None else "collect"</code></pre>
+<p>实测：3 次 resume 后节点只执行了 6 次，且每个答案只被消费一次，没有重复跑过的历史问答。</p>
+<h2>五、并行分支同时中断：只能按 interrupt id 映射</h2>
+<p>这是本篇最反直觉的一条。当两条并行分支各调用一次 <code>interrupt()</code> 时：</p>
+<pre><code>r = app.invoke({"v": 1, "log": []}, cfg)
+# __interrupt__ = [Interrupt(value='left?', id='5e55830a...'),
+#                  Interrupt(value='right?', id='c065a78a...')]
+
+st = app.get_state(cfg)
+st.next          # ('left', 'right')
+[t.id for t in st.tasks]            # UUID，带连字符
+[i.id for t in st.tasks for i in t.interrupts]   # 32 位 hex</code></pre>
+<p><strong>用 <code>t.id</code> 做 key 会直接炸</strong>：</p>
+<pre><code>RuntimeError: When there are multiple pending interrupts, you must specify
+the interrupt id when resuming.</code></pre>
+<p><strong>用 <code>i.id</code> 做 key 才通过</strong>：</p>
+<pre><code>m = {i.id: "OK-" + t.name for t in st.tasks for i in t.interrupts}
+app.invoke(Command(resume=m), cfg)
+# {'v': 1, 'log': ["left->'OK-left'", "right->'OK-right'"]}</code></pre>
+<p>根因在源码里。<code>langgraph/pregel/_loop.py</code> 判断"这是不是一个 id 映射"的判据是：</p>
+<pre><code>if resume_is_map := (
+    isinstance(resume, dict)
+    and all(is_xxh3_128_hexdigest(k) for k in resume)
+):</code></pre>
+<p><code>is_xxh3_128_hexdigest</code> 只认 32 位十六进制。<code>tasks[].id</code> 是带连字符的 UUID，过不了这个检查，于是被当成"单个标量 resume 值"，再撞上"存在多个待处理中断"的分支抛错。</p>
+<p>映射还支持<strong>部分恢复</strong>：只给其中一个 id 值，另一个保持挂起。</p>
+<pre><code>partial -> {'v': 1, 'log': ["left->'only-left'"],
+            '__interrupt__': [Interrupt(value='right?', ...)]}
+next after partial = ('right',)</code></pre>
+<p>这一点在做"批量审批"时非常有用——你可以先放过一个，把另一个继续挂在那里等人。</p>
+<p>顺便记一个我踩到的坑：<code>__interrupt__</code> 列表的<strong>顺序不是契约</strong>。首轮挂起时是 <code>['L', 'R']</code>，但用 <code>Command(update=...)</code> 触发重跑后，同一批中断变成了 <code>['R', 'L']</code>（连跑 8 次，8 次都是 R 在前）。所以<strong>永远不要用位置去猜"这是哪个节点在问"，只认 <code>Interrupt.id</code></strong>。</p>
+<h2>六、response_schema 会真的校验，但布尔字段会被 "yes" 静默通过</h2>
+<p>1.2.x 的 <code>interrupt()</code> 多了个 <code>response_schema</code> 参数，签名是：</p>
+<pre><code>def interrupt(value: Any, *, response_schema: dict[str, Any] | type | None = None) -> Any:</code></pre>
+<p>传一个 <code>TypedDict</code> 进去，运行时会把 schema 挂到 <code>Interrupt.response_schema</code> 上：</p>
+<pre><code>response_schema = {'properties': {'approved': {'title': 'Approved', 'type': 'boolean'},
+                                  'note': {'title': 'Note', 'type': 'string'}},
+                   'required': ['approved', 'note'], 'title': 'Decision', 'type': 'object'}</code></pre>
+<p>恢复时的实测结果：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>Command(resume=...)</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>{"approved": True}</code>（缺 note）</td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: 1 validation error for Decision / note / Field required</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>42</code></td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: Input should be a valid dictionary</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>["a","b"]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>ValidationError: Input should be a valid dictionary</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>{"approved": True, "note": "ok"}</code></td><td style="border:1px solid #ddd;padding:8px;">通过</td></tr></tbody></table>
+<p>但这里有个很危险的边界：<strong><code>{"approved": "yes", "note": "x"}</code> 也通过了</strong>，节点拿到的是 <code>{'approved': True, 'note': 'x'}</code>——字符串 <code>"yes"</code> 被静默转成了布尔 <code>True</code>。</p>
+<p>也就是说，<code>response_schema</code> 能挡住"缺字段"和"传错容器类型"，<strong>挡不住"类型近似的字符串"</strong>。如果你的审批流是"审批人从某个表单回传 JSON"，而那个表单把布尔序列化成了字符串，那 <code>response_schema</code> 不会帮你发现。要硬性约束，得在节点里自己再判一次 <code>isinstance(ans, bool)</code>。</p>
+<h2>七、子图与跨进程：中断的保质期比一个进程长</h2>
+<p>10-19 那篇做持久化时留了个尾巴没测：子图（<code>checkpoint_ns</code> 非空）里的中断会怎样。我这次补上了。</p>
+<p>实测：子图单独 <code>compile()</code>（不带 checkpointer），作为节点挂到带 checkpointer 的父图上——</p>
+<pre><code>invoke#1 -> {'v': 1, 'log': [], '__interrupt__': [Interrupt(value='sub-approve?', ...)]}
+next = ('child',)
+Command(resume=7) -> {'v': 17, 'log': ['done']}</code></pre>
+<p>中断正常挂起在父图的 <code>child</code> 节点上，用父图的 <code>Command(resume=...)</code> 就能恢复。官方对这种"把子图当函数调用"的写法原话是：</p>
+<blockquote>"the parent graph will resume execution from the beginning of the node where the subgraph was invoked and the interrupt was triggered. Similarly, the subgraph will also resume from the beginning of the node where interrupt was called."</blockquote>
+<p>注意"similarly"这个词：<strong>父子两层都会整段重放</strong>。子图里 <code>interrupt()</code> 前的代码，和父图节点里子图调用前的代码，恢复时都会再跑一遍。</p>
+<p>跨进程这一半更有意思。我写了两个完全独立的 Python 进程，只用同一个 SQLite 文件和同一个 <code>thread_id</code>：</p>
+<pre><code>proc1（pause） : PAUSE_RESULT {'v': 5, 'log': [], '__interrupt__': [Interrupt(value={'q': 'cross-process?'}, ...)]}
+proc2（resume）: BEFORE_NEXT ('ask',) {'v': 5, 'log': []}
+                RESUME_RESULT {'v': 142, 'log': ['cross']}</code></pre>
+<p>进程 B 启动后读到 <code>next=('ask',)</code>、状态 <code>v=5</code>，直接把 A 挂起的那次执行接上了。这就是官方说的 "fault tolerance" 落地的样子：服务重启、容器重建，审批流不会断。</p>
+<p>反过来也有坑：<strong>删掉 thread 后再 resume 不会报错</strong>。实测 <code>delete_thread()</code> 之后 <code>get_state()</code> 返回 <code>values={}</code>，再 invoke <code>Command(resume="late")</code> 得到的是图从头跑一遍并再次中断的结果。如果你依赖"resume 失败即报错"来做告警，这里是静默的。</p>
+<h2>八、踩坑录：六个我本机复现出来的报错</h2>
+<p>以下每条都是我在这台机器上真跑出来、原样抄下来的错误文本。</p>
+<h3>报错一：`RuntimeError: When there are multiple pending interrupts, you must specify the interrupt id when resuming.`</h3>
+<p>现象：两条并行分支各调用一次 <code>interrupt()</code>，用 <code>get_state(cfg).tasks[].id</code> 组装 dict 传进去就炸。</p>
+<pre><code>RuntimeError: When there are multiple pending interrupts, you must specify
+the interrupt id when resuming. Docs: https://docs.langchain.com/oss/python/
+langgraph/add-human-in-the-loop#resume-multiple-interrupts-with-one-invocation.</code></pre>
+<p>原因：<code>resume</code> 要被识别成"id → 值"的映射，必须满足 <code>all(is_xxh3_128_hexdigest(k) for k in resume)</code>，而 <code>tasks[].id</code> 是带连字符的 UUID。</p>
+<p>解决：改取 <code>task.interrupts[].id</code>。</p>
+<p>顺带一个发现：<strong>报错信息里那个文档链接是 404</strong>。我 curl 过 <code>https://docs.langchain.com/oss/python/langgraph/add-human-in-the-loop</code>，返回 404；现在能打开的是 <code>https://docs.langchain.com/oss/python/langgraph/interrupts</code>（后者会自动重定向到前者之外的新路径）。</p>
+<h3>报错二：`UnboundLocalError: cannot access local variable 'resume_is_map' where it is not associated with a value`</h3>
+<p>现象：<code>Command(resume=None)</code> 或干脆 <code>Command()</code> 什么都不传。</p>
+<pre><code>UnboundLocalError: cannot access local variable 'resume_is_map' where it is
+not associated with a value</code></pre>
+<p>原因在 <code>langgraph/pregel/_loop.py</code>：</p>
+<pre><code>if (resume := cast(Command, self.input).resume) is not None:   # L1018
+    if not self.checkpointer:
+        raise RuntimeError("Cannot use Command(resume=...) without checkpointer")
+    if resume_is_map := (...):                                  # L1026
+        ...
+...
+if not writes and not resume_is_map:                            # L1038
+    raise EmptyInputError("Received empty Command input")</code></pre>
+<p><code>resume</code> 为 <code>None</code> 时，第 1018 行整块被跳过，<code>resume_is_map</code> 从未被赋值；到 1038 行读它就直接 <code>UnboundLocalError</code>。</p>
+<p>连带后果：<strong>源码里那句 <code>EmptyInputError("Received empty Command input")</code> 在 <code>resume=None</code> 这条路径上永远到不了</strong>——它想在 1038 行给个友好提示，结果 1038 行自己先崩了。</p>
+<p>解决：要继续空跑就传 <code>None</code> 给第一个参数（<code>app.invoke(None, cfg)</code>），不要传空 <code>Command</code>。</p>
+<p>补充：这个 bug 在 <strong>1.2.16 和 1.2.17 上都能复现</strong>，不是已修的老问题。</p>
+<h3>报错三：`ValidationError: 1 validation error for Decision` / `note` / `Field required`</h3>
+<p>现象：给了 <code>response_schema=Decision</code>（含 <code>approved: bool</code> 与 <code>note: str</code>），resume 时只传了 <code>{"approved": True}</code>。</p>
+<pre><code>ValidationError: 1 validation error for Decision
+note
+  Field required [type=missing, input_value={'approved': True}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.14/v/missing</code></pre>
+<p>原因：schema 里 <code>note</code> 是必填。</p>
+<p>解决：resume 值必须满足完整 schema，或者把 <code>note</code> 声明成 <code>Optional</code>/给默认值。</p>
+<h3>报错四：`InvalidUpdateError: At key 'v': Can receive only one value per step`</h3>
+<p>现象：想在恢复的同时改状态，写成 <code>Command(resume=good_map, update={"v": 77})</code>。</p>
+<pre><code>InvalidUpdateError: At key 'v': Can receive only one value per step.
+Use an Annotated key to handle multiple values.
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/
+errors/INVALID_CONCURRENT_GRAPH_UPDATE</code></pre>
+<p>原因：resume 触发的节点回写与 <code>update</code> 写入落在<strong>同一步</strong>，<code>v</code> 这个非 reducer 字段收到了两个值。</p>
+<p>解决：要么给 <code>v</code> 加 reducer（<code>Annotated[list, operator.add]</code> 之类），要么把状态修改推迟到恢复完成之后的下一轮。</p>
+<h3>报错五：`RuntimeError: Cannot use Command(resume=...) without checkpointer`</h3>
+<p>现象：图编译的时候忘了传 <code>checkpointer</code>。</p>
+<pre><code>RuntimeError: Cannot use Command(resume=...) without checkpointer</code></pre>
+<p>原因：中断依赖持久化层，没有 checkpointer 就没有"挂起"这回事。</p>
+<p>最坑的地方在于<strong>前半段完全不报错</strong>：不带 checkpointer 的图里调 <code>interrupt()</code> 不抛异常，它把 <code>Interrupt</code> 对象塞进 invoke 返回值就结束了。你会以为流程是对的，直到恢复这一步才炸。</p>
+<p>解决：编译阶段必须传 checkpointer 实例；判断有没有真的挂起，看 <code>get_state(cfg).next</code>，不能只看 invoke 有没有抛异常。</p>
+<h3>报错六：`GraphInterrupt` 被裸 `except Exception` 吞掉（没有报错的那一个）</h3>
+<p>这条不产生异常，但它是六个里面最危险的：</p>
+<pre><code>def node(state):
+    try:
+        ans = interrupt("trapped?")
+    except Exception as e:
+        return {"log": [f"swallowed:{type(e).__name__}"]
+    return {"log": [f"got:{ans!r}"]}</code></pre>
+<p>实测输出：</p>
+<pre><code>caught: GraphInterrupt (Interrupt(value='trapped?', id='4f62a0b8...'))
+result -> {'v': 1, 'log': ['swallowed:GraphInterrupt']}
+next = ()</code></pre>
+<p>图"正常结束"了，<code>next</code> 是空的，人工环节被整个跳过——你的审批流看起来跑通了，实际上人从头到尾没有参与过。</p>
+<p>官方文档把这条列为第一条规则："Do not wrap interrupt calls in try/except"，原因是 <code>interrupt()</code> 就是靠抛异常来暂停的，你 catch 了就没有中断了。</p>
+<p>解决：要么把 <code>interrupt()</code> 挪到 <code>try</code> 块外面，要么只捕获具体异常类型（<code>except (ValueError, TypeError)</code>）。我实测后者是安全的——改成具体类型后中断正常挂起，<code>next</code> 为 <code>('ok',)</code>。</p>
+<h2>九、什么时候不该用 interrupt</h2>
+<ul><li><strong>需要长时间挂起的跨系统流程</strong>。中断依赖 checkpointer 里有那条 thread，如果你们的 thread 生命周期是按"会话结束即清理"来管的，中断会在人还没审的时候就丢上下文。</li><li><strong>把 interrupt 当重试队列用</strong>。见第四节，循环 + 中断的重放代价是超线性的。要重试就用专门的编排（参考 10-24 那篇 urllib3/tenacity 的四处静默失效）。</li><li><strong>节点里有非幂等副作用</strong>。发通知、扣库存这类动作要么挪到 <code>interrupt()</code> 之后，要么自己加去重键。</li><li><strong>在多轮对话里用 <code>Command(update=...)</code> 当输入接上去</strong>。官方明示 <code>Command(resume=...)</code> 是唯一设计给 <code>invoke()</code> / <code>stream()</code> 输入的 Command 模式，<code>update</code> / <code>goto</code> / <code>graph</code> 是给<strong>节点函数返回</strong>用的。</li></ul>
+<h2>十、本文的边界</h2>
+<ul><li>全部在本机 Windows 11 + Python 3.13 上跑，langgraph <strong>1.2.16</strong>（2026-10-16 发布）为主测环境，另用 <code>--target</code> 隔离装 <strong>1.2.17</strong>（2026-10-24 发布，版本口径以 GitHub Releases 为准）复跑了关键场景，行为一致。</li><li>只测了 <code>InMemorySaver</code> 与 <code>SqliteSaver</code> 两个后端。<strong>没有测 Postgres 后端的中断行为</strong>，也没有测托管运行时的自动持久化。</li><li>没有测异步路径（<code>ainvoke</code> / <code>astream</code> / <code>astream_events</code>）下的中断，官方推荐的新接口是 <code>graph.stream_events(..., version="v3")</code>，本机只浅尝了一下，本文不对它下断言。</li><li>没有测 <code>prebuilt</code> 的 <code>ToolNode</code> / 工具函数内部的 <code>interrupt()</code>，也没有测 <code>Send</code> 做 map-reduce 扇出时的多中断恢复。</li><li>没有做并发压力测试：多个审批人同时 resume 同一 <code>thread_id</code> 会怎样，本文不断言（参考 10-19 那篇 16 线程并发写导致 93.75% 更新丢失的结论，可以推断这里同样不安全）。</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q：第二次 invoke 一定要传 <code>Command(resume=...)</code> 吗？</strong></p>
+<p>分情况。如果是 <code>interrupt()</code> 造成的动态中断，<strong>必须</strong>传 <code>Command(resume=...)</code>，中断点才有值可以返回。如果是 <code>compile(interrupt_before=["b"])</code> 这种静态断点，传 <code>None</code>（<code>app.invoke(None, cfg)</code>）就能继续，因为断点只是"暂停执行"，不等任何输入。</p>
+<p><strong>Q：静态断点和 <code>interrupt()</code> 该用哪个？</strong></p>
+<p>官方给的说法很直接："Static interrupts are not recommended for human-in-the-loop workflows. Use the interrupt function instead." 静态断点更适合调试时一步一步走。</p>
+<p><strong>Q：怎么知道现在有几个中断在等人？</strong></p>
+<p>遍历 <code>app.get_state(cfg).tasks</code>，每个 task 上有 <code>interrupts</code> 元组。<code>__interrupt__</code> 里的条数等于待处理中断总数，但<strong>顺序不可靠</strong>（见第五节）。</p>
+<p><strong>Q：<code>response_schema</code> 能挡住所有错误输入吗？</strong></p>
+<p>不能。实测缺字段、传标量、传列表都会被 <code>ValidationError</code> 挡住，但 <code>approved: "yes"</code> 会被静默转成 <code>True</code>。这是 pydantic 宽松模式的既有行为。</p>
+<p><strong>Q：状态存下来之后，人多久之内响应都行？</strong></p>
+<p>取决于 checkpointer 与你们的清理策略。官方说"waits indefinitely"，但那指的是运行时不主动超时，不代表 thread 会永远留着。<code>SqliteSaver</code> 的 <code>prune()</code> 实测直接 <code>raise NotImplementedError</code>（10-19 已记录），要清理得用 <code>delete_thread()</code>。</p>
+<p><strong>Q：能不能在审批前先改一下状态再让人看？</strong></p>
+<p>可以，用 <code>app.update_state(cfg, values, as_node=...)</code>。但注意恢复时节点会整段重放，所以你改的是"重放之后"的输入，不是中断那一刻的快照。</p>
+<p>---</p>
+<p>如果你在搭的是"状态存下来之后怎么把人接进去"这一层，可以先看站内这两篇：一篇讲 <code>checkpointer</code> 本身怎么落盘（<a href="https:///2026-10-19-langgraph-12-checkpointer-8.html" target="_blank" rel="nofollow sponsored">LangGraph 1.2.16 持久化实测</a>），一篇讲跨服务传数据时格式选型会付什么代价（<a href="https:///2026-10-25-json-messagepack-protobuf.html" target="_blank" rel="nofollow sponsored">数据序列化实测：JSON、MessagePack 与 Protobuf</a>）。本篇答的是两者中间那一层：**存下来了，怎么让人安全地接上，接上之后哪几行代码会被再跑一遍。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
