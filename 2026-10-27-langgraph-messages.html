@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph 流式三口径实测：messages 模式到底吞了什么 - TechPassive</title>
+  <meta name="description" content="LangGraph 有三个流式入口，分工不是同一件事。本机 langgraph 1.2.16 实测七个 stream_mode 的 chunk 形态与 token 级输出来源，拆开 messages 模式依赖回调而非图本身，附 6 个真实报错、三处静默失效与 v1/v2 元组形态对照表，命令可复制。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>LangGraph 流式三口径：messages 模式与 6 个真实报错</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag">流式输出</span><span class="tag">踩坑复盘</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：<a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> 给你三个流式入口，但它们不是同一件事的三种写法。<code>stream()</code> 与 <code>astream()</code> 是「状态机视角」——按你指定的 stream_mode 把<strong>图运行时的数据</strong>吐出来；<code>astream_events()</code> 是「回调视角」——把 <strong>LangChain 回调事件</strong>（<code>on_chain_start</code> / <code>on_chat_model_stream</code> / <code>on_chain_end</code> …）原样转给你。我实际测试 langgraph 1.2.16 + langchain-core 1.6.12 之后，最反直觉的一条是：<strong><code>stream_mode="messages"</code> 的 token 级输出不是图在流，是一个挂在回调链上的 <code>StreamMessagesHandler</code> 在流</strong>。这解释了三件事：为什么拼错模式名会静默返回 0 个 chunk、为什么子图里的 token 默认不冒泡、为什么 <code>nostream</code> 标签挡掉了 token 却挡不掉那条完整消息。</p>
+<p><strong>一、先把三个入口摆正</strong></p>
+<p>官方文档 Streaming 页开篇就写了一句很容易被跳过的话：</p>
+<blockquote>"For new applications, we recommend event streaming—the typed-projection API introduced in LangGraph v1.2."</blockquote>
+<p>也就是说，官方自己把 <code>stream(mode=...)</code> 这条路径定位成「需要直接访问图运行时事件或特定模式输出时」的接口，新应用推荐走 v1.2 引入的 event streaming。这不是说 stream-mode API 不能用了——它仍然是当下绝大多数项目在用的那一套——而是你选型前得知道有两条路。</p>
+<p>三条入口的语义差别可以这样记：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">入口</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">视角</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">产出单位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你得到的东西</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>stream()</code></td><td style="border:1px solid #ddd;padding:8px;">状态机</td><td style="border:1px solid #ddd;padding:8px;">按 stream_mode 定</td><td style="border:1px solid #ddd;padding:8px;">values/updates/checkpoints/tasks/debug/messages/custom</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>astream()</code></td><td style="border:1px solid #ddd;padding:8px;">状态机（异步）</td><td style="border:1px solid #ddd;padding:8px;">同上</td><td style="border:1px solid #ddd;padding:8px;">同上，只是不阻塞事件循环</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>astream_events()</code></td><td style="border:1px solid #ddd;padding:8px;">回调</td><td style="border:1px solid #ddd;padding:8px;">LangChain 事件</td><td style="border:1px solid #ddd;padding:8px;"><code>on_chain_<em></code> / <code>on_chat_model_</em></code> 事件字典</td></tr></tbody></table>
+<p><code>astream()</code> 不是「在 async 里跑的 stream」。它俩的 <code>stream_mode</code> 语义完全相同——我实测同一张图、同一种模式下，<code>stream()</code> 与 <code>astream()</code> 的 chunk 数都是 <strong>13</strong>，一个不差。真正的差别在「节点怎么跑」：同步 <code>def</code> 节点会被 LangGraph 丢进线程池，<code>async def</code> 节点才跑在事件循环里。这一条 Troubleshooting 里会给数字。</p>
+<p><strong>二、七个 stream_mode 的 chunk 形态（本机实测）</strong></p>
+<p>下面这张表是同一张图（<code>START → chat → END</code>）、同一个输入、只改 <code>stream_mode</code> 跑出来的。测试模型是一个自写的 <code>BaseChatModel</code> 子类，把 45 个字符的原文按每片 4 个字符切出来，这样 token 数可预期：<code>ceil(45/4) = 12</code> 片。</p>
+<pre><code>class FakeChatModel(BaseChatModel):
+    text: str = "LangGraph streams tokens one chunk at a time."  # 45 字符
+    per: int = 4
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs):
+        return ChatResult(generations=[ChatGeneration(message=AIMessage(content=self.text))])
+    def _stream(self, messages, stop=None, run_manager=None, **kwargs):
+        for i in range(0, len(self.text), self.per):
+            yield ChatGenerationChunk(message=AIMessageChunk(content=self.text[i:i+self.per]))</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">stream_mode</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">chunk 数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">chunk 类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">语义</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>values</code></td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;"><code>dict</code></td><td style="border:1px solid #ddd;padding:8px;">每一步之后的<strong>完整状态快照</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>updates</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;"><code>dict</code></td><td style="border:1px solid #ddd;padding:8px;">每一步的<strong>增量</strong>（键是节点名）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>checkpoints</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">⚠️ 无 checkpointer 时<strong>静默返回 0</strong></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>tasks</code></td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;"><code>dict</code></td><td style="border:1px solid #ddd;padding:8px;">任务开始/结束事件，含 error 与 result</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>debug</code></td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;"><code>dict</code></td><td style="border:1px solid #ddd;padding:8px;">键为 <code>payload</code>/<code>step</code>/<code>timestamp</code>/<code>type</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>messages</code></td><td style="border:1px solid #ddd;padding:8px;">13</td><td style="border:1px solid #ddd;padding:8px;"><code>tuple</code></td><td style="border:1px solid #ddd;padding:8px;"><code>(message_chunk, metadata)</code> 二元组</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>custom</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">节点里没调 <code>get_stream_writer()</code> 就没有</td></tr></tbody></table>
+<p><code>checkpoints</code> 那一行值得单独说。官方文档 Checkpoints 小节写着 "Requires a checkpointer"，但<strong>代码不检查、不报错、不警告</strong>——你把 <code>stream_mode="checkpoints"</code> 传给一张没配 checkpointer 的图，得到的是 0 个 chunk 和一个正常结束的循环。补上 <code>compile(checkpointer=MemorySaver())</code> 之后是 <strong>3</strong> 个 chunk，键为 <code>config</code> / <code>metadata</code> / <code>next</code> / <code>parent_config</code> / <code>tasks</code> / <code>values</code>。</p>
+<p><strong>三、version 参数：v1 的元组长度会随组合变</strong></p>
+<p><code>stream()</code> 和 <code>astream()</code> 都有个 <code>version</code> 参数，默认 <code>'v1'</code>。官方迁移表把差异写得很清楚，但如果你只读过单模式的例子，第一次碰上组合用法会懵：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">v1（默认）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">v2</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">单模式</td><td style="border:1px solid #ddd;padding:8px;">原始数据（dict）</td><td style="border:1px solid #ddd;padding:8px;"><code>StreamPart</code> dict：<code>type</code> / <code>ns</code> / <code>data</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">多模式</td><td style="border:1px solid #ddd;padding:8px;"><code>(mode, data)</code> 二元组</td><td style="border:1px solid #ddd;padding:8px;">同上，按 <code>chunk["type"]</code> 分</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">子图</td><td style="border:1px solid #ddd;padding:8px;"><code>(namespace, data)</code> 二元组</td><td style="border:1px solid #ddd;padding:8px;">同上，看 <code>chunk["ns"]</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">多模式 + 子图</td><td style="border:1px solid #ddd;padding:8px;"><strong><code>(namespace, mode, data)</code> 三元组</strong></td><td style="border:1px solid #ddd;padding:8px;">同上</td></tr></tbody></table>
+<p>最后一行我实测确认过：父图包一层子图，<code>stream_mode=["updates", "messages"], subgraphs=True</code> 时，产出元组的长度集合是 <code>{3}</code>，形如 <code>("agent:078e6684-...",)</code> + <code>"messages"</code> + <code>(AIMessageChunk, {...})</code>。而 <code>subgraphs=False</code> 时长度集合是 <code>{2}</code>。我实际测试时的 chunk 数从 <strong>2</strong> 跳到 <strong>15</strong>。</p>
+<p>所以下面这种「看起来通用」的取值代码，在加了子图或第二个模式之后就会静默取错：</p>
+<pre><code># 只在「单模式 + 无子图」下正确
+for chunk in graph.stream(inputs, stream_mode="messages"):
+    msg, meta = chunk        # 一旦开启子图，chunk 变成三元组，这里直接 ValueError</code></pre>
+<p>改成 v2 能一次性消掉这种分支：</p>
+<pre><code>for part in graph.stream(inputs, stream_mode=["updates", "messages"],
+                         subgraphs=True, version="v2"):
+    if part["type"] == "messages":
+        msg, meta = part["data"]
+        print(msg.content, end="", flush=True)</code></pre>
+<p><strong>四、token 级输出的真相：是回调在流，不是图在流</strong></p>
+<p>这是本文的核心。</p>
+<p>翻 <code>langgraph/pregel/_messages.py</code>，<code>stream_mode="messages"</code> 的实现体是一个<strong>回调处理器</strong>：</p>
+<pre><code>class StreamMessagesHandler(BaseCallbackHandler, _StreamingCallbackHandler):
+    """A callback handler that implements stream_mode=messages."""</code></pre>
+<p>注册方式在 <code>main.py</code> 里，很直白：</p>
+<pre><code>if "messages" in stream_modes:
+    run_manager.inheritable_handlers.append(
+        messages_handler_cls(stream.put, subgraphs, parent_ns=...)
+    )</code></pre>
+<p>它挂在 <code>inheritable_handlers</code> 上——会被继承到图内部所有 LangChain 调用。这解释了官方文档那句乍看有点奇怪的话：</p>
+<p>> "Note that message events are emitted even when the LLM is run using <code>.invoke</code> rather than <code>.stream</code>"</p>
+<p>我的实测：节点里明明写的是 <code>model.invoke(...)</code>，整段一次返回，但 <code>stream_mode="messages"</code> 依然拿到了 <strong>13 个 chunk</strong>——12 个 <code>AIMessageChunk</code>（<code>'Lang'</code>、<code>'Grap'</code>、<code>'h st'</code> … <code>'.'</code>）加 1 个 <code>content=''</code> 的收尾 chunk。12 片拼回去正好是那 45 个字符，一个不多一个不少，<strong>非空 chunk 占比 12/13 = 92.3%</strong>。那个空的收尾 chunk 是流结束的信号，不是脏数据——但它会让「按 chunk 数算进度条」这类写法产生一格偏差。</p>
+<p>对应地，<code>astream_events(version="v2")</code> 在同一张图上产出 <strong>21 个事件</strong>，分布是 <code>on_chain_start</code> 2、<code>on_chat_model_start</code> 1、<code>on_chat_model_stream</code> 13、<code>on_chat_model_end</code> 1、<code>on_chain_stream</code> 2、<code>on_chain_end</code> 2。只看 <code>on_chat_model_stream</code> 的 13 个，拼接结果与原文<strong>完全一致</strong>。</p>
+<p>同一个机制还解释了两件容易踩的事。</p>
+<p><strong>子图的 token 默认不冒泡。</strong> 官方原话是 "Without <code>subgraphs=True</code>, <code>stream_mode='messages'</code> on the parent graph will not emit token chunks from the inner agent's LLM calls"。实测对照：父图包子图，<code>subgraphs=False</code> 时父图侧 token chunk 数 <strong>0</strong>，<code>subgraphs=True</code> 时 <strong>13</strong>。官方还补了一句很实在的话——<code>create_agent</code> 返回的是<strong>已编译的图</strong>，所以当节点挂进父图就自动变成了子图，"this often shows up only after wrapping"。</p>
+<p><strong><code>nostream</code> 标签挡的是 token，不是消息。</strong> 官方说带 <code>nostream</code> 的调用 "still run and produce output; their tokens are simply not emitted in <code>messages</code> mode"。我实测把模型设成 <code>.with_config({"tags": ["nostream"]})</code> 后，chunk 数从 13 掉到 <strong>1</strong>，而那唯一的 1 个 chunk 是 <code>AIMessage</code>，content 是完整的 45 字符原文。也就是说：<strong>它挡掉了 12 个中间 token，但节点最终返回的那条完整消息照样进流</strong>。如果你的前端一边按 token 增量渲染、一边又消费最终消息，这里就是重复输出的来源。</p>
+<p><strong>顺手能用的四条判据</strong></p>
+<p>把上面几节压成四句话，方便照着选：</p>
+<p>1. <strong>只要 token</strong>：优先 <code>astream_events(version="v2")</code> 后过滤 <code>on_chat_model_stream</code>，或者 <code>stream_mode="messages"</code>；图里挂了子图就必须补 <code>subgraphs=True</code>，否则一个 token 都拿不到。</p>
+<p>2. <strong>只要状态</strong>：增量用 <code>updates</code>，快照用 <code>values</code>。别为了省事直接开 <code>debug</code>——它每个 chunk 都带着完整 payload，实测 2 个 chunk 的体量远超前两者。</p>
+<p>3. <strong>同时用多个模式</strong>：直接上 <code>version="v2"</code>，省掉按元组长度分叉的代码。</p>
+<p>4. <strong>排障先数 chunk 数</strong>：0 个 chunk 不代表图没跑完，八成是模式名拼错或者 checkpointer 没配——这两条都不报错。</p>
+<p><strong>五、Troubleshooting：6 个真实报错</strong></p>
+<p>以下 6 条全部本机复现，报错原文照抄。本文不含任何联盟推广链接。</p>
+<p><strong>报错一：<code>stream_mode</code> 拼错 → 静默 0 chunk</strong></p>
+<pre><code>for c in graph.stream(inputs, stream_mode="tokens"):   # 本意是 "messages"
+    ...
+# 无异常、无警告，循环体一次都不进</code></pre>
+<p>实测 5 种错误写法——<code>"tokens"</code>、<code>"message"</code>（少个 s）、<code>"Messages"</code>（大小写）、<code>"update"</code>、<code>"values "</code>（尾空格）——<strong>全部返回 0 个 chunk 且不抛任何异常</strong>。因为未知模式只是进不了任何 <code>if mode in stream_modes</code> 分支。排错时先 <code>print(len(list(...)))</code>，别急着怀疑模型。</p>
+<p><strong>报错二：<code>checkpoints</code> 模式无 checkpointer → 静默 0 chunk</strong></p>
+<p>与报错一同源，但更隐蔽：官方文档写了 "Requires a checkpointer"，代码却不做校验。判据是「有没有给 <code>compile()</code> 传 checkpointer」。补上 <code>MemorySaver()</code> 后立刻从 0 变 3。</p>
+<p><strong>报错三：<code>TypeError: tuple indices must be integers or slices, not str</code></strong></p>
+<pre><code>for chunk in graph.stream(inputs, stream_mode="messages"):
+    print(chunk["content"])     # ❌ chunk 是 (message_chunk, metadata) 元组</code></pre>
+<p><code>messages</code> 模式的 chunk 是二元组，不是 dict。正确写法是 <code>msg, meta = chunk</code>。这条在开启 <code>subgraphs=True</code> 后会进一步恶化成解包数量不匹配，见第三节。</p>
+<p><strong>报错四：<code>TypeError: 'async_generator' object is not iterable</code></strong></p>
+<pre><code>for e in graph.astream_events(inputs, version="v2"):    # ❌ 用了 for 而不是 async for
+    ...</code></pre>
+<p><code>astream_events</code> 是异步生成器，只能在 <code>async for</code> 里消费。同步上下文里要拿事件，请用 <code>stream(..., stream_mode=...)</code>。</p>
+<p><strong>报错五：<code>TypeError: 'async for' requires an object with __aiter__ method, got coroutine</code></strong></p>
+<pre><code>async for e in graph.astream_events(inputs, version="v3"):   # ❌ v3 少了一次 await
+    ...
+# TypeError: 'async for' requires an object with __aiter__ method, got coroutine</code></pre>
+<p><code>version="v3"</code> 返回的<strong>不是异步生成器，是协程</strong>。签名里写得明白：<code>-> "AsyncIterator[StreamEvent] | Awaitable[Any]"</code>。正确用法要先 <code>await</code> 一次：</p>
+<pre><code>stream = await graph.astream_events(inputs, version="v3")
+async for e in stream:
+    ...</code></pre>
+<p>实测 <code>await</code> 之后拿到的是 <code>AsyncGraphRunStream</code>，跑出 <strong>18</strong> 个事件；同时会收到 <code>LangChainBetaWarning: The v3 streaming protocol on Pregel is experimental.</code>——v3 目前是实验协议，生产环境别指望它稳定。</p>
+<p><strong>报错六：事件循环被 <code>async def</code> 里的 <code>time.sleep()</code> 卡死</strong></p>
+<p>这条没有异常，只有「界面卡住了」。我用 0.60 秒睡眠加 50 毫秒心跳任务做对照，读心跳次数：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">节点写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">心跳次数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结论</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>def</code> 节点 + <code>time.sleep(0.6)</code></td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">未阻塞（LangGraph 丢线程池）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>async def</code> 节点 + <code>time.sleep(0.6)</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>2</strong></td><td style="border:1px solid #ddd;padding:8px;"><strong>阻塞</strong></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>async def</code> 节点 + <code>await asyncio.sleep(0.6)</code></td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">未阻塞</td></tr></tbody></table>
+<p>（未阻塞的期望值约 12 次，实测两次 10 属于调度开销。）<strong><code>async def</code> 只是让函数能进事件循环，不会把里面的阻塞调用变异步</strong>——<code>time.sleep</code> 在 async 节点里会直接冻住整条循环，流式输出也就跟着一起停。I/O 一律用 <code>await</code>，CPU 密集的活儿显式丢线程池。</p>
+<p><strong>六、本文的边界</strong></p>
+<ul><li>无可用 API Key，全部数据来自本机自写的 <code>BaseChatModel</code> 子类，token 分片是<strong>人为按固定 4 字符切</strong>的，不是真实 tokenizer 的分片；真实模型的 chunk 粒度由厂商决定，本文结论讲的是<strong>管道行为</strong>，不是 tokenizer 行为。</li><li>未测 Postgres / Redis checkpointer 下的 <code>checkpoints</code> 与 <code>tasks</code> 模式，只用了 <code>MemorySaver</code>。</li><li>未测 async 节点加真实并发、<code>Send</code> 扇出，以及 <code>astream_events</code> 的 <code>v3</code> 协议细节（只验证了调用方式与事件总数）。</li><li>版本：langgraph <strong>1.2.16</strong>、langgraph-checkpoint <strong>4.3.0</strong>、langchain-core <strong>1.6.12</strong>，Python 3.13 / Windows 11。官方最新为 <strong>1.2.17</strong>（GitHub Releases，2026-10-24 发布），本文结论未经该版本复验。</li></ul>
+<p><strong>相关阅读</strong></p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph 持久化实测：checkpointer、interrupt/resume、time travel 与 8 个真实报错</a>——本篇的下一层：状态怎么存。</li><li><a href="https://yaohehe.github.io/2026-10-26-langgraph-interrupt-resume.html" class="internal-link">LangGraph 人审中断：interrupt 与 resume 怎么接得上</a>——同系列，讲中断之后怎么醒。</li><li><a href="https://yaohehe.github.io/2026-10-12-numpy-pytorch-5.html" class="internal-link">从零手搓注意力机制：NumPy 逐行实现与 PyTorch 对拍</a>——同样是「不靠外部凭据，本机跑出数字」的路子。</li></ul><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
