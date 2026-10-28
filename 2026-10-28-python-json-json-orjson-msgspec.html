@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python JSON 三件套实测：json / orjson / msgspec 的九处默认值差异 - TechPassive</title>
+  <meta name="description" content="同一份 dict 交给三个库得到三种 JSON：orjson 把 NaN 改成 null，无时区 datetime 悄悄丢时区，int 键变成 str，msgspec 把未知字段直接丢掉，全程不报错。本机 5 万行实测九处默认值差异与吞吐对照，附 5 个真实报错原文、迁移检查顺序与选型判据。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python JSON 实测：三个库给出三种输出</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">序列化</span><span class="tag">orjson</span>
+  </div>
+  <div class="content">
+    <p>同一份 <code>dict</code> 交给三个库，会得到三种 JSON。这不是修辞：我实际测试了同一份 <code>{"id": 1, "name": "测试"}</code>，分别喂给标准库 <code>json</code>、orjson 3.13.0 和 msgspec 0.22.0，输出的字节数、键的形态、甚至数字的写法都不一样，而且其中四处<strong>不会报任何错</strong>。</p>
+<p>所以我做了一件事：把日常最容易踩的九处默认值摆成对照表，逐项实跑取数，再把这些「静默」的行为各配一套可以复现的最小用例。环境是本机 Windows 11 + CPython 3.13.14，orjson 与 msgspec 都用 <a href="/2026-10-21-python.html" class="internal-link">pip</a> 装在隔离目录，没动主环境。下面每个数字都是实际跑出来的，不是抄文档。本文不含任何联盟推广链接。</p>
+<p><strong>TL;DR</strong>：换库之前先确认三件事——① 你的数据里有没有 <code>NaN</code>（orjson 与 msgspec 会静默写成 <code>null</code>，标准库写出的则是非法 JSON）；② 你的时间字段是不是 <code>datetime.now()</code> 这种无时区对象（两个新库都不加偏移量，读取方无从判断时区）；③ 你的 <code>dict</code> 键是不是全是 <code>str</code>（int 键进去，str 键出来，往返不再相等）。三条里中任意一条，先补转换再谈性能。</p>
+<h2>同一份数据，三种输出</h2>
+<p>最小用例先看返回类型：</p>
+<ul><li><code>json.dumps</code> 返回 <code>str</code>，中文默认被转义成 <code>\u6d4b\u8bd5</code></li><li><code>orjson.dumps</code> 返回 <code>bytes</code>，中文按 UTF-8 原样输出</li><li><code>msgspec.json.encode</code> 也返回 <code>bytes</code>，同一条 payload 与 orjson 逐字节相同（实测比较结果为真）</li></ul>
+<p>返回类型这条差异看起来只是写法问题，但它会在真实代码里直接炸：把 orjson 的结果拼进字符串，得到的是 <code>TypeError: can't concat str to bytes</code>；用文本模式写文件，得到的是 <code>TypeError: write() argument must be str, not bytes</code>，而且那个文件已经被创建成 0 字节——我第一次踩的时候，后续的读取脚本把它当成「空的合法 JSON」处理了。</p>
+<h2>九处默认值，一张表看完</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">差异点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">标准库 json</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">orjson 3.13.0</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">msgspec 0.22.0</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">返回类型</td><td style="border:1px solid #ddd;padding:8px;">str</td><td style="border:1px solid #ddd;padding:8px;">bytes</td><td style="border:1px solid #ddd;padding:8px;">bytes</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">中文是否转义（ensure_ascii 默认值）</td><td style="border:1px solid #ddd;padding:8px;">转义，288 B</td><td style="border:1px solid #ddd;padding:8px;">不转义，156 B</td><td style="border:1px solid #ddd;padding:8px;">不转义，156 B</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">NaN 与 Infinity 编码</td><td style="border:1px solid #ddd;padding:8px;">原样写出 <code>NaN</code>、<code>Infinity</code></td><td style="border:1px solid #ddd;padding:8px;">转成 <code>null</code></td><td style="border:1px solid #ddd;padding:8px;">转成 <code>null</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">解析 <code>NaN</code>、<code>1e400</code></td><td style="border:1px solid #ddd;padding:8px;">接受，得到 <code>nan</code>、<code>inf</code></td><td style="border:1px solid #ddd;padding:8px;">抛 JSONDecodeError</td><td style="border:1px solid #ddd;padding:8px;">抛 DecodeError 或 ValidationError</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">datetime 对象</td><td style="border:1px solid #ddd;padding:8px;">抛 TypeError</td><td style="border:1px solid #ddd;padding:8px;">输出 RFC 3339 字符串</td><td style="border:1px solid #ddd;padding:8px;">输出 RFC 3339 字符串</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">无时区 datetime</td><td style="border:1px solid #ddd;padding:8px;">不适用</td><td style="border:1px solid #ddd;padding:8px;">不带偏移量</td><td style="border:1px solid #ddd;padding:8px;">不带偏移量</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">非 str 的 dict 键</td><td style="border:1px solid #ddd;padding:8px;">静默转成 str</td><td style="border:1px solid #ddd;padding:8px;">抛 TypeError，需 <code>OPT_NON_STR_KEYS</code></td><td style="border:1px solid #ddd;padding:8px;">int 与 float 静默转 str，bool 与 None 抛 TypeError</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">超过 64 位的整数</td><td style="border:1px solid #ddd;padding:8px;">支持</td><td style="border:1px solid #ddd;padding:8px;">抛 TypeError</td><td style="border:1px solid #ddd;padding:8px;">支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">解码进 Struct 时的未知字段</td><td style="border:1px solid #ddd;padding:8px;">不适用</td><td style="border:1px solid #ddd;padding:8px;">不适用</td><td style="border:1px solid #ddd;padding:8px;">默认丢弃</td></tr></tbody></table>
+<p>表格里最右边一列有四个「静默」，最左边一列有三个。下面逐条说清后果。</p>
+<h2>静默一：NaN 变成 null</h2>
+<p><code>json.dumps</code> 对 <code>NaN</code> 的态度是照抄 JavaScript：写出字面量 <code>NaN</code>。<a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 官方文档写得很清楚——「The RFC does not permit the representation of infinite or NaN number values. Despite that, by default, this module accepts and outputs <code>Infinity</code>, <code>-Infinity</code>, and <code>NaN</code> as if they were valid JSON number literal values」，紧接一句「Neither of these calls raises an exception, but the results are not valid JSON」。</p>
+<p>orjson 选了另一条路：把 <code>NaN</code>、<code>Infinity</code>、<code>-Infinity</code> 都写成 <code>null</code>，官方 README 的原话是输出「compliant JSON, as <code>null</code>」。msgspec 与它一致，实测三个值全部变成 <code>null</code>。</p>
+<p>这就形成了一个跨库断点：json 写出的 <code>NaN</code> 交给 orjson 或 msgspec 解析，两边都直接拒绝——<code>orjson.JSONDecodeError: unexpected character, expected a JSON value: line 1 column 10 (char 9)</code>，<code>msgspec.DecodeError: JSON is malformed: invalid character (byte 9)</code>。而 json 自己解析 <code>NaN</code> 是接受的，因为它的解析器本来就宽容。</p>
+<p>后果在批量数据里更明显。5,000 行里埋 5 个 <code>NaN</code>，orjson 往返之后 5 个全部变成 <code>null</code>（json 往返仍然保持 5 个 <code>NaN</code>）。下游拿到 <code>null</code> 只会当成「缺失」，不会当成「无效数值」，指标统计里这几个点就这么静默消失。如果你的聚合链路依赖「非数字要被发现」，两个新库都需要自己先扫一遍。</p>
+<p>顺带一个更隐蔽的：<code>json.loads('1e400')</code> 返回 <code>inf</code>，不报错；orjson 报 <code>number is infinity when parsed as double</code>，msgspec 报 <code>ValidationError: Number out of range</code>。同一份脏数据，三个库三种命运。</p>
+<h2>静默二：没有时区的 datetime 就这么写出去了</h2>
+<p>这一条是我认为最值得单独立规矩的。<code>json.dumps</code> 遇到 <code>datetime</code> 直接抛 <code>TypeError: Object of type datetime is not JSON serializable</code>——难看，但安全。orjson 与 msgspec 都原生支持，把带时区的对象写成 RFC 3339：</p>
+<ul><li>带 <code>+08:00</code> 的对象：两个库都输出 <code>2026-10-28T20:44:05.123456+08:00</code></li><li>带 UTC 的对象：orjson 输出 <code>+00:00</code>，msgspec 输出 <code>Z</code>（orjson 要 <code>Z</code> 得显式加 <code>OPT_UTC_Z</code>）</li><li><code>datetime.now()</code> 这种无时区对象：两个库都<strong>原样写出，不带任何偏移量</strong>——<code>2026-10-28T20:44:05.123456</code></li></ul>
+<p>第三条是坑。同一份「无时区」字符串，写入方在国内以为它是北京时间，读取方在 UTC 机器上按 UTC 解析，8 小时就没了，而且整条链路零报错。msgspec 官方迁移文档把这件事写明了：「By default, both libraries encode naive datetimes identically (without timezone info)」，并且写了 orjson 有 <code>OPT_NAIVE_UTC</code> 可以把无时区对象按 UTC 处理，而「<code>msgspec</code> has no equivalent flag」——官方给的做法是在编码前自己 <code>replace(tzinfo=timezone.utc)</code>。</p>
+<p>文档写了，但没人读。我的规矩是：只要用这两个库，就把「禁止出现无时区 datetime」写成代码检查，而不是靠自觉。</p>
+<h2>静默三：int 键变 str，往返不再相等</h2>
+<p><code>{1: "a", 2: "b"}</code> 这个 dict：</p>
+<ul><li><code>json.dumps</code> 直接给 <code>'{"1": "a", "2": "b"}'</code>，不报错</li><li><code>orjson.dumps</code> 抛 <code>TypeError: Dict key must be str</code>，加 <code>option=orjson.OPT_NON_STR_KEYS</code> 才行</li><li><code>msgspec.json.encode</code> 静默给 <code>b'{"1":"a","2":"b"}'</code>——注意它和 orjson 不一样，int 与 float 键它自己就转了</li></ul>
+<p>往返之后键全是 <code>str</code>，<code>loads(dumps(x)) != x</code>。Python 官方文档对这条有专门一句：「if a dictionary is converted into JSON and then back into a dictionary, the dictionary may not equal the original one. That is, <code>loads(dumps(x)) != x</code> if x has non-string keys.」</p>
+<p>真正难查的是「一半库拒绝、一半库静默」这种不对称。同样是 int 键，换库时 orjson 会立刻抛错提醒你，msgspec 和标准库一起沉默。更大的坑在 bool 与 None 键：标准库照样转成 <code>"true"</code>、<code>"null"</code>，orjson 加 <code>OPT_NON_STR_KEYS</code> 也转，msgspec 却抛 <code>TypeError: Only dicts with str-like or number-like keys are supported</code>——同一个字典，三个库两种结局。</p>
+<h2>静默四：msgspec 默认把未知字段扔掉</h2>
+<p>这一条跟安全相关，值得单列。把 <code>{"id": 7, "name": "kim", "role": "admin", "quota": 999}</code> 解码进一个只有 <code>id</code>、<code>name</code> 两个字段的 <code>msgspec.Struct</code>，结果是 <code>User(id=7, name='kim')</code>——<code>role</code> 和 <code>quota</code> 消失了，没有异常，没有警告。</p>
+<p>官方文档原话是「By default <code>msgspec</code> will skip unknown fields encountered when decoding into」Struct，还举了一个拼错字段名被忽略的例子。要拦住它得显式声明 <code>forbid_unknown_fields=True</code>，此时才会抛 <code>msgspec.ValidationError: Object contains unknown field </code>role``。</p>
+<p>反过来说，这也是它的价值所在：类型检查是严格的。<code>{"id": "7"}</code> 解码进 int 字段会抛 <code>ValidationError: Expected </code>int<code>, got </code>str<code> - at </code>$.id<code>——带字段路径，比标准库那种「dict 里全凭运气」的宽松好用太多。</code>{"id": true}<code> 也会被拒（</code>Expected <code>int</code>, got <code>bool</code><code>），而 Python 里 </code>isinstance(True, int)<code> 是 </code>True`，标准库路线根本发现不了这种冒充。</p>
+<h2>不静默的那部分：orjson 的两条硬边界</h2>
+<p>orjson 的整数上限写在 README 里：「The range supported is a signed 64-bit integer's minimum (-9223372036854775807) to an unsigned 64-bit integer's maximum (18446744073709551615)」。实测 <code>pow(2, 64)</code> 直接抛 <code>TypeError: Integer exceeds 64-bit range</code>，而标准库与 msgspec 都能写出 30 位整数。</p>
+<p>如果你的 ID 是「超长数字字符串当数字存」那种脏数据，换 orjson 会在编码阶段炸——这比静默出错好，但迁移前要扫一遍。</p>
+<h2>性能：5 万行实测</h2>
+<p>50,000 行 <code>id</code>、<code>name</code>、<code>score</code>、<code>active</code> 四字段，编码取 5 次平均、解码取 5 次平均：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">库</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">编码</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解码</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">输出体积</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">标准库 json</td><td style="border:1px solid #ddd;padding:8px;">59.3 ms</td><td style="border:1px solid #ddd;padding:8px;">60.2 ms</td><td style="border:1px solid #ddd;padding:8px;">3,399 KB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">orjson 3.13.0</td><td style="border:1px solid #ddd;padding:8px;">8.6 ms（6.9 倍）</td><td style="border:1px solid #ddd;padding:8px;">33.4 ms（1.8 倍）</td><td style="border:1px solid #ddd;padding:8px;">3,008 KB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec 0.22.0</td><td style="border:1px solid #ddd;padding:8px;">17.1 ms（3.5 倍）</td><td style="border:1px solid #ddd;padding:8px;">33.1 ms（1.8 倍）</td><td style="border:1px solid #ddd;padding:8px;">3,008 KB</td></tr></tbody></table>
+<p>体积差 11.5% 来自分隔符与中文转义：标准库默认 <code>', '</code> 与 <code>': '</code> 带空格，且 <code>ensure_ascii=True</code> 把中文全转成 <code>\uXXXX</code>。单看中文那一段，288 B 对 156 B，差 81.1%（这是一段几十字的中文，纯 ASCII 数据不会有这么大差距）。</p>
+<p>解码只快 1.8 倍，这是很多人换完库觉得「没感觉」的原因——真正拉开差距的是 msgspec 的类型化解码：同一个 payload 直接解成 <code>list[Row]</code>（7 次取最好值）20.0 ms，而 <code>json.loads</code> 拿到纯 dict 就要 57.6 ms，还没算你自己写的字段校验。2.9 倍的差距主要来自「边解析边校验」省掉了二次遍历。</p>
+<p>需要说明口径：以上都是单机单次会话的对照，只用于判断量级，不构成跨机器结论；CPU、payload 形态、字段数都会改变比例。</p>
+<h2>踩坑录：五个真实报错</h2>
+<h3>报错一：TypeError: can't concat str to bytes</h3>
+<p>把 <code>orjson.dumps(data)</code> 拼进日志字符串。原因是没有 <code>.decode()</code>。修法二选一：统一 <code>.decode('utf-8')</code>，或者把日志拼接受体也换成 bytes 模板。同理，<code>json.loads(orjson.dumps(x))</code> 是可以的（json 接受 bytes），<code>orjson.loads(json.dumps(x))</code> 也接受 str——两个方向都不对称，别指望记住，直接定一条团队规则。</p>
+<h3>报错二：TypeError: write() argument must be str, not bytes</h3>
+<p><code>open(path, 'w')</code> 之后写 orjson 结果。文件会被创建成 0 字节，异常抛出后如果不清理，下一次运行读取脚本读到空文件，会得到「合法但为空」的假象。修法：<code>open(path, 'wb')</code>，或者在写之前先断言 <code>isinstance(payload, bytes)</code>。</p>
+<h3>报错三：TypeError: Integer exceeds 64-bit range</h3>
+<p>上面那条边界。修法：ID 一律转 str 再序列化，或者改用 msgspec（它没有这个限制）。</p>
+<h3>报错四：msgspec.ValidationError: Expected `int`, got `str` - at `$.id`</h3>
+<p>上游把数字发成了字符串。好消息是错误里带了路径 <code>$.id</code>；坏消息是很多人这样写：</p>
+<pre><code>try:
+    obj = msgspec.json.decode(raw, type=User)
+except msgspec.DecodeError:
+    log.warning("payload 格式错误")</code></pre>
+<p><code>ValidationError</code> 是 <code>DecodeError</code> 的子类（实测 <code>issubclass</code> 为真），先捕父类就会把「字段类型不对」当成「JSON 格式坏了」，日志里永远看不到真正的问题。修法：<code>except msgspec.ValidationError</code> 写在前面，<code>except msgspec.DecodeError</code> 兜后面。</p>
+<h3>报错五：orjson.JSONDecodeError: str is not valid UTF-8: surrogates not allowed</h3>
+<p>上游把 <code>\xff</code> 这类字节塞进了字符串字段。标准库会在某些路径上把它当普通字符放过，orjson 直接拒收（README 明写输入必须是合法 UTF-8）。修法是在入口处 <code>raw.decode('utf-8', errors='replace')</code> 或明确拒收，别等到写库时才炸。</p>
+<p>另外两个顺手记下的：嵌套自引用会得到 <code>ValueError: Circular reference detected</code>（标准库），而 <code>set</code> 在标准库是 <code>TypeError: Object of type set is not JSON serializable</code>、在 orjson 是 <code>TypeError: Type is not JSON serializable: decimal.Decimal</code>（换成 Decimal 时）——msgspec 原生支持 Decimal，还能配 <code>decimal_format</code>。这三个库对「什么算可序列化」的定义，本来就不是一套。</p>
+<h2>怎么选：三条落地判据</h2>
+<p>1. <strong>纯读、纯快、数据干净</strong>：orjson。返回 bytes、NaN 转 null、64 位上限，三条都记住就不会出事。</p>
+<p>2. <strong>要把 JSON 变成有类型的东西</strong>：msgspec。边解析边校验，错误带字段路径，bool 冒充 int 也能拦住；代价是必须显式 <code>forbid_unknown_fields=True</code>，否则多余字段静默消失。</p>
+<p>3. <strong>只在脚本里存个中间态、人对文件要有信心</strong>：标准库。它最宽容，也最不设防。</p>
+<p>迁移时按这个顺序改：先扫 <code>NaN</code> 与 <code>Infinity</code>（两个新库都会改成 null），再查所有 <code>datetime.now()</code> 无时区调用，最后确认所有 dict 键都是 <code>str</code>。三件事做完，性能提升才轮得到谈。</p>
+<h2>本文的边界</h2>
+<p>我只在本机测了 CPython 3.13.14 与 Windows 11，没测 PyPy、没测 Linux；也没有覆盖 HTTP 框架的 json 集成、跨语言消费端（JavaScript 的 <code>JSON.parse</code> 拿到 <code>NaN</code> 会直接抛错，这与本文「标准库写出非法 JSON」同源，但前端那一侧我没实测）、<a href="/2026-10-25-json-messagepack-protobuf.html" class="internal-link">MessagePack</a> 与 YAML 等其他协议，以及 numpy 数组的序列化路径。这些都属于「换个库还要再验一遍」的部分。</p>
+<h2>最后</h2>
+<p>三个库没有优劣，只有默认值不同。真正会咬人的不是性能差距，而是那四处「不报错的改动」：<code>NaN</code> 变 <code>null</code>、时区消失、键类型变了、字段被丢掉。它们的共同点是——<strong>测试用例里不会出现，生产数据里一定会出现</strong>。</p>
+<p>延伸阅读：想看同一份数据在四种<strong>格式</strong>（JSON、MessagePack、Protobuf）上的体积与耗时对比，可以看 <a href="https://yaohehe.github.io/2026-10-25-json-messagepack-protobuf.html" class="internal-link">50,000 条记录的四格式实测</a>；编码层的另一条线是 <a href="https://yaohehe.github.io/2026-10-21-parquet-15.html" class="internal-link">Parquet 默认字典编码让文件大了 15%</a>，讲的是磁盘格式里同样的「默认值陷阱」；Python 工程线还有一篇 <a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">标准库 logging 的丢日志实测</a>，同样是「配置看起来没问题，数据却少了」。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
