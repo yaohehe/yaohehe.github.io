@@ -102,6 +102,9 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>本地 SQLite 下 sync 和 async 打平，都是 3 个 checkpoint。把 <code>put()</code> 拖到 250 毫秒之后，async 只剩 1 个 checkpoint，恢复后副作用比基线多 6 至 7 行 —— 整个第一步和第二步全部重跑；sync 仍保住 3 个，重复 0 至 3 次。</p>
 <p>原因在 <code>main.py</code> 第 3078 行：只有 <code>durability_ == "sync"</code> 时才会执行 <code>loop._put_checkpoint_fut.result()</code> 阻塞等落盘；<code>async</code> 直接把写任务提交到后台线程，图继续往下走。写后端足够快时，后台写在你被杀之前就已经完成，两种模式表现一致；写后端一慢，async 的「在途窗口」就变成真实的数据缺口。</p>
 <p>代价也量了。一次干净跑（5 节点并行图）：本地后端三档分别 0.56 / 0.55 / 0.58 秒，checkpoint 数 1 / 5 / 5；慢速后端 0.81 / 1.33 / 1.90 秒。<strong>sync 多付的就是那几次 put 的延迟</strong>，在 250 毫秒的后端上等于全程慢 1.1 秒，占 1.9 秒的 58%。</p>
+<h2>为什么重复次数是一个区间</h2>
+<p>同样的图、同样的强杀位置，重复次数在 1 到 4 之间漂。原因在 checkpoint 库里其实是<strong>两张表</strong>：<code>checkpoints</code> 存每一步的状态快照，<code>writes</code> 存每个任务已经算完的增量。崩溃时这两张表的进度并不一致 —— 我数了崩溃瞬间的 <code>writes</code> 行数，sync 档 11 行、async 档 14 行，同样的图同样 4 次样本。已经落进 <code>writes</code> 的任务在恢复时会被直接复用、不再重跑；还停在内存里的那些，跟着被中断的超步一起重来。所以「重跑几次」不是常量，取决于强杀那一刻后台写线程跑到哪一行。</p>
+<p>这个不确定性正好说明为什么不能按「发生概率很低」来设计。你能控制的只有两件事：让重跑变得安全（幂等键），或者让重跑的范围变小（把副作用收窄到最后一步）。指望它不发生，等于把对账交给运气。</p>
 <h2>所以它是 at-least-once，不是 exactly-once</h2>
 <p>三条能直接落地的判断：</p>
 <p>1. <strong>别指望图不重跑</strong>。恢复的单位是超步，不是节点，更不是「上次停下的那行代码」。任何有外部后果的动作（扣款、发信、建工单）都必须自带幂等键，由下游去重。</p>
