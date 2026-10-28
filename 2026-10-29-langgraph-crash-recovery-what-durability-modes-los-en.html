@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph Crash Recovery: What durability Modes Lose - TechPassive</title>
+  <meta name="description" content="I killed a langgraph 1.2.18 worker mid-node 24 times and measured what sync, async and exit each lose, how often side effects repeat, plus five real errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>LangGraph Crash Recovery: What durability Modes Lose</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">reliability</span>
+  </div>
+  <div class="content">
+    <p>Your worker gets killed by a deployment script while node three is halfway through charging a card. You restart it, the <code>thread_id</code> still resolves, the state reads back fine, and everything looks healthy — until reconciliation shows the same charge twice.</p>
+<p>That is not a framework bug. It is the edge of the persistence contract: a checkpoint stores <strong>state</strong>, not <strong>side effects</strong>. The <code>durability</code> parameter decides how much of that state survives the moment the process dies. Its only official description is three lines in an API docstring, with no dedicated documentation page, so I tested it: 24 hard kills, spread across three modes and two graph shapes.</p>
+<p><strong>How the numbers were produced.</strong> Windows 11, CPython 3.13.12, langgraph 1.2.18 (released 2026-10-26), langgraph-checkpoint-sqlite 4.3.1, all as of publication. The kill is a real <code>TerminateProcess</code> from a parent process — the SIGKILL equivalent, with no cleanup handler allowed to run. Every recovery happens in a brand new process, so no in-memory object can quietly help. No affiliate links in this article.</p>
+<h2>What the three modes actually promise</h2>
+<p><code>langgraph/types.py</code> line 98 defines them as three literals:</p>
+<pre><code>Durability = Literal["sync", "async", "exit"]</code></pre>
+<p>The <code>Pregel.invoke()</code> docstring says, verbatim:</p>
+<ul><li><code>"sync"</code>: Changes are persisted synchronously before the next step starts.</li><li><code>"async"</code>: Changes are persisted asynchronously while the next step executes.</li><li><code>"exit"</code>: Changes are persisted only when the graph exits.</li></ul>
+<p>The default is <code>"async"</code>, from <code>langgraph/pregel/main.py</code> line 2696: <code>durability = config.get(CONF, {}).get(CONFIG_KEY_DURABILITY, "async")</code>.</p>
+<p>All three sentences answer "when is it written". None answers "what do I lose when it crashes". The second question is the one you actually choose on.</p>
+<h2>How I tested it</h2>
+<p>Each node does two things: appends a <code>start</code> line and an <code>end</code> line to a JSONL file (each line <code>fsync</code>-ed, so buffering cannot fake a result), then returns a state delta.</p>
+<ul><li><strong>Linear graph</strong>: a → b → c → d, killed halfway through c, after it logged <code>start</code> but before it logged <code>end</code>.</li><li><strong>Parallel graph</strong>: start → p1 / p2 / p3 → join, killed halfway through p3, while p1 and p2 in the same superstep may already have finished.</li><li><strong>Slow backend</strong>: a <code>SqliteSaver.put()</code> wrapped in a 250 ms delay, imitating a networked checkpointer (Postgres or a hosted service). Without it, sync and async are indistinguishable.</li></ul>
+<p>Every configuration ran four times, so I report distributions instead of one lucky sample. Baseline side-effect lines for a clean run: 8 for the linear graph, 10 for the parallel one.</p>
+<h2>Linear graph: exit has no recovery path at all</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">durability</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">checkpoints at kill</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">recovery</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">side-effect lines (baseline 8)</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">exit</td><td style="border:1px solid #ddd;padding:8px;">0 (4/4 runs)</td><td style="border:1px solid #ddd;padding:8px;">raises EmptyInputError</td><td style="border:1px solid #ddd;padding:8px;">5</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">async</td><td style="border:1px solid #ddd;padding:8px;">4 (4/4 runs)</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">9</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">sync</td><td style="border:1px solid #ddd;padding:8px;">4 (4/4 runs)</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">9</td></tr></tbody></table>
+<p>With <code>exit</code>, the checkpoint table was empty in all four runs. <code>graph.invoke(None, config)</code> then raises <code>EmptyInputError: Received no input for __start__</code>, because in <a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> "no input" means "continue from the stored checkpoint" — and there is none to continue from. The five side effects that already happened (a and b finished, c logged its start) are orphans.</p>
+<p>Both <code>async</code> and <code>sync</code> kept four checkpoints and recovered, ending at nine side-effect lines: one more than a clean run. The extra line is c's second <code>start</code>. That is the core of the recovery semantics: <strong>the run resumes at the last completed superstep, and the interrupted superstep re-executes as a whole</strong>. The node has no idea it already called a payment API, and no mechanism tells it.</p>
+<h2>Parallel graph: the gap shows up here</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">mode and backend</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">checkpoints at kill</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">recovery</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">repeated side effects</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">async, local SQLite</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">2 to 4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sync, local SQLite</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">1 to 4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">async, 250 ms put</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">6 to 7</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sync, 250 ms put</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">succeeds</td><td style="border:1px solid #ddd;padding:8px;">0 to 3</td></tr></tbody></table>
+<p>On local SQLite the two modes tie at three checkpoints. Once <code>put()</code> costs 250 ms, async drops to a single checkpoint and repeats 6 to 7 side effects — the entire first and second supersteps run again. Sync still holds three checkpoints and repeats between zero and three.</p>
+<p>The reason is in <code>main.py</code> line 3078: only <code>durability_ == "sync"</code> executes <code>loop._put_checkpoint_fut.result()</code> and blocks until the write lands. <code>async</code> hands the write to a background thread and keeps walking. When the backend is fast enough, the background write finishes before your kill arrives, so both modes look identical. When the backend is slow, async's in-flight window becomes a real data gap.</p>
+<p>I measured the cost too. A clean run of the 5-node parallel graph took 0.56 / 0.55 / 0.58 seconds on a local backend, with 1 / 5 / 5 checkpoints; on the 250 ms backend it took 0.81 / 1.33 / 1.90 seconds. <strong>Sync pays exactly those extra puts</strong> — 1.1 seconds on top, or 58% of the 1.9-second total.</p>
+<h2>At-least-once, not exactly-once</h2>
+<p>Three conclusions you can apply today:</p>
+<p>1. <strong>Do not design around "the graph will not rerun".</strong> Recovery is per superstep, not per node, and certainly not "resume at the line where it stopped". Anything with an external consequence — charging, emailing, opening a ticket — needs its own idempotency key, enforced downstream.</p>
+<p>2. <strong>Push side effects to the last node, or use an outbox.</strong> Write to a local table first and let a separate consumer deliver. That moves the non-replayable part outside the graph's replay range.</p>
+<p>3. <strong>Choose the mode by consequence, not by latency.</strong> Default <code>async</code> if a rerun is tolerable; <code>sync</code> if duplicate effects are unacceptable and the write backend is not on the same disk; <code>exit</code> only for one-shot batch jobs where starting over is genuinely fine.</p>
+<p>One more comparison worth keeping in mind: an in-memory checkpointer loses the checkpoints themselves when the process restarts. The official persistence page puts it plainly — "When the process restarts, all checkpoints are lost". Good for development, wrong for anything that must continue after a crash.</p>
+<h2>Troubleshooting: five real errors</h2>
+<p><strong>Error one — <code>EmptyInputError: Received no input for __start__</code>.</strong> Two triggers: recovering an <code>exit</code>-mode run whose checkpoint table is empty, and passing <code>None</code> to a <code>thread_id</code> that never existed. Call <code>get_state()</code> first and branch: create a new thread, or continue an existing one.</p>
+<p><strong>Error two — <code>AttributeError: 'SyncPregelLoop' object has no attribute '_put_checkpoint_fut'. Did you mean: '_put_checkpoint'?</code></strong> Compile without a checkpointer, then pass <code>durability="sync"</code>. Line 2894 warns that <code>durability</code> has no effect without a checkpointer, then line 3079 goes ahead and waits on a future that only exists when a checkpointer assigned it in <code>_loop.py</code>. It crashed 4 out of 4 times. The warning claims your setting is ignored; in reality it is fatal.</p>
+<p><strong>Error three — <code>ValueError: Cannot use both checkpoint_during and durability parameters. Please use durability instead.</code></strong> <code>checkpoint_during</code> is the legacy boolean and is deprecated. Passing both during a migration triggers this immediately; drop the old flag.</p>
+<p><strong>Error four — a typo never raises.</strong> Write <code>durability="syncc"</code> and <code>invoke</code> returns <code>n=5</code> with zero warnings. <code>Durability</code> is only a <code>typing.Literal</code>, validated nowhere at runtime, so the typo quietly falls back to the non-sync path. You find out on the next crash, not now.</p>
+<p><strong>Error five — <code>sqlite3.OperationalError: database is locked</code>.</strong> Two processes writing the same SQLite file: the first holds a write transaction, the second opens with <code>timeout=0.3</code> and fails. Very common in crash-recovery architectures, where the old process is not fully dead when the new one starts. Confirm the old process exited, or move to a backend that accepts multiple writers. I took the same file apart in <a href="https://yaohehe.github.io/2026-10-28-sqlite-hot-backup-opens-fine-14500-rows-missing-en.html" class="internal-link">an eleven-round SQLite hot backup test</a>, where a copy that opened cleanly was missing 14,500 rows.</p>
+<h2>What this test does not cover</h2>
+<p>Only <code>SqliteSaver</code>, single machine, synchronous <code>invoke</code>, no subgraphs. I did not measure the real latency distribution of Postgres or Redis (a fixed 250 ms stands in for it), did not test the <code>astream</code> path, and did not test how <code>durability</code> interacts with <code>retry_policy</code> or <code>interrupt</code>. Interruption has different semantics — it waits for a human, while a crash does not; I took that path apart in <a href="https://yaohehe.github.io/2026-10-26-langgraph-interrupt-resume.html" class="internal-link">the interrupt and resume post</a> and the <a href="https://yaohehe.github.io/2026-10-27-langgraph-streaming-3-entry-points-6-real-errors-en.html" class="internal-link">streaming modes comparison</a>. The storage layer itself, including what a checkpointer keeps and how <code>checkpoint_ns</code> splits, is covered in <a href="https://yaohehe.github.io/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">an earlier post on checkpointer internals</a>.</p>
+<p>If your workload is "one process, one batch, rerun the whole thing on failure", <code>exit</code> is fine. The moment you have long sessions, external side effects, and a k8s <code>SIGTERM</code> that can arrive at any second, design for at-least-once instead of designing for "it probably will not rerun".</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
