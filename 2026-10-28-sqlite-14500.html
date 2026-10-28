@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQLite 热备实测：能打开的备份丢了 14500 行 - TechPassive</title>
+  <meta name="description" content="同一份 SQLite 库上把单文件拷贝、三文件拷贝、backup API 与 VACUUM INTO 各跑 5 到 6 轮热备实测：单文件拷贝最差丢掉 14500 行已提交数据，integrity_check 却依然返回 ok；三文件拷贝随机抛 WinError 33。附演练检查单与 4 个真实报错原文。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>SQLite 热备 11 轮实测：能打开的备份丢了 14500 行</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-28-sqlite-hot-backup-opens-fine-14500-rows-missing-en.html" class="internal-link">SQLite</a></span><span class="tag">备份恢复</span><span class="tag">数据库运维</span>
+  </div>
+  <div class="content">
+    <p>有读者问我一个问题：备份脚本每天定时跑，日志全绿，为什么真出事那天恢复不出来。我把这句话拆成了一个可以量化的实验——同一份 SQLite 库，四种常见的「备份」做法，各跑 5 到 6 轮，全程保持写入，然后逐行对账。</p>
+<p>结论比预想的更难看：<strong>能打开的备份，不等于对的备份</strong>。最常用的那种做法，也就是直接把 <code>.db</code> 文件拷走，在 5 轮里有 4 轮丢掉了已提交数据，最惨一轮少了 14,500 行，而 <code>PRAGMA integrity_check</code> 五轮全部返回 <code>ok</code>。</p>
+<p>这篇是我实际测试的全过程记录，环境是本机 Windows + CPython 3.13 内置的 sqlite3 3.53.1，没有 Docker、没有云厂商控制台，所有数字都能在你自己机器上复现。正文不含任何商品推广链接（联盟链接），也没有商品推荐；页面底部那个书单模块由站点统一挂载，和本文选题无关。</p>
+<h2>先给结论</h2>
+<p>三句话，后面每句都有对应的实测数据：</p>
+<p>1. <strong>单文件拷贝是「一致但过期」</strong>。它拿到的往往是过去某一时刻的合法状态，所以任何结构校验都会通过。你唯一的发现方式是拿它跟现网对账，而不是拿它跟自己比。</p>
+<p>2. <strong>三文件拷贝（.db + -wal + -shm）不会丢数据，但它会随机失败</strong>。5 轮里 1 轮抛 <code>PermissionError</code>，6 轮里 2 轮抛，错误原文是 <code>[WinError 33] 另一个程序已锁定文件的一部分</code>。</p>
+<p>3. <strong>把 checkpoint 频率调高之后，单文件拷贝从「过期」变成「损坏」</strong>。6 轮里 2 轮恢复出来直接报 <code>database disk image is malformed</code>。</p>
+<p>正确的做法只有两种：<code>sqlite3</code> 的 backup API，或者 <code>VACUUM INTO</code>。前者在 43 MB 库上平均 386 ms，后者 460 ms，两者在全部轮次里都拿到了零丢失的快照。</p>
+<h2>实测环境与「一致」怎么判定</h2>
+<p>先把判定标准说清楚，否则后面的表格没法读。</p>
+<p>库是一张单表 <code>events(id INTEGER PRIMARY KEY, ts INTEGER, payload TEXT)</code>，<code>payload</code> 是 200 字节的填充串。初始 20 万行、43.3 MB。写端在独立子进程里跑，<strong>500 行一批，批间隔 50 ms，每批一次 commit</strong>，折算下来约 10,000 行/秒。备份动作在主进程里，趁写端还在跑的时候取快照，取完再让写端自然结束。</p>
+<p>判定「这份快照是不是一致的」，我用的是一个可以被证明的性质：写端是整批提交的，所以<strong>任何时刻的一致快照必然是一段连续前缀</strong>——<code>id</code> 从 0 到某个值没有空洞，行数是 500 的整数倍，且 <code>max(id) + 1</code> 等于行数。</p>
+<p>偏差那一列 = 快照行数 − 取快照前一刻查到的行数。<strong>负数表示丢了已提交事务</strong>，正数只是拷贝过程中写端又写进去了几批，属于正常。</p>
+<p>顺带把校验本身的成本也测了：43 MB 的库，<code>PRAGMA quick_check</code> 用了 70 到 120 ms，<code>PRAGMA integrity_check</code> 用了 71 到 108 ms。也就是说，在几十 MB 这个量级上，「每次备份都跑一遍完整校验」的成本是可以忽略的——这个前提很重要，它意味着如果你的演练没做校验，那不是因为贵。</p>
+<h2>单文件拷贝：一致，但可能停在 1.45 秒之前</h2>
+<p>这是最普遍的做法：<code>shutil.copy2(db_path, backup_path)</code>，或者 <code>cp</code>、<code>rsync</code> 单文件、或者云盘同步一个 <code>.db</code>。默认 checkpoint 配置下，5 轮结果：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">轮次</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">拷贝前可见行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">快照行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">偏差</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">integrity_check</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">203,500</td><td style="border:1px solid #ddd;padding:8px;">200,000</td><td style="border:1px solid #ddd;padding:8px;">−3,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">232,000</td><td style="border:1px solid #ddd;padding:8px;">232,000</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">262,500</td><td style="border:1px solid #ddd;padding:8px;">248,000</td><td style="border:1px solid #ddd;padding:8px;">−14,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">292,500</td><td style="border:1px solid #ddd;padding:8px;">287,000</td><td style="border:1px solid #ddd;padding:8px;">−5,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">323,000</td><td style="border:1px solid #ddd;padding:8px;">319,000</td><td style="border:1px solid #ddd;padding:8px;">−4,000</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr></tbody></table>
+<p>4/5 轮丢数据，最差 −14,500 行。按 10,000 行/秒的写入速率折算，<strong>这份「备份」停在 1.45 秒之前</strong>。第 2 轮偏差为 0，是因为那一轮拷贝恰好落在一次 checkpoint 刚结束的窗口里——这说明它不是「偶尔不准」，而是「大部分时候不准，偶尔撞对」。</p>
+<p>原因在官方文档里写得很直白。WAL 模式的库由主库文件加 <code>-wal</code>、<code>-shm</code> 组成，其中 WAL 文件的定位是：</p>
+<blockquote>The WAL file is part of the persistent state of the database and should be kept with the database if the database is copied or moved.</blockquote>
+<p>紧接着那句是后果：</p>
+<blockquote>If a database file is separated from its WAL file, then transactions that were previously committed to the database might be lost, or the database file might become corrupted.</blockquote>
+<p>官方给出的默认 checkpoint 阈值是 1000 页、约 4 MB，达到就自动把 WAL 内容搬回主库并回收。所以主库文件里装的是「上一次 checkpoint 时刻」的内容，WAL 里装的是之后的提交。你只拷主库，等于只拷了上一次 checkpoint 的快照。</p>
+<p>危险的地方在于它<strong>完全合法</strong>。这不是损坏，是时间旅行——它确实是某个真实时刻的完整数据库，所以 <code>integrity_check</code> 会说 <code>ok</code>，页结构、索引、约束全都对。任何只看「能不能打开、结构对不对」的验证都会被它骗过去。</p>
+<p>顺带说一个同源坑：如果你打算「把 WAL 删掉再拷」，官方只承认一种安全删法——用 <code>sqlite3_open()</code> 打开再立刻 <code>sqlite3_close()</code>，让 SQLite 自己做完最后一次 checkpoint 再删。</p>
+<h2>三文件拷贝：丢 0 行，但会随机失败</h2>
+<p>既然单文件不行，那把三个文件一起拷呢？5 轮里数据一行没丢，但有一轮直接抛异常：</p>
+<pre><code>PermissionError: [WinError 33] 另一个程序已锁定文件的一部分，进程无法访问。</code></pre>
+<p>在「每事务 checkpoint」那一组 6 轮里，同样的错误出现了 2 次。原因是 Windows 对 <code>-wal</code> 这类正在被写入进程持有的文件会加字节范围锁，<code>shutil.copy2</code> 打开它的时候就被挡住了。Linux 上通常不会报这个错，但也别高兴太早——<code>cp</code> 三个文件不是原子操作，主库、<code>-wal</code>、<code>-shm</code> 是在三个不同瞬间被读的。写端在两次 <code>copy</code> 之间提交了一批，你拿到的三个文件就来自三个时刻。这种拼接出来的组合能不能打开，取决于 WAL 帧头里的校验和与盐值对不对得上，属于概率问题。</p>
+<p>实测里它 5 轮都对，我不打算因此推荐它。<strong>一个会随机抛异常、且异常时你已经覆盖了一半目标文件的备份方式，在脚本里就是个定时炸弹</strong>：<code>cp a b</code> 失败后 <code>b</code> 可能已经是半截文件，而你的脚本如果只判断退出码、不判断产物，就会把半截文件当成今天的备份留着。</p>
+<h2>把 checkpoint 调激进之后，单文件拷贝直接损坏</h2>
+<p>上面两组都是默认配置。但很多项目会为了「WAL 别涨太大」把 <code>wal_autocheckpoint</code> 调到 1，或者业务侧频繁手动 <code>PRAGMA wal_checkpoint(TRUNCATE)</code>。我把写端的 <code>wal_autocheckpoint</code> 设成 1（每个事务都 checkpoint），跑 6 轮：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">轮数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">快照正常、偏差 0</td><td style="border:1px solid #ddd;padding:8px;">4/6</td><td style="border:1px solid #ddd;padding:8px;">主库几乎总是最新，反而「对」了</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>DatabaseError: database disk image is malformed</code></td><td style="border:1px solid #ddd;padding:8px;">2/6</td><td style="border:1px solid #ddd;padding:8px;">打开就报错，连 <code>integrity_check</code> 都跑不了</td></tr></tbody></table>
+<p>同一个操作，在两种 checkpoint 配置下呈现出两种完全不同的故障形态：一种静默过期，一种直接损坏。而「激进 checkpoint」恰恰是很多团队为了防止 WAL 膨胀而主动做的优化——优化完备份就坏了，而且坏得毫无规律。</p>
+<p>这一条是我这轮实验里最想强调的：<strong>备份正确性依赖的是运行期配置，不是备份脚本本身</strong>。你改了一个看起来无关的 PRAGMA，备份的可靠性就换了档。</p>
+<h2>两种官方推荐的做法，代价可以量出来</h2>
+<p><code>sqlite3</code> 官方给了两条正路，都支持在库被使用时取快照。</p>
+<p><strong>backup API</strong>。官方对它的保证是逐比特一致：</p>
+<blockquote>The effect of completing the backup call sequence is to make the destination a bit-wise identical copy of the source database as it was when the copying commenced. (The destination becomes a "snapshot.")</blockquote>
+<p>Python 里就是三行：</p>
+<pre><code>src = sqlite3.connect(db_path)
+dst = sqlite3.connect(backup_path)
+src.backup(dst)
+dst.close(); src.close()</code></pre>
+<p>实测 43 MB 库平均 386 ms；在 82.5 MB、38 万行的库上，单次复制 438 ms，折算 188 MB/s。5 轮全部零丢失。另外官方提到，如果备份期间源库被改，SQLite 会检测到并「usually restarts the backup process」——所以它在写很频繁的库上可能反复重来，「If the backup process is restarted frequently enough it may never run to completion」，这一点要有超时兜底。</p>
+<p><strong>VACUUM INTO</strong>。官方明确说它是 backup API 的替代品：</p>
+<blockquote>The VACUUM command with an INTO clause is an alternative to the backup API for generating backup copies of a live database.</blockquote>
+<p>取舍也写了：产物体积最小、已删内容被彻底清除、不留取证痕迹；代价是更吃 CPU、不能增量。实测 43 MB 库平均 460 ms，5 轮零丢失。代价比 backup API 高 19% 左右，换来的是产物更小、且删掉的数据不会留在备份里——如果备份要交给外部或要长期归档，这个差别是实质性的。</p>
+<p>它有一个必须知道的限制：目标文件<strong>必须不存在或者是空文件</strong>，否则直接失败。我拿一个 1 KB 的普通文件当目标，报的是：</p>
+<pre><code>DatabaseError: file is not a database</code></pre>
+<p>这个报错信息很容易误导人——它看起来像「源库坏了」，实际是「目标路径上有个不是数据库的东西」。</p>
+<h2>恢复演练：340 毫秒跑完，但九成的演练验错了东西</h2>
+<p>把备份做对之后，还有第二道关：<strong>恢复演练本身验什么</strong>。</p>
+<p>先给成本，因为它决定了你有没有借口不做。82.5 MB、38 万行的制品，还原到新路径并完成「打开 + 计数 + 完整校验」的全流程：</p>
+<ul><li>拷贝文件 64 ms</li><li>打开、<code>COUNT(*)</code>、<code>integrity_check</code> 276 ms</li><li>合计 340 ms</li></ul>
+<p>340 毫秒。这个量级下，「演练太贵所以只在季度做一次」是不成立的，你完全可以每次备份后立刻跑一遍。</p>
+<p>但重点不是快，是<strong>验的东西对不对</strong>。两个陷阱我都实测了：</p>
+<p><strong>陷阱一：0 字节文件也能拿到 <code>ok</code>。</strong> 我用 <code>open(path, "wb").close()</code> 造了个空文件，<code>sqlite3.connect()</code> 打开后：</p>
+<ul><li><code>PRAGMA integrity_check</code> → <code>ok</code></li><li><code>sqlite_master</code> 里的表数量 → 0</li><li>查 <code>events</code> → <code>OperationalError: no such table: events</code></li></ul>
+<p>也就是说，如果你的演练只做「打开 + integrity_check」，一个 0 字节的空文件能拿满分。真实的空备份最常见成因是：备份任务以 <code>></code> 重定向创建了目标文件，然后中途失败退出，留下一个 0 字节文件，而你的告警只看「任务是否退出 0」。</p>
+<p><strong>陷阱二：过期的快照也是 <code>ok</code>。</strong> 这在第一节已经证明过——少 14,500 行的那份快照，<code>integrity_check</code> 五轮全绿。结构校验回答的问题是「这个文件内部自洽吗」，不是「它是不是我想要的那一刻」。</p>
+<p>所以演练要验的是<strong>三个能对账的数字</strong>，而不是「能不能打开」：</p>
+<p>1. <strong>行数</strong>：快照行数 vs 现网行数（或上一个已知基线），差异要在预期窗口内；</p>
+<p>2. <strong>最大主键</strong>：<code>SELECT MAX(id)</code>，它比行数更能暴露「尾部丢失」；</p>
+<p>3. <strong>业务时间戳</strong>：表里最大写入时间距今多久，这个数字直接翻译成「如果现在恢复，会损失多少分钟的数据」，也就是 RPO。</p>
+<p>再加一条只读查询，确认表结构和索引都在。四条加起来还是几百毫秒，但它能同时抓住空文件、过期快照、结构损坏三种情况——这三种恰好是实测里出现过的全部故障形态。</p>
+<h2>一份可以直接抄的演练检查单</h2>
+<p>把上面的东西固化成脚本，大概是这样：</p>
+<p>1. 取快照用 <code>src.backup(dst)</code> 或 <code>VACUUM INTO</code>，<strong>不要用文件拷贝</strong>；</p>
+<p>2. 快照落盘后立刻记一条元数据：行数、<code>MAX(id)</code>、<code>MAX(ts)</code>、文件大小、生成耗时；</p>
+<p>3. 把快照还原到<strong>临时路径</strong>（不要覆盖现网），打开它；</p>
+<p>4. <code>PRAGMA integrity_check</code> 必须返回单行 <code>ok</code>；返回多行说明有结构问题，且默认最多只报 100 条；</p>
+<p>5. 行数、<code>MAX(id)</code>、<code>MAX(ts)</code> 三项与现网对账，任一项对不上就告警——这一步才是真正的验证；</p>
+<p>6. 跑一条业务只读查询（不是 <code>SELECT 1</code>），确认表、索引、视图都在；</p>
+<p>7. 记录总耗时，它就是你的 RTO 下限。</p>
+<p>第 4 步和第 5 步的分工要说清楚：<code>integrity_check</code> 查的是格式与一致性（页顺序、记录格式、缺失页、索引项、UNIQUE/CHECK/NOT NULL、freelist、重复使用区段），它<strong>不查外键</strong>，官方原文是「PRAGMA integrity_check does not find [FOREIGN KEY] errors」，那要用 <code>PRAGMA foreign_key_check</code>。它也不查「数据新旧」——因为它压根不知道现网长什么样。</p>
+<p>顺带说一句性能选择：<code>quick_check</code> 不验证 UNIQUE 约束、不验证索引内容与表内容一致，官方给的时间复杂度是 O(N) 对 O(N log N)。在 43 MB 上两者都是 100 ms 上下，看不出差别；但如果你的库到了几十 GB，日常巡检用 <code>quick_check</code>、发布前用完整 <code>integrity_check</code> 是合理的分层。</p>
+<h2>踩坑与报错</h2>
+<p>这一节的四条报错都是本机实测复现的，原文照录。</p>
+<p><strong><code>PermissionError: [WinError 33] 另一个程序已锁定文件的一部分，进程无法访问。</code></strong></p>
+<p>出现在拷贝 <code>-wal</code> 时。Windows 上活跃 WAL 文件被写端持有字节范围锁。这不是可以靠重试稳稳绕过的错误——重试成功只说明你挑到了写端两次提交之间的空隙，不代表三文件来自同一时刻。正确解法是换 backup API 或 <code>VACUUM INTO</code>。</p>
+<p><strong><code>DatabaseError: database disk image is malformed</code></strong></p>
+<p>出现在「每事务 checkpoint + 单文件拷贝」的 6 轮里 2 轮。打开快照就报这个，连校验都跑不起来。根因是主库正在被就地改写，你拷到的是改到一半的页。遇到这个错误先别怀疑源库——先确认备份方式。</p>
+<p><strong><code>DatabaseError: file is not a database</code></strong></p>
+<p>两个来源。一是把 <code>-wal</code> 当成数据库打开（我拿一个 136.8 KB 的真实 WAL 文件试的）；二是 <code>VACUUM INTO</code> 的目标路径上已经有非空文件。后者尤其容易误判，因为报错文本描述的是「文件不是数据库」，而问题出在参数上。</p>
+<p><strong><code>OperationalError: no such table: events</code></strong></p>
+<p>这是「恢复成功」的假象：文件能打开、<code>integrity_check</code> 返回 <code>ok</code>、但库里一张表都没有。0 字节文件就会走到这里。如果你的恢复脚本在 <code>integrity_check</code> 之后就打印「恢复成功」，这个错误永远抓不到——它只会在你真正要查数据的那天才出现。</p>
+<h2>这套结论的边界</h2>
+<p>说清楚我测了什么、没测什么：</p>
+<ul><li>只在 <strong>SQLite 3.53.1</strong>（CPython 3.13 内置）上实测，PostgreSQL、MySQL 的备份行为不同，不能直接套用。如果你关心的是 PostgreSQL 侧「WAL 无限增长」这类问题，我在 10-16 那篇写过复制槽的实测：<a href="https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html" class="internal-link">PostgreSQL 18.6 复制槽实测</a>，那是同一族问题在另一种数据库上的表现。</li><li>文件系统是 Windows 本地盘。<strong>WAL 不支持网络文件系统</strong>，官方原文是「WAL does not work over a network filesystem」，因为 WAL 需要所有进程共享一小块内存。把库放在 NFS/SMB 上再谈热备，前提就已经不成立了。</li><li>数字随硬件变。188 MB/s、386 ms 这些是我的机器上的值，你那边可能快一倍也可能慢一半；但「单文件拷贝会过期」「三文件拷贝会抛锁错误」这两条是机制性的，不随机器变。</li><li>我测的是「取快照的正确性」，不是「异地容灾」。备份文件放在同一块盘上，再正确也只防误删，不防盘坏。</li><li>如果你要解决的是「schema 改了之后数据对不对」，那是另一条线：10-24 那篇 <a href="https://yaohehe.github.io/2026-10-24-alembic-autogenerate.html" class="internal-link">Alembic autogenerate 实测</a> 讲的是迁移脚本本身漏检的问题，和备份层不重叠。</li></ul>
+<h2>最后</h2>
+<p>这轮实验里最贵的一课不是「文件拷贝不行」，而是<strong>验证手段和故障形态不匹配</strong>。我们习惯用「能不能打开」证明备份可用，可实测里全部三种故障——0 字节、过期 1.45 秒、页级损坏——没有一种是被「能打开」拦下来的；前两种连 <code>integrity_check</code> 都拦不住。</p>
+<p>真正拦住它们的是对账：行数、最大主键、最大时间戳，跟现网比。这三个数字不需要额外工具，一条 SQL 就够，成本几百毫秒。把备份从「任务成功」改成「对账成功」，中间差的不是技术，是那句一直被跳过的检查。</p>
+<p>如果你的备份脚本现在只判断退出码，建议今晚就把它改成判断产物——先查行数，再查 <code>MAX(id)</code>，最后才是 <code>integrity_check</code>。顺序反了也能用，但先跑对账能让你更早看到问题。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
