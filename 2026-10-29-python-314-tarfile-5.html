@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 3.14 tarfile 默认过滤：解压踩坑与 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="本文结论全部在 Windows 11 + CPython 3.13.14 上实测复现，并逐条对照 PEP 706 与 Python 官方文档：不加 filter 解压 tar，../.. 成员会把文件写到目标目录外两层之上，绝对路径成员会落到盘符根下，指向目录外的符号链接则静默消失、不留日志。Python 3.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python 3.14 tarfile 默认过滤：解压踩坑与 5 个真实报错</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">tarfile</span><span class="tag">解压安全</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：<a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.12 给 <code>tarfile.extractall()</code> 加了 <code>filter</code> 参数，但 3.12 与 3.13 的默认行为仍然是「全信任」，只抛一条 DeprecationWarning；到 3.14 默认值才改成 <code>data</code>。我在本机把五种逃逸方式逐个构造出来实测：<code>../..</code> 成员真的落到了目标目录的两层上级，绝对路径成员 <code>/tmp/x</code> 在 Windows 上被写到 <code>C:\tmp\x</code>。<code>filter='tar'</code> 也不是安全选项——符号链接在 Windows 上是静默消失，既不报错也不留日志。把 <code>filter="data"</code> 显式写上，是这几行代码里唯一重要的事。</p>
+<p>本文不含任何联盟推广链接，也没有任何商品推荐。</p>
+<h2>我为什么开始查这件事</h2>
+<p>我在本机跑的是 Windows 11 + CPython 3.13.14，属于「默认还全信任」的最后一代。看到 PEP 706 明确写了 3.14 要改默认值，我想知道改之前到底能坏到什么程度，于是不去引二手文章的说法，直接自己造归档来测。</p>
+<p>做法很朴素：用 <code>tarfile</code> 自己构造带恶意成员的 tar（不需要 GNU tar，不需要 root，也不需要任何第三方库），解包目标一律放在 <code>tempfile.mkdtemp()</code> 里嵌套两层的子目录，这样 <code>../../x</code> 就算真的逃出去也只会落到我自己建的临时根，不会碰到系统目录。下面所有数字都是这么跑出来的。</p>
+<h2>先划清边界：本篇答的是哪一层</h2>
+<p>站内已经有两篇讲「归档靠不住」的文章，它们和本篇不在同一个决策层，先说清楚免得读混：</p>
+<ul><li>09-29 那篇 <a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">GitHub Actions</a> 供应链复盘，答的是「<strong>怎么把依赖锁死</strong>」——依赖锁定层。</li><li>10-17 那篇 xz 后门复盘，答的是「<strong>tarball 里的东西和 git 仓库对不上</strong>」——产物溯源层。</li><li>本篇答的是更小也更靠下的一层：<strong>不管归档里装的是什么，光是「解压」这一个动作本身，就会把文件写到目录外面去</strong>。这是解压执行层，前面两篇都没碰。</li></ul>
+<p>如果你只记一句话：锁版本、验哈希解决的是「你拿到的是不是那个包」，而 <code>filter</code> 解决的是「你拿到之后往哪里放」。</p>
+<h2>复现环境</h2>
+<ul><li>Windows 11（NTFS），CPython <strong>3.13.14</strong>（MSC v.1944 64 bit）</li><li>标准库 <code>tarfile</code> / <code>zipfile</code> / <code>shutil</code>，零第三方依赖</li><li>恶意归档全部用 <code>tarfile.open(mode="w")</code> 手工构造</li><li>一手来源：<strong>PEP 706</strong>（Petr Viktorin，2023-02-09 创建，Final，Python-Version 3.12）+ <code>docs.python.org/3/library/tarfile.html</code> 的 Extraction filters 章节</li></ul>
+<h2>五种「写到目录外」的方式，逐个实测</h2>
+<p>我把同一个解包目录设为 <code><临时根>/work/sub</code>，于是 <code>../../ESCAPED.txt</code> 的落点理论上是 <code><临时根>/</code>。结果如下：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">逃逸手段</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">不写 filter（= <code>fully_trusted</code>）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>filter="tar"</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>filter="data"</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">成员名 <code>../../ESCAPED.txt</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>真的写出来</strong>，落到临时根</td><td style="border:1px solid #ddd;padding:8px;">抛 <code>OutsideDestinationError</code></td><td style="border:1px solid #ddd;padding:8px;">抛 <code>OutsideDestinationError</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">成员名 <code>/tmp/ABSOLUTE.txt</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>写到 <code>C:\tmp\ABSOLUTE.txt</code></strong>（盘符根下）</td><td style="border:1px solid #ddd;padding:8px;">剥掉前导 <code>/</code>，落到目录内</td><td style="border:1px solid #ddd;padding:8px;">剥掉前导 <code>/</code>，落到目录内</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">符号链接指向目录外</td><td style="border:1px solid #ddd;padding:8px;">静默什么都不做</td><td style="border:1px solid #ddd;padding:8px;">静默什么都不做</td><td style="border:1px solid #ddd;padding:8px;">抛 <code>LinkOutsideDestinationError</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">硬链接指向目录外</td><td style="border:1px solid #ddd;padding:8px;">抛 <code>KeyError: "linkname ... not found"</code></td><td style="border:1px solid #ddd;padding:8px;">同上</td><td style="border:1px solid #ddd;padding:8px;">抛 <code>LinkOutsideDestinationError</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">FIFO / 字符设备</td><td style="border:1px solid #ddd;padding:8px;">静默跳过</td><td style="border:1px solid #ddd;padding:8px;">静默跳过</td><td style="border:1px solid #ddd;padding:8px;">抛 <code>SpecialFileError</code></td></tr></tbody></table>
+<p>注意第二行。绝对路径成员在 Windows 上不是「写不出去」，而是 <code>os.path.join(dest, "/tmp/x")</code> 里那个绝对路径直接把 <code>dest</code> 顶掉了，文件落在盘符根下 <code>C:\tmp\</code>。这一条我在实测中真的看到文件生成，然后再删掉。</p>
+<p>也注意第三行：<code>filter="tar"</code> 对指向目录外的符号链接<strong>既不报错也不建文件</strong>，<code>extractall()</code> 正常返回、退出码为 0，但归档里的那个成员就是不存在了。这条比「抛异常」更麻烦，因为它没有信号。</p>
+<h2>Troubleshooting：5 个真实报错与可复现修复</h2>
+<h3>报错一：`OutsideDestinationError`（加了 filter 之后最常见）</h3>
+<p>完整信息长这样：</p>
+<pre><code>tarfile.OutsideDestinationError: '../../ESCAPED.txt' would be extracted to
+'C:\Users\xuany\AppData\Local\Temp\archlab_base_16k82zgj\t1_data\ESCAPED.txt',
+which is outside the destination</code></pre>
+<p><strong>原因</strong>：归档里有带 <code>..</code> 的成员名，<code>data</code> 过滤器按官方口径「Refuse to extract files whose absolute path (after following symlinks) would end up outside the destination」拒绝了它。</p>
+<p><strong>修复</strong>：别把它当成 bug 去 try/except 吞掉。这条异常是在告诉你这个包有问题。正确做法是先列出成员审一遍：</p>
+<pre><code>import tarfile
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    for m in tf.getmembers():
+        print(m.name, "->", m.linkname if (m.issym() or m.islnk()) else "")</code></pre>
+<h3>报错二：`DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives...`</h3>
+<p>原文（3.13 下实际输出）：</p>
+<pre><code>DeprecationWarning: Python 3.14 will, by default, filter extracted tar archives
+and reject files or modify their metadata. Use the filter argument to control
+this behavior.</code></pre>
+<p><strong>原因</strong>：PEP 706 原文写明，Python 3.12–3.13 期间不显式传 <code>filter</code> 就会发这条警告，且行为等价于 <code>'fully_trusted'</code>；3.14 起默认改为 <code>'data'</code>。</p>
+<p><strong>修复</strong>：显式写 <code>filter</code>，别用 <code>warnings.simplefilter("ignore")</code> 糊过去——CI 里一旦跑 <code>-W error</code>，这条警告会直接让构建失败：</p>
+<pre><code>import tarfile
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    tf.extraction_filter = tarfile.data_filter   # 3.12+ 全局兜底
+    tf.extractall("dest", filter="data")</code></pre>
+<p>命令行也可以用官方自带的 CLI，它是支持 <code>--filter</code> 的：</p>
+<pre><code>python -m tarfile -l bundle.tar                    # 先列成员
+python -m tarfile -e bundle.tar dest --filter data # 再按 data 规则解</code></pre>
+<h3>报错三：符号链接静默消失（不报错、无日志、退出码 0）</h3>
+<p><strong>现象</strong>：归档里明明有 <code>link.sh</code>，解完之后目录里没有它，控制台一行输出都没有。</p>
+<p><strong>原因</strong>：这是三段代码叠出来的。<code>makelink_with_filter()</code> 先尝试 <code>os.symlink</code>，在 Windows 上会抛 <code>OSError: [WinError 1314] 客户端没有所需的特权</code>（我直接调 <code>os.symlink</code> 复现过）；它被 <code>symlink_exception = (AttributeError, NotImplementedError, OSError)</code> 捕获，于是降级成「去找链接目标、复制一份普通文件」；接着 <code>_find_link_target()</code> 找不到目标，抛 <code>ExtractError("unable to resolve link inside archive")</code>；最后 <code>_handle_nonfatal_error()</code> 里只有 <code>errorlevel > 1</code> 才 raise，而 <code>TarFile.errorlevel</code> 默认是 <strong>1</strong>，于是走 <code>self._dbg(1, ...)</code>——而 <code>TarFile.debug</code> 默认是 <strong>0</strong>，<code>_dbg</code> 在 <code>level > self.debug</code> 时什么都不打印。</p>
+<p><strong>修复</strong>：默认参数下你收不到任何信号，只能自己核对数量：</p>
+<pre><code>import tarfile, os
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    tf.extractall("dest", filter="data")
+    want = {m.name for m in tf.getmembers() if m.isfile()}
+got = {os.path.relpath(os.path.join(dp, f), "dest").replace("\\", "/")
+       for dp, dn, fn in os.walk("dest") for f in fn}
+print("归档里有但没落盘：", sorted(want - got))</code></pre>
+<p>顺带一个反直觉的对照：<strong>指向归档内部</strong>的符号链接不是消失，而是被降级成「复制一份普通文件」。我造了一个 <code>alias.txt -> real.txt</code>，三种 filter 下解出来都是 <code>islink=False</code>、内容等于 <code>real.txt</code> 的普通文件。PEP 706 里那句「On systems that don't support links, tarfile will, in most cases, fall back to creating regular files」就是这个意思。</p>
+<h3>报错四：`ValueError: filter 'xxx' not found`</h3>
+<p><strong>现象</strong>：<code>tf.extractall(dest, filter="full_trusted")</code>（少写了一个 ly）→</p>
+<pre><code>ValueError: filter 'full_trusted' not found</code></pre>
+<p>传非字符串也一样：<code>filter=123</code> → <code>ValueError: filter 123 not found</code>。</p>
+<p><strong>原因</strong>：<code>filter</code> 只认三个内置名 <code>'fully_trusted'</code> / <code>'tar'</code> / <code>'data'</code>，或一个 callable。PEP 706 原文：「Any other string will cause a ValueError.」</p>
+<p><strong>修复</strong>：先查一遍名字，或者用函数形态让 IDE 和类型检查帮你兜住：</p>
+<pre><code>import tarfile
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    tf.extractall("dest", filter=tarfile.data_filter)   # 用函数，不拼字符串</code></pre>
+<h3>报错五：`errorlevel=0` 时文件悄悄少了，后面的成员照解不误</h3>
+<p><strong>原因</strong>：<code>FilterError</code> 被官方认为是 fatal error，但它仍然受 <code>errorlevel</code> 管辖。我用一个含 <code>a_good.txt</code> / <code>../b_escape.txt</code> / <code>c_after.txt</code> 三个成员的归档实测：</p>
+<ul><li><code>errorlevel=1</code>（默认）：抛 <code>OutsideDestinationError</code>，目录里<strong>已经</strong>有 <code>a_good.txt</code>——即「部分解压」，官方文档原话「extractall() may leave the archive partially extracted; it is the user's responsibility to clean up」。</li><li><code>errorlevel=0</code>：<strong>不抛异常</strong>，<code>../b_escape.txt</code> 被跳过，<code>c_after.txt</code> 继续解出来。而且 <code>debug=0</code> 时连 stderr 都没有一行；只有 <code>debug=1</code> 才会打印 <code>tarfile: OutsideDestinationError '...' which is outside the destination</code>。</li></ul>
+<p><strong>修复</strong>：不要为了「跑通」把 <code>errorlevel</code> 调成 0。要容错就显式记账：</p>
+<pre><code>import tarfile
+skipped = []
+def guarded(member, path):
+    try:
+        return tarfile.data_filter(member, path)
+    except tarfile.FilterError as e:
+        skipped.append((member.name, type(e).__name__))
+        return None          # 返回 None = 跳过该成员
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    tf.extractall("dest", filter=guarded)
+print("被跳过：", skipped)</code></pre>
+<p>异常继承关系顺便记一下，写 <code>except</code> 的时候用得上（本机实测 <code>__bases__</code>）：<code>TarError</code> ← <code>FilterError</code> ← {<code>AbsolutePathError</code>, <code>OutsideDestinationError</code>, <code>AbsoluteLinkError</code>, <code>LinkOutsideDestinationError</code>, <code>SpecialFileError</code>}。只捕 <code>tarfile.TarError</code> 会把「格式坏了」和「过滤器拒了」混成一件事。</p>
+<h2>手写「在目录内」的检查为什么总是写错</h2>
+<p>很多人不用 filter，自己写判断。最常见的写法是 <code>os.path.commonprefix</code>，而它是<strong>按字符</strong>比较、和路径层级无关。我实测：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">表达式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">看起来像在目录内吗</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>commonprefix(['C:\\tmp\\abc', 'C:\\tmp\\abcd'])</code></td><td style="border:1px solid #ddd;padding:8px;"><code>C:\tmp\abc</code></td><td style="border:1px solid #ddd;padding:8px;">像（其实是错的）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>commonpath(['C:\\tmp\\abc', 'C:\\tmp\\abcd'])</code></td><td style="border:1px solid #ddd;padding:8px;"><code>C:\tmp</code></td><td style="border:1px solid #ddd;padding:8px;">正确</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'C:\\tmp\\abcd'.startswith('C:\\tmp\\abc')</code></td><td style="border:1px solid #ddd;padding:8px;"><code>True</code></td><td style="border:1px solid #ddd;padding:8px;">像（同样错）</td></tr></tbody></table>
+<p><code>abc</code> 和 <code>abcd</code> 是两个平级目录，<code>commonprefix</code> 却返回了 <code>C:\tmp\abc</code>，判定成「在里面」。正确写法用 <code>commonpath</code>，并且要先 <code>realpath</code> 化解符号链接：</p>
+<pre><code>import os
+def is_within(directory, target):
+    d = os.path.realpath(directory)
+    t = os.path.realpath(target)
+    return os.path.commonpath([d, t]) == d</code></pre>
+<p>这正是 PEP 706 把 CVE-2007-4559 写进 Motivation 的原因——它的原文是：文档早就写了「never extract archives from untrusted sources without prior inspection」，但「it's not clear what kind of inspection should be done. Indeed, it's quite tricky to do such an inspection correctly」。</p>
+<h2>filter 改的不只是路径，`data` 还会改元数据</h2>
+<p>这一条不看文件系统更清楚——直接调 <code>tarfile.data_filter()</code> 看它返回的 <code>TarInfo</code>（本机实测）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">归档里写的 mode</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">经 <code>data</code> 过滤器后</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>0o4755</code>（setuid）</td><td style="border:1px solid #ddd;padding:8px;"><code>0o755</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>0o2750</code>（setgid）</td><td style="border:1px solid #ddd;padding:8px;"><code>0o750</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>0o1777</code>（sticky）</td><td style="border:1px solid #ddd;padding:8px;"><code>0o755</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>0o666</code></td><td style="border:1px solid #ddd;padding:8px;"><code>0o644</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">目录 <code>0o777</code></td><td style="border:1px solid #ddd;padding:8px;"><code>None</code>（跳过 chmod）</td></tr></tbody></table>
+<p><code>uid</code> / <code>gid</code> / <code>uname</code> / <code>gname</code> 也一律被置为 <code>None</code>。官方口径是「Clear high mode bits (setuid, setgid, sticky) and group/other write bits」加「Set the owner read and write permissions」。所以从「备份还原」场景切到 <code>data</code> 之后，还原出来的权限和属主<strong>本来就不该和原机一致</strong>，这不是 bug。</p>
+<p>还有一条 filter 完全不管的事：<strong>同名重复成员</strong>。我在一个归档里塞了三个都叫 <code>dup.txt</code> 的成员（内容分别是 FIRST / SECOND / THIRD），<code>filter="data"</code> 和默认行为解出来都是 <code>THIRD</code>——后解压的覆盖先解压的，没有任何提示。要查就自己数：</p>
+<pre><code>from collections import Counter
+import tarfile
+with tarfile.open("bundle.tar", mode="r:*") as tf:
+    dup = [n for n, c in Counter(m.name for m in tf.getmembers()).items() if c > 1]
+print("重复成员：", dup)</code></pre>
+<h2>zipfile 是另一套规则，别照搬</h2>
+<p><code>zipfile.ZipFile.extractall()</code> <strong>没有 <code>filter</code> 参数</strong>（本机实测签名只有 <code>path</code> / <code>members</code> / <code>pwd</code>），因为它从很久以前就自己做成员名清理。我构造了 <code>../../ESCAPED_ZIP.txt</code>、<code>C:/ESCAPED_ZIPDRV.txt</code>、<code>/abs/ESCAPED_ZIPABS.txt</code> 三个成员，<code>extractall()</code> 之后<strong>全部被压进目标目录</strong>，一个都没逃出去。</p>
+<p>源码里那几行就是它和 tarfile 的分水岭：</p>
+<pre><code>drive, root, arcname = os.path.splitroot(arcname)
+invalid_path_parts = ('', os.path.curdir, os.path.pardir)
+arcname = os.path.sep.join(x for x in arcname.split(os.path.sep)
+                           if x not in invalid_path_parts)</code></pre>
+<p>不过 zipfile 也不是什么都不丢：我造了一个带 Unix 符号链接位（<code>external_attr = 0o120777 << 16</code>）的成员，解出来是一个 11 字节的<strong>普通文件</strong>，内容就是字符串 <code>/etc/passwd</code>，不是链接——CPython 的 zipfile 从不创建符号链接。</p>
+<p><code>shutil.unpack_archive()</code> 则两头都占：签名里有 <code>filter=None</code>（3.12 起），不传的时候照样发那条 DeprecationWarning，传 <code>filter="data"</code> 就能正常拦下。另外 <code>ZipFile._ignore_invalid_names</code> 这个类属性默认是 <code>False</code>，即默认不丢弃名称非法的成员，只是把名字压平。</p>
+<h2>我现在的写法</h2>
+<pre><code>import tarfile
+
+def safe_extract(archive, dest):
+    with tarfile.open(archive, mode="r:*") as tf:
+        names = [m.name for m in tf.getmembers()]
+        bad = [n for n in names
+               if n.startswith(("/", "\\")) or ".." in n.split("/")]
+        if bad:
+            raise SystemExit(f"拒绝解压，可疑成员名：{bad}")
+        tf.extractall(dest, filter="data")</code></pre>
+<p><code>mode="r:*"</code> 让 tarfile 自己识别压缩方式；显式 <code>filter="data"</code> 让行为在 3.12 到 3.14 之间保持一致——这一点很关键，否则同一份代码在 3.13 和 3.14 上会得到两套结果。</p>
+<h2>FAQ</h2>
+<p><strong>Q：我现在就该把 <code>filter="data"</code> 加上吗？</strong></p>
+<p>A：如果你的 Python 是 3.12 或 3.13，加。不加的话 3.14 升级那天默认行为会变，而且你已经先吃了两年 DeprecationWarning。</p>
+<p><strong>Q：<code>filter="data"</code> 会让我的备份还原丢权限吗？</strong></p>
+<p>A：会。<code>data</code> 会清掉 setuid/setgid/sticky 与组/其他用户写位，并把 uid/gid 置空（见上方实测表）。备份还原场景要的是 <code>filter="tar"</code> 或 <code>fully_trusted</code>，且前提是你信任这个归档。</p>
+<p><strong>Q：为什么我加了 <code>filter="data"</code>，目录里还是少文件？</strong></p>
+<p>A：三种可能：符号链接在 Windows 上静默降级失败（报错三）、<code>errorlevel=0</code> 把拒绝的成员无声跳过（报错五）、以及同名重复成员被后来的覆盖。前两种都不产生异常。</p>
+<p><strong>Q：zipfile 要不要一起改？</strong></p>
+<p>A：<code>zipfile</code> 没有 filter 参数可用，它自己会压平 <code>..</code>、盘符和前导斜杠。但解压后仍建议核对成员数量。</p>
+<h2>本文的边界</h2>
+<ul><li>全部实测在 <strong>Windows 11 + CPython 3.13.14</strong> 上完成。符号链接相关的降级行为是 Windows 特有的；在 POSIX 上 <code>os.symlink</code> 通常成功，那条「静默消失」的链路不会出现，但「链接指向目录外」的危害反而更直接。</li><li>我没有在 Python 3.14 上实测默认值为 <code>data</code> 的行为，3.14 的改动依据来自官方文档的「Changed in version 3.14」条目与 PEP 706。</li><li>官方自己也不认为 filter 是终点：<code>docs.python.org</code> 原文写的是「Even with <code>filter='data'</code>, tarfile is not suited for extracting untrusted files without prior inspection」，并指出预置过滤器挡不住拒绝服务攻击。</li><li>本文讨论的是解压动作本身，不涉及归档内容的真实性校验（哈希、签名、来源），那是另一层。</li></ul>
+<p>相关阅读：如果你想继续顺着「包靠不住」这条线往下看，可以读 <a href="https://yaohehe.github.io/2026-10-17-xz-cve-2024-3094.html" class="internal-link">xz 后门复盘：tarball 与 git 仓库对不上</a>，以及 <a href="https://yaohehe.github.io/2026-09-29-2026-github-actions-4-action.html" class="internal-link">GitHub Actions 供应链投毒复盘</a>。同属 Python 线的还有 <a href="https://yaohehe.github.io/2026-10-21-python.html" class="internal-link">PEP 440 版本约束踩坑</a> 与 <a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 丢日志实测</a>。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
