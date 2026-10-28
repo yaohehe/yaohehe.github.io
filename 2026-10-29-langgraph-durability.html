@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph 崩溃恢复实测：durability 三档各丢什么 - TechPassive</title>
+  <meta name="description" content="进程被强杀时 durability 到底丢什么？我在 Windows 11 上把 langgraph 1.2.18 的节点中途强杀 24 次，量出 sync、async、exit 三档各自保住几个 checkpoint、恢复后副作用重复几次、同步档要多付多少秒，附五个可复现报错与三条落地写法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>LangGraph 崩溃恢复实测：durability 三档各丢什么</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">可靠性</span>
+  </div>
+  <div class="content">
+    <p>进程被运维脚本 kill 掉的那一刻，你的 Agent 正在第三个节点里调支付接口。重启后 <code>thread_id</code> 还在，状态也读得回来，看起来一切正常 —— 直到对账时发现同一笔款扣了两次。</p>
+<p>这不是框架的 bug，是持久化语义的边界：checkpoint 记的是<strong>状态</strong>，不是<strong>副作用</strong>。而 <code>durability</code> 这个参数决定崩溃发生的那一刻，到底有多少状态活着回来。官方给它的说明只有 API docstring 里的三行字，没有独立文档页，所以我实际测试了一遍：把进程在节点中途强杀 24 次，量出三档各自的损失。</p>
+<p><strong>口径声明</strong>：本文数字全部来自本机实测 —— Windows 11、CPython 3.13.12、langgraph 1.2.18（官方 release 日期 2026-10-26）、langgraph-checkpoint-sqlite 4.3.1 截至发稿。强杀手段是父进程用 TerminateProcess 直接结束子进程（等价于 SIGKILL，不给任何清理机会），每次实验结束后在<strong>独立的新进程</strong>里恢复，避免内存里残留的对象帮忙。本文不含任何联盟推广链接。</p>
+<h2>durability 三档的官方定义</h2>
+<p><code>langgraph/types.py</code> 第 98 行把它定义成三个字面量：</p>
+<pre><code>Durability = Literal["sync", "async", "exit"]</code></pre>
+<p><code>Pregel.invoke()</code> 的 docstring 逐字写着：</p>
+<ul><li><code>"sync"</code>: Changes are persisted synchronously before the next step starts.</li><li><code>"async"</code>: Changes are persisted asynchronously while the next step executes.</li><li><code>"exit"</code>: Changes are persisted only when the graph exits.</li></ul>
+<p>默认值是 <code>"async"</code>，来自 <code>langgraph/pregel/main.py</code> 第 2696 行：<code>durability = config.get(CONF, {}).get(CONFIG_KEY_DURABILITY, "async")</code>。</p>
+<p>三句话都只回答「什么时候写」，没回答「崩溃时丢什么」。而后者才是选型依据。</p>
+<h2>实验怎么设计</h2>
+<p>两个图，每个节点做两件事：往一个 append-only 的 JSONL 记一行 <code>start</code> 和一行 <code>end</code>（每条都 <code>fsync</code> 落盘，排除缓冲干扰），再返回状态增量。</p>
+<ul><li><strong>线性图</strong>：a → b → c → d，强杀在 c 执行到一半（c 写完 start、还没写完 end）。</li><li><strong>并行图</strong>：start → p1 / p2 / p3 → join，强杀在 p3 执行到一半，此时同一超步里的 p1、p2 可能已经完成。</li><li><strong>慢速后端</strong>：给 <code>SqliteSaver.put()</code> 套一层 250 毫秒延迟，模拟网络型 checkpointer（Postgres 或托管服务）的真实写延迟。这是让 sync 与 async 拉开差距的唯一办法。</li></ul>
+<p>每种配置重复 4 次，看分布而不是抓单次。干净跑一遍的副作用基线：线性图 8 行，并行图 10 行。</p>
+<h2>线性图：exit 档根本没有「恢复」这回事</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">durability</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">崩溃时 checkpoint 数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">恢复结果</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">副作用总行数（基线 8）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">exit</td><td style="border:1px solid #ddd;padding:8px;">0（4/4 次）</td><td style="border:1px solid #ddd;padding:8px;">抛 EmptyInputError，无法恢复</td><td style="border:1px solid #ddd;padding:8px;">5</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">async</td><td style="border:1px solid #ddd;padding:8px;">4（4/4 次）</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">9</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">sync</td><td style="border:1px solid #ddd;padding:8px;">4（4/4 次）</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">9</td></tr></tbody></table>
+<p><code>exit</code> 档 4 次崩溃后 checkpoint 表全是空的。此时 <code>graph.invoke(None, config)</code> 抛 <code>EmptyInputError: Received no input for __start__</code> —— 因为在 <a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> 里「无输入」等于「从已有 checkpoint 继续」，没有 checkpoint 就无从继续。已经发生的 5 次副作用（a、b 完整跑完，c 写了 start）全部变成孤儿。</p>
+<p><code>async</code> 与 <code>sync</code> 都保住了 4 个 checkpoint，恢复后副作用 9 行，比干净跑多 1 行 —— 多出来的是 c 的第二次 <code>start</code>。这就是恢复语义的核心：<strong>从最近一个完整超步继续，被中断的那个超步整段重跑</strong>。c 里那句「已经调用过支付接口」它不知道，也无从知道。</p>
+<h2>并行图：差距在这里才出现</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">模式与后端</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">崩溃时 checkpoint 数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">恢复</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">副作用重复次数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">async 加本地 SQLite</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">2 至 4 次</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sync 加本地 SQLite</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">1 至 4 次</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">async 加 250ms 延迟</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">6 至 7 次</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sync 加 250ms 延迟</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">成功</td><td style="border:1px solid #ddd;padding:8px;">0 至 3 次</td></tr></tbody></table>
+<p>本地 SQLite 下 sync 和 async 打平，都是 3 个 checkpoint。把 <code>put()</code> 拖到 250 毫秒之后，async 只剩 1 个 checkpoint，恢复后副作用比基线多 6 至 7 行 —— 整个第一步和第二步全部重跑；sync 仍保住 3 个，重复 0 至 3 次。</p>
+<p>原因在 <code>main.py</code> 第 3078 行：只有 <code>durability_ == "sync"</code> 时才会执行 <code>loop._put_checkpoint_fut.result()</code> 阻塞等落盘；<code>async</code> 直接把写任务提交到后台线程，图继续往下走。写后端足够快时，后台写在你被杀之前就已经完成，两种模式表现一致；写后端一慢，async 的「在途窗口」就变成真实的数据缺口。</p>
+<p>代价也量了。一次干净跑（5 节点并行图）：本地后端三档分别 0.56 / 0.55 / 0.58 秒，checkpoint 数 1 / 5 / 5；慢速后端 0.81 / 1.33 / 1.90 秒。<strong>sync 多付的就是那几次 put 的延迟</strong>，在 250 毫秒的后端上等于全程慢 1.1 秒，占 1.9 秒的 58%。</p>
+<h2>所以它是 at-least-once，不是 exactly-once</h2>
+<p>三条能直接落地的判断：</p>
+<p>1. <strong>别指望图不重跑</strong>。恢复的单位是超步，不是节点，更不是「上次停下的那行代码」。任何有外部后果的动作（扣款、发信、建工单）都必须自带幂等键，由下游去重。</p>
+<p>2. <strong>副作用要么推到最后一个节点，要么走 outbox</strong>。先写本地表再由独立消费者投递，等于把「不可重跑的部分」移出图的重放范围。</p>
+<p>3. <strong>选档看后果而不是看性能</strong>。能容忍重跑就用默认的 <code>async</code>，成本最低；副作用不能重复且写后端不在地板上就用 <code>sync</code>；<code>exit</code> 只适合「崩了从头再来也无所谓」的一次性批处理，不要用在有状态的会话上。</p>
+<p>顺带一个容易忽略的对照：内存型 checkpointer（InMemorySaver）在进程重启后连 checkpoint 本身都没了，官方 persistence 文档写得很直白 —— 「When the process restarts, all checkpoints are lost」。它适合开发调试，不适合「崩溃后还要能接着跑」的场景。</p>
+<h2>踩坑录：五个真实报错</h2>
+<p><strong>报错一 — <code>EmptyInputError: Received no input for __start__</code></strong>。两种触发方式：<code>exit</code> 档崩溃后恢复（checkpoint 表为空），以及给一个从未存在过的 <code>thread_id</code> 传 <code>None</code>。前者要靠「恢复到哪儿」的业务判据处理，后者要先 <code>get_state()</code> 判断有没有历史，再决定是新建线程还是继续。</p>
+<p><strong>报错二 — <code>AttributeError: 'SyncPregelLoop' object has no attribute '_put_checkpoint_fut'. Did you mean: '_put_checkpoint'?</code></strong>。编译时不传 checkpointer，却设了 <code>durability="sync"</code>：第 2894 行先警告 <code>durability has no effect when no checkpointer is present</code>，第 3079 行照样去取那个只有存在 checkpointer 时才在 <code>_loop.py</code> 里赋值的 future，于是崩掉。4/4 次稳定复现 —— 警告说你设的参数无效，实际是它会让你崩，这两句互相矛盾。</p>
+<p><strong>报错三 — <code>ValueError: Cannot use both checkpoint_during and durability parameters. Please use durability instead.</code></strong>。<code>checkpoint_during</code> 是旧开关（<code>LangGraphDeprecatedSinceV10</code>），已经从内存里消失。迁移时把旧布尔和新档位一起传就会撞这条，去掉旧参数即可。</p>
+<p><strong>报错四 — <code>sqlite3.OperationalError: database is locked</code></strong>。同一份 SQLite 文件被两个进程同时写：第一个开着写事务，第二个用 <code>timeout=0.3</code> 打开再写就抛这条。崩溃恢复型架构里很常见 —— 旧进程还没死透，新进程已经起来接着跑。要么先确认旧进程退出，要么改用支持多写入方的后端。这类「文件能打开、内容却不对」的坑，我在<a href="https://yaohehe.github.io/2026-10-28-sqlite-14500.html" class="internal-link">SQLite 热备 11 轮实测</a>里已经逐个对拍过。</p>
+<p><strong>报错五 — 拼错档位不报错</strong>。把 <code>durability="sync"</code> 打成 <code>"syncc"</code>，<code>invoke</code> 跑完返回 <code>n=5</code>，全程零警告。<code>Durability</code> 只是 <code>typing.Literal</code>，运行时没有任何校验，拼错等于静默退回非同步路径 —— 你会在下一次崩溃时才发现它没生效。</p>
+<h2>本文的边界</h2>
+<p>实测只覆盖 <code>SqliteSaver</code>、单机、同步 <code>invoke</code>、无子图。没有测 Postgres 或 Redis 后端的真实延迟分布（用 250 毫秒固定延迟近似），没有测 <code>astream</code> 异步路径，也没有测它与 <code>retry_policy</code>、<code>interrupt</code> 叠加时的交互 —— 人工中断那条链路在<a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式三口径</a>之后的<a href="https://yaohehe.github.io/2026-10-26-langgraph-interrupt-resume.html" class="internal-link">人审中断与恢复篇</a>里单独拆过，两者语义不同：中断是「等你回来」，崩溃是「不等你」。持久化机制本身（checkpointer 存什么、<code>checkpoint_ns</code> 怎么分）在<a href="https://yaohehe.github.io/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">checkpointer 与 8 个真实报错</a>那篇写过，本篇只关心「坏了之后剩什么」。</p>
+<p>如果你的场景是「一个进程跑一次、失败了重跑整批」，<code>exit</code> 没有任何问题；但只要是长会话、有外部副作用、还可能被 k8s 的 <code>SIGTERM</code> 顺手带走，就要按 at-least-once 来设计，而不是按「理论上不会重跑」来设计。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
