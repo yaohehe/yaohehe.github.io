@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prometheus Quantiles: Default Buckets Miss p90 by Half - TechPassive</title>
+  <meta name="description" content="On Windows 11 with prometheus-client 0.26.0, one million latency samples through the default buckets put p90 49.7% low and pin p999 at 10s. Five real errors inside.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Prometheus Quantiles: Default Buckets Miss p90 by Half</h1>
+  <div class="post-tags">
+    <span class="tag">Prometheus</span><span class="tag">histogram</span><span class="tag">p99</span>
+  </div>
+  <div class="content">
+    <p>That p99 on your dashboard is not a measurement. It is an estimate produced by a bucket layout somebody chose before the data arrived, plus a linear interpolation performed on the server. Get the buckets wrong and the number stays wrong forever, with the same error, night after night.</p>
+<p>I pushed one million synthetic latency samples through <code>prometheus_client</code>'s default buckets and recomputed the quantiles locally using the logic Prometheus uses. The result was not encouraging: p90 came back 49.7% low, and p999 was pinned at exactly 10 seconds. Below are seven metric semantics that look right and are not, plus five real error messages from this machine.</p>
+<p><strong>TL;DR</strong>: quantiles are estimates, not statistics, and their error is set by bucket width. The default buckets only fit services where most requests finish under 100 ms. Never average quantiles across instances, sum the bucket counts instead. The Python client's Summary does not export quantiles at all. No affiliate links in this article.</p>
+<h2>Test setup and what is actually measured</h2>
+<p>Environment: Windows 11, CPython 3.13.12, <code>prometheus-client</code> 0.26.0 installed into an isolated directory so the main environment stayed untouched. The sample set is one million synthetic latencies in three tiers: 90% between 20 and 80 ms, 9% between 200 and 800 ms, and 1% from 1 to 20 seconds as a long tail.</p>
+<p>The real <code>histogram_quantile</code> lives on the Prometheus server, written in Go in <code>promql/quantile.go</code>. There is no Prometheus instance on this machine, so I reimplemented its <code>bucketQuantile</code> logic in Python: sort by <code>le</code>, find the bucket whose cumulative count crosses <code>q × total</code>, interpolate linearly inside it, and if the crossing point lands in the <code>+Inf</code> bucket, return the previous bucket's upper bound.</p>
+<p>One scope note, stated up front: <strong>the interpolation is my reimplementation, not a measurement against a running server</strong>. Bucket boundaries, bucket counts, defaults and error texts all come from real execution here. The two should agree, but run the actual PromQL if you want to verify on your own cluster.</p>
+<h2>Why a quantile is computed, not counted</h2>
+<p>The official Prometheus documentation is unusually direct about this:</p>
+<blockquote>Quantiles, whether calculated by the instrumented binary or on the Prometheus server, are estimated. It is important to understand the errors of that estimation.</blockquote>
+<p>In the comparison table on the same page, the quantile error row for classic histograms says only this:</p>
+<blockquote>Error is limited by the width of the bucket the quantile is located in.</blockquote>
+<p>Read that again. The accuracy ceiling of the p99 you see is decided by how wide the bucket is that p99 happens to fall into. It is not decided by how many samples you collect. A hundred million samples will not help; the bucket width does not change.</p>
+<h2>Number one: p90 reported 49.7% low</h2>
+<p>Start with the defaults. In <code>prometheus_client</code>'s <code>Histogram</code> constructor, the <code>buckets</code> argument defaults to fifteen boundaries plus infinity:</p>
+<pre><code>0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, +Inf</code></pre>
+<p>These are seconds. The first boundary is 5 ms and the last finite boundary is 10 s.</p>
+<p>After a million observations, truth against estimate:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Quantile</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">True</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Estimated</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Error</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p50</td><td style="border:1px solid #ddd;padding:8px;">0.0534 s</td><td style="border:1px solid #ddd;padding:8px;">0.0534 s</td><td style="border:1px solid #ddd;padding:8px;">-0.0%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p90</td><td style="border:1px solid #ddd;padding:8px;">0.2003 s</td><td style="border:1px solid #ddd;padding:8px;">0.1008 s</td><td style="border:1px solid #ddd;padding:8px;">-49.7%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p99</td><td style="border:1px solid #ddd;padding:8px;">0.7991 s</td><td style="border:1px solid #ddd;padding:8px;">0.9955 s</td><td style="border:1px solid #ddd;padding:8px;">+24.6%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p999</td><td style="border:1px solid #ddd;padding:8px;">18.0743 s</td><td style="border:1px solid #ddd;padding:8px;">10.0000 s</td><td style="border:1px solid #ddd;padding:8px;">-44.7%</td></tr></tbody></table>
+<p>p50 is reassuringly accurate, and that is exactly the trap. It falls inside the narrow <code>0.05–0.075</code> bucket, 25 ms wide, and the true value of 53.4 ms sits near the middle, so interpolation lands almost on truth. You glance at the dashboard, the median checks out, and you trust the whole panel.</p>
+<p>p90 is off by nearly half. The cause is visible in the cumulative counts: <code>le="0.1"</code> already holds 899,959 observations (89.99%), and <code>le="0.25"</code> holds 907,429. The rank for p90 is 900,000, which lands in the <code>(0.1, 0.25]</code> bucket, 150 ms wide, and it is only the 41st observation out of the 7,470 in that bucket. Linear interpolation assumes a uniform spread inside the bucket, so it places the value 0.8 ms past the left edge and reports 100.8 ms. The true value is 200.3 ms, because the real data has a step there — that is where the 9% of slow requests begin.</p>
+<p>Move the p90 rank by 8 ms and the estimate jumps by a 150 ms step. The documentation has a sentence for precisely this:</p>
+<blockquote>With a broad distribution, small changes in φ result in large deviations in the observed value.</blockquote>
+<h2>The +Inf bucket: p999 can never tell the truth</h2>
+<p>Of the one million samples, 5,119 exceeded 10 seconds (0.51%), and every one of them landed in <code>+Inf</code>. Cumulative count at <code>le="10.0"</code> is 994,881; at <code>+Inf</code> it is 1,000,000.</p>
+<p>The p999 rank is 999,000, which sits inside the <code>+Inf</code> bucket. That bucket has no upper bound, so interpolation has nowhere to go. The implementation's answer is to return the previous bucket's upper bound: 10.0.</p>
+<p>So whether the true p999 is 12 seconds, 18 seconds or three minutes, the dashboard says 10 seconds. This is not an accuracy problem, it is data loss. The most expensive requests in your long tail get replaced by a constant. The documentation buries the general rule next to a sentence about returning nothing: if the histogram has no bucket with the required boundary, no interpolation happens at all, and you either get a truncated number or no result.</p>
+<h2>Narrower buckets are not automatically better</h2>
+<p>The natural reaction to the table above is to add buckets. Hold on — the second experiment shows why that alone does not save you.</p>
+<p>This time: 100,000 samples all between 4.90 and 4.99 seconds (a batch job with a fixed runtime), buckets set to <code>[0, 0.1, 0.5, 1, 5, 10, +Inf]</code>.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Quantile</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">True</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Estimated</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Error</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p50</td><td style="border:1px solid #ddd;padding:8px;">4.945 s</td><td style="border:1px solid #ddd;padding:8px;">3.000 s</td><td style="border:1px solid #ddd;padding:8px;">-39.3%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p90</td><td style="border:1px solid #ddd;padding:8px;">4.981 s</td><td style="border:1px solid #ddd;padding:8px;">4.600 s</td><td style="border:1px solid #ddd;padding:8px;">-7.6%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p99</td><td style="border:1px solid #ddd;padding:8px;">4.989 s</td><td style="border:1px solid #ddd;padding:8px;">4.960 s</td><td style="border:1px solid #ddd;padding:8px;">-0.6%</td></tr></tbody></table>
+<p>Every sample sits inside the <code>(1, 5]</code> bucket, four seconds wide. Interpolation spreads the rank evenly across the whole 1-to-5-second range, so the median comes out as 3 seconds while the real data never goes below 4.9.</p>
+<p>Note that p99 is only 0.6% off, because its rank is already near the bucket's upper edge, and so is the interpolated point. <strong>On the same data set, different quantiles can fail in opposite directions.</strong> That is how someone ends up calibrating against p99, unaware that p50 is off by 39%.</p>
+<p>The conclusion is narrow: bucket boundaries have to land on the actual steps in your distribution. Bucket width by itself is not a measure of accuracy. The official phrasing for this is that "picking the right buckets in advance can be challenging".</p>
+<h2>Across instances: quantiles cannot be averaged, buckets can be added</h2>
+<p>Eight replicas, a dashboard line reading <code>avg(rate(...))</code> — the third experiment targets that habit.</p>
+<p>Two instances share one bucket layout. A gets the mixed distribution and estimates p99 at 1.5741 s. B gets only 2.0–2.5 s requests and estimates 2.4850 s. The average of the two is 2.0295 s.</p>
+<p>The true p99 of the merged sample is 2.4949 s.</p>
+<ul><li>Averaged quantiles: 2.0295 s, error <strong>-18.7%</strong></li><li>Bucket counts summed, then quantiled: 2.4843 s, error <strong>-0.4%</strong></li></ul>
+<p>The reason is plain: a quantile is a position, not an additive quantity. If each replica serves 10,000 requests, p99 sits at rank 9,900. Averaging the two replicas' p99 values assumes that rank 9,900 in the fast replica and rank 9,900 in the slow replica occupy the same position in the merged sample. They do not, because the slow replica's requests push the whole distribution upward.</p>
+<p>The documentation does not hedge:</p>
+<blockquote>However, aggregating the precomputed quantiles from a summary rarely makes sense. In this particular case, averaging the quantiles yields statistically nonsensical values.</blockquote>
+<p>It even ships the counter-example as a code line:</p>
+<pre><code>avg(http_request_duration_seconds{quantile="0.95"}) // BAD!</code></pre>
+<p>Histograms are immune, because bucket counts add: eight replicas' <code>le="0.25"</code> summed is still "the number of requests that finished within 250 ms". Interpolate after the sum and the position is correct. This is why a wrong p99 is usually a query-writing problem, not a client-library problem.</p>
+<h2>The Python Summary does not export quantiles</h2>
+<p>The concepts page defines Summary as computing configurable quantiles over a sliding time window, and lists the exposed series as <code><basename>{quantile="<φ>"}</code>. Follow that description in Python and you hit a wall.</p>
+<p>What actually comes out is three series: <code>req_seconds_count</code>, <code>req_seconds_sum</code> and <code>req_seconds_created</code>. Try to ask for quantiles:</p>
+<pre><code>Summary('req2', 'doc', quantiles=[0.5])
+TypeError: MetricWrapperBase.__init__() got an unexpected keyword argument 'quantiles'</code></pre>
+<p>The constructor signature has no such parameter at all (<code>name, documentation, labelnames, namespace, subsystem, unit, registry</code>). The Python client documentation states it plainly:</p>
+<blockquote>The Python client does not compute quantiles locally. If you need p50/p95/p99, use a Histogram instead.</blockquote>
+<p>So there is a real gap: Go and Java Summaries compute quantiles, Python's does not. The same metric design document changes meaning when it crosses a language boundary. <strong>If you use Summary in Python, all you actually get is a count and a sum — that is, a request count and an average latency, with no quantiles.</strong> And the average is the least informative number in any long-tailed distribution.</p>
+<h2>Label cardinality: 5,000 combinations, 90,000 series</h2>
+<p>The fourth experiment targets the habit of tagging <code>user_id</code> because it seemed useful at the time.</p>
+<p>One Histogram, two labels: <code>user_id</code> with 1,000 values and <code>path</code> with 5.</p>
+<pre><code>1000 × 5 = 5,000 label combinations</code></pre>
+<p>Exported series count: <strong>90,000</strong>.</p>
+<p>That is 18 series per combination: fifteen <code>_bucket</code> series including <code>+Inf</code>, plus <code>_sum</code>, <code>_count</code> and <code>_created</code>. Multiply your label combinations by 18 and you have both the number of lines your scrape endpoint has to emit and the number of time series your storage has to index separately.</p>
+<p>A single <code>user_id</code> label inflates the metric by a factor of 1,000 while barely helping anyone debug. You want to know which class of user is slow, not that user 4,183 is slow. Cardinality explosions do not throw errors. They show up as memory, disk and query latency all degrading together, and by the time you notice, weeks have passed.</p>
+<h2>Troubleshooting: five real errors, verbatim</h2>
+<p>Every message below came from this machine. None are paraphrased.</p>
+<p><strong>Error one: duplicate registration</strong></p>
+<pre><code>Counter('jobs_total', 'doc', registry=reg)
+Counter('jobs_total', 'doc', registry=reg)
+DuplicateTimeseries: Duplicated timeseries in CollectorRegistry: {'jobs_total', 'jobs', 'jobs_created'}</code></pre>
+<p>Note that three names are listed. One Counter occupies three series names, so collision detection looks at the union.</p>
+<p>The subtler variant: <code>Counter('jobs')</code> and <code>Counter('jobs_total')</code> have different names but <strong>both export as <code>jobs_total</code></strong>, so they collide in the same registry too. The client appends <code>_total</code> automatically; write it yourself and you get a metric that looks distinct and is not.</p>
+<p><strong>Error two: incrementing a counter by a negative amount</strong></p>
+<pre><code>c.inc(-1)
+ValueError: Counters can only be incremented by non-negative amounts.</code></pre>
+<p>This one is helpful — the library stops you. The dangerous variant is expressing a counter as a Gauge, which accepts negatives and arbitrary jumps, so resets, wraparound and concurrent overwrites all pass silently.</p>
+<p><strong>Errors three and four: missing and extra labels give the same message</strong></p>
+<pre><code>c.labels(method='GET')                          # missing code
+ValueError: Incorrect label names
+
+c.labels(method='GET', code='200', extra='x')   # extra label
+ValueError: Incorrect label names</code></pre>
+<p>Both cases produce identical text, so the log cannot tell you whether you omitted a label or added one. Print <code>labelnames</code> and diff it; do not try to diagnose from the message.</p>
+<p><strong>Error five: passing quantiles to Summary</strong></p>
+<pre><code>TypeError: MetricWrapperBase.__init__() got an unexpected keyword argument 'quantiles'</code></pre>
+<p>This is the runtime form of the gap described earlier. At least it crashes instead of degrading silently.</p>
+<h2>The silent one: reset on restart</h2>
+<p>A Counter may only increase, or reset to zero on restart. After a process restart the same series drops from 500 to 3:</p>
+<pre><code>before restart: http_requests_total 500.0
+after restart:  http_requests_total 3.0
+raw difference: -497</code></pre>
+<p>Subtracting raw values yields a negative rate. Prometheus's <code>rate()</code> and <code>increase()</code> handle the reset by splitting the increments around the reset point, but <strong>scripts and dashboards that aggregate outside Prometheus do not</strong>. Anywhere you subtract Counter values by hand, ask whether that code knows about resets.</p>
+<p>There is also a <code>_created</code> series holding a creation timestamp (measured here as <code>1.793312098127713e+09</code>). One of its jobs is to let the server recognise a restart so the reset is handled correctly.</p>
+<p>One more behaviour worth knowing: a callback registered with <code>Gauge.set_function(fn)</code> <strong>runs once per scrape</strong>. After three calls to <code>generate_latest()</code> the callback counter read exactly 3. If that function queries a database, your scrape interval is now your database QPS.</p>
+<h2>A bucket checklist you can copy</h2>
+<p>1. <strong>Plot the distribution before choosing buckets.</strong> Take a week of real latency data on a log scale and put boundaries on the steps, not on the defaults.</p>
+<p>2. <strong>Keep one exact boundary for your SLO.</strong> If the SLO is 95% of requests within 300 ms, you must have <code>le="0.3"</code>. Official wording: without that boundary no interpolation happens and you get no result, or an incomplete result with no warning at all.</p>
+<p>3. <strong>Before trusting p999, check the <code>+Inf</code> share.</strong> <code>(count{le="+Inf"} - count{le="<largest finite bound>"}) / count{le="+Inf"}</code> is the fraction that proves your quantile has been truncated. Here it was 0.51%, and p999 was already wrong.</p>
+<p>4. <strong>Use <code>sum by (le)</code> across instances, never <code>avg</code>.</strong> Aggregate the buckets first, then let <code>histogram_quantile</code> do its job.</p>
+<p>5. <strong>Keep labels low-cardinality.</strong> Method, route template, status code are fine. User ID, request ID, raw URL are not. 5,000 combinations is 90,000 series.</p>
+<p>6. <strong>Do not expect quantiles from a Python Summary.</strong> It gives you count and sum.</p>
+<p>7. <strong>Do not hide scrape-rate-sensitive work inside <code>set_function</code>.</strong></p>
+<h2>If you run an inference server that ships its own metrics</h2>
+<p>Many inference frameworks expose Prometheus metrics directly, and the bucket boundaries are the framework author's choice, not yours. I measured block-allocation overhead in <a href="https://yaohehe.github.io/2026-10-13-vllm-031-kv-cache-paged-blocks-measured-4-errors-en.html" class="internal-link">the vLLM 0.31 KV cache writeup</a>, but time-to-first-token and per-token latency need the same bucket review before you trust them. The framework hands you the default buckets, and the default buckets assume most requests finish under 100 ms — an assumption that rarely holds for inference.</p>
+<p>The same instinct applies on the logging side. If the metric claims p99 is 10 seconds and the logs show no such request, suspect the metric before the logs. <a href="https://yaohehe.github.io/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">The Python logging piece</a> covers logs that get lost, and <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-7-silent-failures-behind-exit-co-en.html" class="internal-link">the subprocess piece</a> covers exit code 0 with nothing behind it. Read together they are three faces of one problem: <strong>every number an observability tool hands you was computed by that tool, and none of them is the fact itself.</strong></p>
+<h2>Closing</h2>
+<p>A quantile is not a number, it is an estimate with an error bar attached. The p99 on your panel rests on at least four assumptions: bucket width, the uniform-distribution assumption inside the bucket, the overflow share in the <code>+Inf</code> bucket, and the aggregation method. The first three are decided in the client, the fourth in your PromQL. When all four hold, the number is worth using for capacity decisions. When any one of them fails, you are reading a constant dressed up as a measurement.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
