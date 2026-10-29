@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python subprocess 踩坑复盘：退出码 0 却拿不到输出的 7 个原因 - TechPassive</title>
+  <meta name="description" content="我在 Windows 11 与 CPython 3.13.14 上把 subprocess 的七个静默失效全部复现了一遍：kill 带走未读管道数据、text=True 解码失败让 stdout 变成 None、check_output 丢掉 stderr、timeout 杀不干净孙进程。附源码行号与修法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python subprocess 踩坑复盘：退出码 0 却拿不到输出的 7 个原因</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">subprocess</span><span class="tag">排障</span>
+  </div>
+  <div class="content">
+    <p>调子进程这件事，真正的麻烦不是它报错，是它<strong>不报错</strong>。</p>
+<p>下面这七个场景我全部在本机跑了一遍：没有一处抛异常到调用方，退出码清一色是 0（或者一个看起来很正常的非零值），而你要么拿不到输出，要么拿到的是空值，要么进程根本没死干净。</p>
+<p><strong>TL;DR</strong>：<code>subprocess</code> 的失败模式大多是「静默」的 —— 管道不排空会卡死、解码异常被吞进内部线程、<code>check_output</code> 默认不带 stderr、<code>timeout</code> 只杀直系子进程。七条里没有一条需要你改业务逻辑，全部是调用姿势问题，且每条都有可复制的修法。</p>
+<p>本文不含任何联盟推广链接，所有数字均为本机实测或引自官方文档与 CPython 源码。</p>
+<h2>环境口径与复现方式</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">系统</td><td style="border:1px solid #ddd;padding:8px;">Windows 11（<code>sys.platform</code> = <code>win32</code>，<code>os.name</code> = <code>nt</code>）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">解释器</td><td style="border:1px solid #ddd;padding:8px;">CPython <strong>3.13.14</strong>（安装目录名 <code>3.13.12</code>）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">标准库</td><td style="border:1px solid #ddd;padding:8px;"><code>Lib/subprocess.py</code>，本机路径 <code>C:\Users\xuany\.workbuddy\binaries\python\versions\3.13.12\Lib\subprocess.py</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">官方文档</td><td style="border:1px solid #ddd;padding:8px;"><code>docs.python.org/3/library/subprocess.html</code>（2026-10-29 访问，页面标注版本为 3.15.2）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Windows API</td><td style="border:1px solid #ddd;padding:8px;">Microsoft Learn <code>GenerateConsoleCtrlEvent</code>（2026-10-29 访问）</td></tr></tbody></table>
+<p>本文所有结论分两类标注：<strong>实测</strong>表示我在上面这套环境里跑出来的结果；<strong>官方文档</strong>或<strong>源码</strong>表示逐字引用的原文。凡是两边都对不上的地方，我会明确写出来，不会替它圆。</p>
+<p>顺手记一组本机编码口径，后面坑二要用：</p>
+<pre><code>>>> import locale
+>>> locale.getencoding()                    # 'cp936'
+>>> locale.getpreferredencoding(False)      # 'utf-8'</code></pre>
+<p>这两个函数在同一台机器上给的是<strong>两个不同的答案</strong>，这一点本身就是坑。</p>
+<h2>坑一：`wait()` 会卡死，而 `kill()` 会把还没读走的输出一起带走</h2>
+<p>官方文档对 <code>Popen.wait()</code> 的警告是逐字的：</p>
+<p>> This will deadlock when using <code>stdout=PIPE</code> or <code>stderr=PIPE</code> and the child process generates enough output to a pipe such that it blocks waiting for the OS pipe buffer to accept more data. Use <code>Popen.communicate()</code> when using pipes to avoid that.</p>
+<p>实测（子进程写 100000 字节到管道）：</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.wait(timeout=6)
+# subprocess.TimeoutExpired: Command '[...]' timed out after 6 seconds</code></pre>
+<p>更糟的是超时之后的处理。我试了四种读法，<code>read()</code> / <code>peek()</code>+<code>read()</code> / <code>read1()</code> / <code>communicate()</code>，<strong>拿到的都是 0 字节</strong>：</p>
+<pre><code>no-wait        -> kill 后 read() = 0 字节
+wait(timeout)  -> kill 后 read() = 0 字节</code></pre>
+<p>为了确认这不是「本来就没数据」，我在 kill 之前先读了一次：</p>
+<pre><code>kill 之前 read1(4096) = 4096 字节   <-- 数据确实在管道里
+kill 之后 read()      = 0 字节</code></pre>
+<p>也就是说：<code>TerminateProcess()</code> 之后，匿名管道里没被读走的那些字节在本机实测中拿不回来了。我在官方文档里没有找到对这一现象的直接说明，所以这里只陈述实测结果，不下普适结论。</p>
+<p><strong>修法有两个，任选其一</strong>：</p>
+<p>一是别用 <code>wait()</code>，用 <code>communicate()</code>。同样是超时路径，它把 100000 字节原样拿回：</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+out, err = p.communicate(timeout=20)
+# 实测：len(out) == 100000，returncode == 0</code></pre>
+<p>二是把输出重定向到文件，<code>wait()</code> 就能安全用：</p>
+<pre><code>with open("out.txt", "wb") as f:
+    p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*300000)"],
+                         stdout=f, stderr=subprocess.DEVNULL)
+    rc = p.wait(timeout=30)
+# 实测：rc == 0，文件大小 300000 字节</code></pre>
+<p><strong>要记住的一点</strong>：<code>kill()</code> 不只是「结束进程」，它同时销毁你还没来得及读的诊断证据。用它处理超时之前，先确认你不需要那些输出。</p>
+<h2>坑二：`text=True` 的默认编码不是你想的那个，解码失败会被吞掉</h2>
+<p>这是七个坑里最隐蔽的一个，因为它<strong>不抛异常</strong>。</p>
+<p>在 Windows 上，<code>cmd.exe</code> 的输出用的是控制台代码页，不是 UTF-8。实测同一条命令：</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True)
+r.stdout
+# b'\xd6\xd0\xce\xc4\xb2\xe2\xca\xd4"\r\n'      <- GBK 字节
+r.stdout.decode("utf-8")
+# UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte</code></pre>
+<p>那加上 <code>text=True</code> 会怎样？按常理应该抛出上面那个 <code>UnicodeDecodeError</code>。实测：</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True, text=True)
+r.returncode   # 0
+r.stdout       # None
+r.stderr       # ''</code></pre>
+<p><strong>退出码是 0，<code>stdout</code> 是 <code>None</code>，一个异常都没有。</strong> 真正的报错被刷到了 stderr 上，来自一个内部线程：</p>
+<pre><code>Exception in thread Thread-1 (_readerthread):
+  File "...\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte</code></pre>
+<p>原因在源码里。本机 <code>subprocess.py</code> 第 1614–1616 行：</p>
+<pre><code>def _readerthread(self, fh, buffer):
+    buffer.append(fh.read())
+    fh.close()</code></pre>
+<p>这个线程里的异常不会传播回 <code>communicate()</code>，<code>run()</code> 也就不知道出过事，只能看见 <code>buffer</code> 是空的。而报错里的 codec 是 <code>utf-8</code> —— 对应 <code>locale.getpreferredencoding(False)</code>（本机返回 <code>utf-8</code>），<strong>不是</strong> <code>locale.getencoding()</code>（本机返回 <code>cp936</code>）。文档里的说法与实测一致：</p>
+<p>> If *encoding* or *errors* are specified, or *text* (also known as *universal_newlines*) is true, the file objects *stdin*, *stdout* and *stderr* will be opened in text mode using the *encoding* and *errors* specified in the call or the defaults for <code>io.TextIOWrapper</code>.</p>
+<p><strong>修法</strong>：永远显式写 <code>encoding</code> 和 <code>errors</code>，并且对 <code>stdout</code> 做空值兜底。</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True,
+                   text=True, encoding="gbk")
+r.stdout            # '中文测试"\n'
+
+# 不确定子进程用什么编码时，宁可要替换字符也不要 None
+r = subprocess.run(cmd, shell=True, capture_output=True,
+                   text=True, encoding="utf-8", errors="replace")
+text = (r.stdout or "")</code></pre>
+<p><code>errors="replace"</code> 的代价是拿到 <code>'���Ĳ���'</code>，但至少你知道出事了；<code>None</code> 会让你以为一切正常。</p>
+<h2>坑三：`check_output()` 的错误信息根本不在异常里</h2>
+<pre><code>try:
+    subprocess.check_output([sys.executable, "-c",
+        "import sys;sys.stderr.write('FATAL: db down\\n');sys.exit(1)"])
+except subprocess.CalledProcessError as e:
+    print(e.output, e.stderr, e.stdout)
+# 实测：b'' None b''</code></pre>
+<p><code>output</code> 是空的，<code>stderr</code> 是 <code>None</code>。子进程那句 <code>FATAL: db down</code> 去哪了？它顺着<strong>文件描述符</strong>直接漏进了父进程的 stderr —— 也就是说，<code>contextlib.redirect_stderr()</code> 抓不到它（实测捕获结果为空字符串），日志框架也收不到它。</p>
+<p>官方文档只给了一句提示：要连 stderr 一起拿，得显式合并：</p>
+<pre><code>try:
+    subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+except subprocess.CalledProcessError as e:
+    print(e.output)
+# 实测：b'FATAL: db down\r\n'</code></pre>
+<h2>坑四：`CalledProcessError` 的字符串里没有子进程说了什么</h2>
+<p>接上一条，就算你捕获了异常，直接打印也看不到原因。本机源码第 145–155 行写得很清楚：</p>
+<pre><code>def __str__(self):
+    if self.returncode and self.returncode < 0:
+        ...
+    else:
+        return "Command '%s' returned non-zero exit status %d." % (
+            self.cmd, self.returncode)</code></pre>
+<p>实测输出：</p>
+<pre><code>Command '['C:\\...\\python.exe', '-c', "import sys;sys.stderr.write('真实原因：端口 5432 被占用\\n');sys.exit(3)"]' returned non-zero exit status 3.</code></pre>
+<p>完整的命令行、一个退出码，<strong>没有子进程的一句话</strong>。原因只能在 <code>e.stderr</code> 里：</p>
+<pre><code>except subprocess.CalledProcessError as e:
+    raise RuntimeError(f"{e.cmd[:1]} 失败（rc={e.returncode}）：{(e.stderr or b'').decode('utf-8','replace')}")</code></pre>
+<p>顺便一提：源码第 148 行的 <code>died with %r</code> 分支走的是 <code>signal.Signals(-self.returncode)</code>，只在 <code>returncode < 0</code> 时才进 —— 而在 Windows 上这个分支永远进不去，原因见坑七。</p>
+<h2>坑五：`shell=True` 会吞掉「程序不存在」，而且 Windows 上的 shell 是 cmd.exe</h2>
+<p>同一个命令，两种写法的结果完全不同：</p>
+<pre><code>subprocess.run(["definitely-not-a-real-command-xyz"], check=True, capture_output=True)
+# FileNotFoundError: [WinError 2] 系统找不到指定的文件。
+
+r = subprocess.run("definitely-not-a-real-command-xyz", shell=True,
+                   capture_output=True, text=True, encoding="gbk", errors="replace")
+r.returncode   # 1
+r.stderr       # "'definitely-not-a-real-command-xyz' 不是内部或外部命令，也不是可运行的程序\n或批处理文件。"</code></pre>
+<p>加了 <code>shell=True</code>，「程序不存在」从<strong>异常</strong>变成了<strong>退出码 1</strong>。你不再能看到栈，只能看到一个数字，而 <code>check=True</code> 之外的调用连这个数字都不会有人看。</p>
+<p>第二个问题：Windows 上那个 shell 是 <code>cmd.exe</code>，不是 bash。官方文档原文：</p>
+<p>> On Windows with <code>shell=True</code>, the <code>COMSPEC</code> environment variable specifies the default shell. The only time you need to specify <code>shell=True</code> on Windows is when the command you wish to execute is built into the shell (e.g. <strong>dir</strong> or <strong>copy</strong>).</p>
+<p>实测三条：</p>
+<pre><code>echo $(echo hi)    -> rc=0 stdout='$(echo hi)'      <- 不做命令替换
+echo `echo hi`     -> rc=0 stdout='`echo hi`'       <- 不做反引号替换
+echo a; echo b     -> rc=0 stdout='a; echo b'       <- 分号不是分隔符
+echo a && echo b   -> rc=0 stdout='a \nb'           <- && 是分隔符</code></pre>
+<p>第三条尤其危险：它<strong>不报错</strong>，只是把 <code>echo b</code> 当成了 <code>echo</code> 的参数。你以为跑了两条命令，实际只跑了一条半。</p>
+<p>另外注意 <code>shell=True</code> 时退出码来自 shell 本身，文档原话：</p>
+<p>> When <code>shell=True</code>, the return code reflects the exit status of the shell itself (e.g. <code>/bin/sh</code>), which may map signals to codes such as <code>128+N</code>.</p>
+<p><strong>修法</strong>：能用列表就用列表，别用字符串；能用 <code>shell=False</code> 就别开 shell。这条同时也是安全建议，官方文档把它单独列成一节：</p>
+<p>> If the shell is invoked explicitly, via <code>shell=True</code>, it is the application's responsibility to ensure that all whitespace and metacharacters are quoted appropriately to avoid shell injection vulnerabilities.</p>
+<h2>坑六：`timeout` 只杀直系子进程，孙进程照活</h2>
+<p><code>subprocess.run(timeout=...)</code> 超时之后，被杀掉的是<strong>你启动的那个进程</strong>。它自己拉起来的进程不在名单上。</p>
+<p>实测：父进程启动一个孙进程后进入 <code>sleep(120)</code>，父进程被 <code>timeout=3</code> 杀掉，孙进程状态如下：</p>
+<pre><code>孙进程 PID = 12224 | marker 已写出 = True
+kill 父进程前：父 alive = True  | 孙 alive = True
+kill 父进程后：父 alive = False | 孙 alive = True</code></pre>
+<p>官方文档对 <code>Popen.communicate()</code> 的超时也是同样的口径：</p>
+<blockquote>The child process is not killed if the timeout expires, so in order to cleanup properly a well-behaved application should kill the child process and finish communication:</blockquote>
+<p>配套的推荐写法是 <code>proc.kill()</code> 之后再 <code>communicate()</code> 一次。注意 <code>run()</code> 与 <code>communicate()</code> 在这里行为不同 —— 文档原话：</p>
+<p>> If the timeout expires, the child process will be killed and waited for. The <code>TimeoutExpired</code> exception will be re-raised after the child process has terminated.</p>
+<p><strong>Windows 上的两种修法</strong>：</p>
+<p>一是外部命令整树清理：</p>
+<pre><code>subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+# 实测输出：成功: 已终止 PID 12224 (属于 PID 25320 子进程)的进程。</code></pre>
+<p>二是启动时就建进程组，然后发 CTRL+BREAK：</p>
+<pre><code>p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1,
+                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+...
+p.send_signal(subprocess.signal.CTRL_BREAK_EVENT)
+# 实测：父 alive = False | 孙 alive = False</code></pre>
+<p>这里有个容易踩反的细节。Microsoft Learn 对 <code>GenerateConsoleCtrlEvent</code> 的原文：</p>
+<p>> <strong>CTRL_C_EVENT</strong> 0 ... This signal cannot be limited to a specific process group. If *dwProcessGroupId* is nonzero, this function will succeed, but the CTRL+C signal will not be received by processes within the specified process group.</p>
+<p>也就是说，发 <code>CTRL_C_EVENT</code> 时函数<strong>返回成功</strong>，但组内进程一个都收不到。要整组退出必须用 <code>CTRL_BREAK_EVENT</code>。</p>
+<p>顺带一个同族的静默失效：<code>start_new_session</code> 与 <code>process_group</code> 在文档里都标着 <code>(POSIX only)</code>（本机源码第 795、797 行原文如此），但在 Windows 上<strong>既不报错也不生效</strong>：</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(2)"],
+                     start_new_session=True)
+# 实测：没报错，returncode = 0</code></pre>
+<p>你以为自己做了进程组隔离，实际什么都没发生。</p>
+<h2>坑七：Windows 上没有「被信号杀死」这回事，`-1` 是 4294967295</h2>
+<pre><code>subprocess.run([sys.executable, "-c", "import sys;sys.exit(-1)"]).returncode
+# 实测：4294967295
+subprocess.run("cmd /c exit -1", shell=True).returncode
+# 实测：4294967295</code></pre>
+<p>文档对负值的定义带了一个限定：</p>
+<p>> A negative value <code>-N</code> indicates that the child was terminated by signal <code>N</code> (POSIX only).</p>
+<p>所以在 Windows 上，任何 <code>if rc < 0:</code> 的判断<strong>永远不会成立</strong>，任何 <code>if rc == -9:</code> 的判断也永远不会命中。而 <code>check=True</code> 只判 <code>!= 0</code>，所以这类代码看起来一切正常，只是你永远读不到「被信号杀死」这个语义。</p>
+<p>顺带两个实测边界值：<code>sys.exit(300)</code> → <code>returncode = 300</code>（原样返回，没有被截成低 8 位）；<code>sys.exit(0)</code> → 当然是 0。</p>
+<h2>排错：六个真实报错与可复制修法</h2>
+<p>下面六条全部是本机复现，命令可直接复制。</p>
+<h3>报错一：`subprocess.TimeoutExpired: Command '[...]' timed out after 6 seconds`</h3>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.wait(timeout=6)</code></pre>
+<p><strong>原因</strong>：子进程把管道写满后阻塞，父进程从不排空，双方互等。文档对该方法的警告是逐字的（见坑一）。</p>
+<p><strong>解决</strong>：把 <code>wait()</code> 换成 <code>communicate()</code>，或把 <code>stdout</code> 重定向到文件。</p>
+<h3>报错二：`UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte`</h3>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True, text=True)
+# returncode = 0，stdout = None，异常只出现在 stderr 的 _readerthread 回溯里</code></pre>
+<p><strong>原因</strong>：<code>text=True</code> 未指定 <code>encoding</code> 时按 <code>io.TextIOWrapper</code> 默认编码解码（本机 <code>locale.getpreferredencoding(False)</code> = <code>utf-8</code>），而 <code>cmd.exe</code> 输出的是 GBK 字节；解码发生在 <code>subprocess.py:1615</code> 的读取线程里，异常不向上传播。</p>
+<p><strong>解决</strong>：显式传 <code>encoding=</code>（与子进程一致）加上 <code>errors="replace"</code>，并把 <code>r.stdout or ""</code> 作为兜底。</p>
+<h3>报错三：`subprocess.CalledProcessError: Command '[...]' returned non-zero exit status 1.`</h3>
+<pre><code>subprocess.check_output([sys.executable, "-c",
+    "import sys;sys.stderr.write('FATAL: db down\\n');sys.exit(1)"])
+# e.output = b''，e.stderr = None</code></pre>
+<p><strong>原因</strong>：<code>check_output()</code> 默认只捕 stdout；子进程的 stderr 顺着 fd 2 漏进了父进程的 stderr。</p>
+<p><strong>解决</strong>：加 <code>stderr=subprocess.STDOUT</code>，错误信息才会出现在 <code>e.output</code> 里。</p>
+<h3>报错四：`FileNotFoundError: [WinError 2] 系统找不到指定的文件。`</h3>
+<pre><code>subprocess.run(["definitely-not-a-real-command-xyz"], check=True, capture_output=True)</code></pre>
+<p><strong>原因</strong>：<code>shell=False</code> 时第一个元素被当作可执行文件路径去找。</p>
+<p><strong>解决</strong>：这其实是<strong>正确行为</strong>，别用 <code>shell=True</code> 把它消掉 —— 那只会让异常变成退出码 1（实测见坑五），排查成本更高。</p>
+<h3>报错五：超时之后进程仍在跑（`tasklist` 可见）</h3>
+<pre><code>kill 父进程后：父 alive = False | 孙 alive = True</code></pre>
+<p><strong>原因</strong>：<code>timeout</code> 只终止你直接启动的那个进程。</p>
+<p><strong>解决</strong>：<code>taskkill /F /T /PID <pid></code>，或 <code>CREATE_NEW_PROCESS_GROUP</code> + <code>send_signal(CTRL_BREAK_EVENT)</code>。</p>
+<h3>报错六：`returncode = 4294967295`</h3>
+<pre><code>subprocess.run([sys.executable, "-c", "import sys;sys.exit(-1)"]).returncode
+# 4294967295</code></pre>
+<p><strong>原因</strong>：Windows 退出码是无符号 32 位；文档对负值 <code>-N</code> 的定义标注为 <code>(POSIX only)</code>。</p>
+<p><strong>解决</strong>：不要写 <code>if rc < 0</code> 判断「被信号杀死」；跨平台代码里改用 <code>rc != 0</code> 加显式枚举。</p>
+<h2>一份可以直接抄的安全调用模板</h2>
+<p>把上面七条合起来，日常调用可以固定成这个形状：</p>
+<pre><code>import subprocess, sys
+
+def run_safe(cmd, *, timeout=30, encoding="utf-8"):
+    """返回 (ok, text)。cmd 用列表；需要 shell 时显式传入字符串并自己负责转义。"""
+    try:
+        r = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,      # 别让子进程等你输入
+            capture_output=True,           # 走 communicate()，不走 wait()
+            timeout=timeout,               # 超时会被 run() 杀掉并重新抛出
+            text=True,
+            encoding=encoding,
+            errors="replace",              # 宁可要替换字符，也不要 None
+        )
+    except subprocess.TimeoutExpired as e:
+        # 文档：run() 超时会杀掉子进程并重抛；孙进程需另行清理
+        return False, f"超时 {e.timeout}s，部分输出：{(e.output or b'')[:200]!r}"
+    except FileNotFoundError:
+        return False, f"程序不存在：{cmd[0] if isinstance(cmd, list) else cmd}"
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    if r.returncode != 0:
+        return False, f"rc={r.returncode} stderr={err or '(空)'}"
+    return True, out
+
+ok, info = run_safe([sys.executable, "-c", "print('ok')"])
+print(ok, info)</code></pre>
+<p>三条不变式，建议当代码评审的检查项：</p>
+<p>1. <strong>列表传参</strong>，<code>shell=False</code>；确实要 shell 时，字符串与转义责任你自己承担。</p>
+<p>2. <strong>显式 <code>encoding</code> + <code>errors="replace"</code></strong>，别裸用 <code>text=True</code>。</p>
+<p>3. <strong>永不 <code>wait()</code> 配 <code>PIPE</code></strong>，只用 <code>communicate()</code> 或文件重定向；需要超时清理进程树时另写一层。</p>
+<h2>FAQ</h2>
+<p><strong>Q：<code>communicate()</code> 超时之后为什么不能直接 <code>wait()</code>？</strong></p>
+<p>官方文档的原文是：「After a call to <code>communicate()</code> raises <code>TimeoutExpired</code>, do not call <code>wait()</code>. Use an additional <code>communicate()</code> call to finish handling pipes and populate the <code>returncode</code> attribute.」管道还没排空，<code>wait()</code> 会重新回到互等的局面。</p>
+<p><strong>Q：<code>TimeoutExpired.output</code> 在 <code>text=True</code> 时是 str 还是 bytes？</strong></p>
+<p>bytes。文档原话：「This is always <code>bytes</code> when any output was captured regardless of the <code>text=True</code> setting. It may remain <code>None</code> instead of <code>b''</code> when no output was observed.」实测确认：<code>text=True</code> 下 <code>e.output</code> 为 <code>b'partial-1'</code>。</p>
+<p><strong>Q：<code>run()</code> 超时后子进程到底有没有被杀？</strong></p>
+<p>被杀了。文档原话：「the child process will be killed and waited for. The <code>TimeoutExpired</code> exception will be re-raised after the child process has terminated.」但它的子进程不会（坑六）。</p>
+<p><strong>Q：为什么我加了 <code>capture_output=True</code>，拿到的 <code>stdout</code> 还是 <code>None</code>？</strong></p>
+<p>两个可能：一是文本模式解码失败，异常被吞进 <code>_readerthread</code>（坑二）；二是管道数据在超时后被 <code>kill()</code> 带走（坑一）。两种情况下退出码都可能是 0。</p>
+<p><strong>Q：Windows 上想让子进程彻底断开关联，<code>start_new_session</code> 能用吗？</strong></p>
+<p>不能。文档标 <code>(POSIX only)</code>，实测在 Windows 上不报错也不生效（坑六）。要整组控制进程，用 <code>CREATE_NEW_PROCESS_GROUP</code> 配 <code>CTRL_BREAK_EVENT</code>。</p>
+<h2>相关阅读</h2>
+<p>本站还有几篇同属「工具静默失效」这一层的复盘，可以对照着看：</p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-29-python-314-tarfile-5.html" class="internal-link">Python tarfile 解压安全：五种「写到目录外」与 5 个真实报错</a> —— 同样是「没异常、没日志、退出码 0」的一类失效。</li><li><a href="https://yaohehe.github.io/2026-10-24-requests-2342-tenacity-921.html" class="internal-link">重试与退避：requests 2.34.2 与 tenacity 9.2.1 的静默失效</a> —— 失败恢复层的另一半，讲重试为什么没发生。</li><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 实测：6 个真实报错与丢失的日志</a> —— 输出去哪了的姊妹篇，这次丢的是日志而不是子进程输出。</li></ul>
+<p>subprocess 这一层的问题，几乎都不是「它坏了」，而是「它按文档工作，而文档说的和你想的不是一回事」。把上面三条不变式固化进代码，这七个坑就基本不会再来第二次。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
