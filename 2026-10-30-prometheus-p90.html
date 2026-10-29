@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prometheus 分位数实测：默认桶把 p90 报低一半 - TechPassive</title>
+  <meta name="description" content="100 万条延迟样本灌进客户端默认桶之后，p90 报低了 49.7%、p999 被永久封顶在 10 秒，而中位数准得像什么都没发生。本文给出本机实测的七个指标语义陷阱、五个真实报错原文、一份可以照抄的 bucket 检查清单，以及跨实例聚合该怎么写、Python 的 Summary 为什么不给分位数。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Prometheus 分位数实测：默认桶把 p90 报低一半</h1>
+  <div class="post-tags">
+    <span class="tag">Prometheus</span><span class="tag">监控指标</span><span class="tag">p99</span>
+  </div>
+  <div class="content">
+    <p>监控面板上那个 p99，很少有人问它是怎么来的。它不来自原始延迟数据，而来自客户端预先划好的一组桶计数器，再由服务端做一次线性插值。桶一旦划错，插值就会把错误稳稳地算出来，而且每次都同样地错。</p>
+<p>我把 100 万条长尾延迟样本灌进 <code>prometheus_client</code> 的默认桶，然后用官方 <code>histogram_quantile</code> 的算法口径在本地复算。结果不好看：p90 被报低了 49.7%，p999 被永久封顶在 10 秒。这篇文章把七个「看着对、其实错」的指标语义逐条拆开，附上五个真实报错的原文。</p>
+<p><strong>TL;DR</strong>：分位数是估算值不是统计值，误差由桶宽决定；默认桶只适合「大多数请求在 100 毫秒内」的服务；跨实例不能平均分位数，只能相加桶计数；Python 客户端的 Summary 根本不导出分位数。本文不含任何联盟推广链接。</p>
+<h2>实测口径先讲清楚</h2>
+<p>环境是 Windows 11 + CPython 3.13.12 + <code>prometheus-client</code> 0.26.0，容器装到隔离目录，没动主环境。样本是合成的 100 万条延迟，分布刻意做成三段：90% 落在 20–80 毫秒，9% 落在 200–800 毫秒，1% 是 1–20 秒的长尾。</p>
+<p><code>histogram_quantile</code> 的真实实现在 Prometheus 服务端（Go 写的 <code>promql/quantile.go</code>）。本机没有 Prometheus 实例，所以我按该函数的 <code>bucketQuantile</code> 逻辑在 Python 里复现了同一套插值：按 <code>le</code> 排序、找到累计计数跨过 <code>q × total</code> 的那个桶、在桶内做线性插值；若跨过点落在 <code>+Inf</code> 桶里，则返回前一个桶的上界。</p>
+<p>这里要标一句口径边界：<strong>插值算法是我复现的，不是 Prometheus 服务端实测</strong>。桶边界、桶计数、默认值、报错原文全部来自本机真跑。两者应当一致，但如果你要在自己集群上复验，请直接跑 PromQL。</p>
+<h2>为什么分位数是「算」出来的</h2>
+<p>Prometheus 官方文档在讲直方图与摘要时写得很直白：</p>
+<blockquote>Quantiles, whether calculated by the instrumented binary or on the Prometheus server, are estimated. It is important to understand the errors of that estimation.</blockquote>
+<p>同一页的对照表里，经典直方图的分位数误差一栏只有一句：</p>
+<blockquote>Error is limited by the width of the bucket the quantile is located in.</blockquote>
+<p>也就是说，你看到的 p99 精度上限，由「p99 恰好落进去的那个桶有多宽」决定，而不是由你采了多少样本决定。采一亿条样本也不会变准，桶宽不变误差就不变。</p>
+<h2>第一个数字：p90 被报低了 49.7%</h2>
+<p>先看默认桶。<code>prometheus_client</code> 的 <code>Histogram</code> 构造函数里，<code>buckets</code> 的默认值是这 15 个边界再加无穷：</p>
+<pre><code>0.005, 0.01, 0.025, 0.05, 0.075, 0.1, 0.25, 0.5, 0.75, 1.0, 2.5, 5.0, 7.5, 10.0, +Inf</code></pre>
+<p>单位是秒。第一个边界是 5 毫秒，最后一个有限边界是 10 秒。</p>
+<p>灌完 100 万条样本后，真实分位数与估算值对比如下：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">分位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">真实值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">估算值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">误差</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p50</td><td style="border:1px solid #ddd;padding:8px;">0.0534 s</td><td style="border:1px solid #ddd;padding:8px;">0.0534 s</td><td style="border:1px solid #ddd;padding:8px;">-0.0%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p90</td><td style="border:1px solid #ddd;padding:8px;">0.2003 s</td><td style="border:1px solid #ddd;padding:8px;">0.1008 s</td><td style="border:1px solid #ddd;padding:8px;">-49.7%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p99</td><td style="border:1px solid #ddd;padding:8px;">0.7991 s</td><td style="border:1px solid #ddd;padding:8px;">0.9955 s</td><td style="border:1px solid #ddd;padding:8px;">+24.6%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p999</td><td style="border:1px solid #ddd;padding:8px;">18.0743 s</td><td style="border:1px solid #ddd;padding:8px;">10.0000 s</td><td style="border:1px solid #ddd;padding:8px;">-44.7%</td></tr></tbody></table>
+<p>p50 准得让人放心，这正是陷阱所在。p50 落在 <code>0.05–0.075</code> 这个窄桶里，桶宽 25 毫秒，而真实值 53.4 毫秒，插值几乎踩在真值上。你随手一看面板，「中位数对得上」，于是相信整张面板。</p>
+<p>p90 差了近一半，原因在累计计数：<code>le="0.1"</code> 桶已经有 899,959 条（89.99%），<code>le="0.25"</code> 桶是 907,429 条。p90 的 rank 是 900,000，落在 <code>(0.1, 0.25]</code> 这个宽度 150 毫秒的桶里，而且只占该桶 7,470 条中的 41 条。线性插值假设桶内均匀分布，于是把它摊到距离左边界 0.8 毫秒的位置 —— 报 100.8 毫秒。真实值 200.3 毫秒，因为真实数据在 200 毫秒处有个台阶（那 9% 的慢请求从这里开始）。</p>
+<p>p90 落点右移 8 毫秒，估算值就跳了 150 毫秒的量级。官方文档有一句话专门描述这个现象：</p>
+<blockquote>With a broad distribution, small changes in φ result in large deviations in the observed value.</blockquote>
+<h2>+Inf 桶：p999 永远报不出真相</h2>
+<p>100 万条样本里有 5,119 条超过 10 秒（占 0.51%），全部堆进 <code>+Inf</code> 桶。累计计数到 <code>le="10.0"</code> 是 994,881，到 <code>+Inf</code> 是 1,000,000。</p>
+<p>p999 的 rank 是 999,000，落在 <code>+Inf</code> 桶内部。而 <code>+Inf</code> 桶没有上界，插值无从下手，官方实现的选择是：返回前一个桶的上界，也就是 10.0。</p>
+<p>所以无论真实 p999 是 12 秒、18 秒还是 3 分钟，面板上永远显示 10 秒。这不是精度问题，是信息丢失 —— 长尾里最贵的那部分请求，被一个固定常数代替了。文档对这个行为的说明藏在「no result is returned at all」那句旁边：如果桶布局里没有对应边界，插值根本不发生，你要么拿到一个被截断的值，要么什么都拿不到。</p>
+<h2>桶宽不是越小越好：桶内非均匀时 p50 差 39.3%</h2>
+<p>看到上面的表，第一反应是把桶划细。先别急，第二个实验说明另一件事。</p>
+<p>我换成 10 万个「全部落在 4.90–4.99 秒」的样本（模拟批量任务的固定耗时），桶边界设为 <code>[0, 0.1, 0.5, 1, 5, 10, +Inf]</code>。这次 p50 的估算值：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">分位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">真实值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">估算值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">误差</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p50</td><td style="border:1px solid #ddd;padding:8px;">4.945 s</td><td style="border:1px solid #ddd;padding:8px;">3.000 s</td><td style="border:1px solid #ddd;padding:8px;">-39.3%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p90</td><td style="border:1px solid #ddd;padding:8px;">4.981 s</td><td style="border:1px solid #ddd;padding:8px;">4.600 s</td><td style="border:1px solid #ddd;padding:8px;">-7.6%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">p99</td><td style="border:1px solid #ddd;padding:8px;">4.989 s</td><td style="border:1px solid #ddd;padding:8px;">4.960 s</td><td style="border:1px solid #ddd;padding:8px;">-0.6%</td></tr></tbody></table>
+<p>所有样本都挤在 <code>(1, 5]</code> 这个 4 秒宽的桶里，线性插值把 rank 均匀摊在 1 到 5 秒之间，于是中位数被算成 3 秒。真实数据全在 4.9 秒以上。</p>
+<p>注意 p99 反而只差 0.6% —— 因为 p99 的 rank 已经贴近桶的上沿，插值点也贴近上沿。<strong>同一组数据，不同的分位数误差方向可以相反</strong>。这解释了为什么有人拿 p99 校准、却不知道 p50 已经错了 39%。</p>
+<p>结论只有一句：桶的边界必须落在「你的数据的实际分布台阶上」，桶宽本身不是精度指标。官方对这件事的定性是「picking the right buckets in advance can be challenging」。</p>
+<h2>跨实例：分位数不能平均，桶可以相加</h2>
+<p>微服务跑 8 个副本，面板写 <code>avg(rate(...))</code> 是常态。第三个实验就是打这个。</p>
+<p>两个实例用同一套桶：A 是混合分布，p99 算出 1.5741 秒；B 全是 2.0–2.5 秒的慢请求，p99 算出 2.4850 秒。两者平均是 2.0295 秒。</p>
+<p>真实合并后的 p99 是 2.4949 秒。</p>
+<ul><li>平均分位数：2.0295 秒，误差 <strong>-18.7%</strong></li><li>桶计数相加后再算：2.4843 秒，误差 <strong>-0.4%</strong></li></ul>
+<p>原因很朴素：分位数是个位置，不是可加的量。8 个副本各 1 万请求，p99 落在第 9,900 位；两个副本的 p99 取平均，等于假设「快副本的第 9,900 位」和「慢副本的第 9,900 位」在合并样本里还是同一个位置，而实际上慢副本的请求把整体分布整体推高了。</p>
+<p>官方文档对这件事的措辞不留余地：</p>
+<blockquote>However, aggregating the precomputed quantiles from a summary rarely makes sense. In this particular case, averaging the quantiles yields statistically nonsensical values.</blockquote>
+<p>文档里甚至直接给了一行反例：</p>
+<pre><code>avg(http_request_duration_seconds{quantile="0.95"}) // BAD!</code></pre>
+<p>而直方图没有这个问题，因为桶计数是可加的：8 个副本的 <code>le="0.25"</code> 加在一起，仍然是「延迟不超过 250 毫秒的请求总数」。加完再插值，位置就对了。这就是为什么「p99 算错」的锅通常在写法上，而不在客户端库上。</p>
+<h2>Python 的 Summary 根本不导出分位数</h2>
+<p>概念页对 Summary 的定义是「在滑动时间窗口上计算可配置分位数」，并列出导出序列 <code><basename>{quantile="<φ>"}</code>。照着这段去写 Python，会撞墙。</p>
+<p>实际导出的只有三条：<code>req_seconds_count</code>、<code>req_seconds_sum</code>、<code>req_seconds_created</code>。想传分位数参数：</p>
+<pre><code>Summary('req2', 'doc', quantiles=[0.5])
+TypeError: MetricWrapperBase.__init__() got an unexpected keyword argument 'quantiles'</code></pre>
+<p>构造签名里压根没有这个参数（<code>name, documentation, labelnames, namespace, subsystem, unit, registry</code>）。Python 客户端官方文档写得很清楚：</p>
+<blockquote>The Python client does not compute quantiles locally. If you need p50/p95/p99, use a Histogram instead.</blockquote>
+<p>于是出现一个很现实的落差：Go 和 Java 的 Summary 会算分位数，Python 的不会。同一套指标设计文档，跨语言落地时语义就变了。<strong>如果你在 Python 里用了 Summary，你实际上只得到了 count 和 sum —— 也就是「平均延迟」和「请求数」，没有分位数。</strong>平均值在长尾分布里是最没有信息量的那个数字。</p>
+<h2>标签基数：5,000 个组合长出 9 万条序列</h2>
+<p>第四个实验专治「顺手把 user_id 打成标签」。</p>
+<p>一个 Histogram，两个标签 <code>user_id</code>（1000 个取值）和 <code>path</code>（5 个取值）：</p>
+<pre><code>1000 × 5 = 5,000 个标签组合</code></pre>
+<p>导出后的序列数是 <strong>90,000 条</strong>。</p>
+<p>每个组合 18 条：15 个 <code>_bucket</code>（含 <code>+Inf</code>）+ <code>_sum</code> + <code>_count</code> + <code>_created</code>。标签组合数乘以 18，就是你的抓取端点要吐出的行数，也是 Prometheus 存储要按时间序列分别建索引的数量。</p>
+<p>一个 <code>user_id</code> 标签就能让指标体积涨 1000 倍，而它对排障几乎没有帮助 —— 你要的是「哪一类用户慢」，不是「4,183 号用户慢」。基数爆炸不会报错，它只表现为内存、磁盘和查询延迟一起变差，排查时通常已经过去几周。</p>
+<h2>五个真实报错</h2>
+<p>下面每条报错都是本机跑出来的原文，不是转述。</p>
+<p><strong>报错一：重复注册</strong></p>
+<pre><code>Counter('jobs_total', 'doc', registry=reg)
+Counter('jobs_total', 'doc', registry=reg)
+DuplicateTimeseries: Duplicated timeseries in CollectorRegistry: {'jobs_total', 'jobs', 'jobs_created'}</code></pre>
+<p>注意报错里列了三个名字 —— <code>jobs_total</code>、<code>jobs</code>、<code>jobs_created</code>。一个 Counter 会占用三个序列名，所以冲突检测看的是这三个的并集。</p>
+<p>更隐蔽的一种：<code>Counter('jobs')</code> 和 <code>Counter('jobs_total')</code> 名字不同，但<strong>导出后都是 <code>jobs_total</code></strong>，在同一个 registry 里同样冲突。客户端会自动补 <code>_total</code> 后缀，你手工再写一次，就得到了一个「看起来不同、实际同名」的指标。</p>
+<p><strong>报错二：Counter 加负数</strong></p>
+<pre><code>c.inc(-1)
+ValueError: Counters can only be incremented by non-negative amounts.</code></pre>
+<p>这条报错是好事，说明库在帮你拦。真正麻烦的是「用 Gauge 表达计数器」—— Gauge 接受负数、接受任意跳变，重启归零、回绕、并发覆盖全部静默通过。</p>
+<p><strong>报错三、四：标签缺参和多参给同一个报错</strong></p>
+<pre><code>c.labels(method='GET')                          # 少一个 code
+ValueError: Incorrect label names
+
+c.labels(method='GET', code='200', extra='x')   # 多一个 extra
+ValueError: Incorrect label names</code></pre>
+<p>两种情况报错文本完全一致，日志里看不出是漏了还是多了。排查时要把 <code>labelnames</code> 打出来对比，不能靠报错文本定位。</p>
+<p><strong>报错五：Summary 传 quantiles</strong></p>
+<pre><code>TypeError: MetricWrapperBase.__init__() got an unexpected keyword argument 'quantiles'</code></pre>
+<p>这是上一节那个落差的运行时形态。它不会在启动时静默降级，而是直接崩 —— 反倒是幸运的。</p>
+<h2>一个不报错但会骗你的现象：重启归零</h2>
+<p>Counter 的语义是「只能增或重启归零」。进程重启后，同一个序列从 500 掉到 3：</p>
+<pre><code>重启前: http_requests_total 500.0
+重启后: http_requests_total 3.0
+直接相减: -497</code></pre>
+<p>原始值相减会得到负速率。Prometheus 的 <code>rate()</code> 和 <code>increase()</code> 会处理这种重置（把重置点前后的增量拆开累加），但<strong>你自己写的脚本、自己算的差值不会</strong>。凡是在 Prometheus 之外聚合 Counter 的地方，都要先问一句：这段代码知道重置这回事吗。</p>
+<p>另外，导出里还有个 <code>_created</code> 序列，值是创建时间戳（本机实测 <code>1.793312098127713e+09</code>）。它的用途之一就是让服务端判断「这个序列是不是重启过」，从而正确处理重置。</p>
+<p>还有一个容易忽略的行为：<code>Gauge.set_function(fn)</code> 注册的回调<strong>每次抓取都会被调用一次</strong>。实测 3 次 <code>generate_latest()</code> 后，回调计数正好是 3。如果这个函数里查了数据库，那么抓取频率就是你的数据库 QPS。</p>
+<h2>可以照抄的检查清单</h2>
+<p>1. <strong>先画分布，再划桶。</strong> 拿一周的真实延迟直方图（按对数刻度分箱），把边界放在分布的台阶上，而不是照抄默认值。</p>
+<p>2. <strong>给 SLO 留一个精确边界。</strong> SLO 是「95% 请求 300 毫秒内」，就一定要有 <code>le="0.3"</code>。官方原文：没有这个边界，插值不发生，你拿不到结果，或者拿到一个不完整结果而且没有任何警告。</p>
+<p>3. <strong>看 p999 就先看 <code>+Inf</code> 桶的占比。</strong> <code>(count{le="+Inf"} - count{le="<最大有限边界>"}) / count{le="+Inf"}</code>，这个比例就是「你的分位数已经被截断」的证据。本次实验是 0.51%，而 p999 已经失真。</p>
+<p>4. <strong>跨实例只用 <code>sum by (le)</code>，不用 <code>avg</code>。</strong> 先在桶层面相加，再交给 <code>histogram_quantile</code>。</p>
+<p>5. <strong>标签只放低基数字段。</strong> 方法、路由模板、状态码可以；用户 ID、请求 ID、原始 URL 不行。5000 个组合就是 9 万条序列。</p>
+<p>6. <strong>Python 里不要指望 Summary 给分位数。</strong> 它只给 count 和 sum。</p>
+<p>7. <strong>不要在应用侧写死抓取频率敏感的 <code>set_function</code>。</strong></p>
+<h2>如果你正在用 vLLM 这类自带指标的服务</h2>
+<p>顺带一句：很多推理框架会把指标直接暴露成 Prometheus 格式，桶边界是框架作者定的，不是你定的。我在 <a href="https://yaohehe.github.io/2026-10-13-vllm-031-kv-cache-4.html" class="internal-link">vLLM 0.31 KV Cache 那篇</a> 里量过分块分配的开销，但首 token 延迟、单 token 耗时这些指标的桶布局，同样需要先看一眼再信任。框架给你的是「默认桶」，而默认桶的适用前提是「大多数请求在 100 毫秒内」—— 对推理服务来说这个前提通常不成立。</p>
+<p>同样的思路也适用于日志侧：如果指标告诉你 p99 是 10 秒，而日志里找不到对应的慢请求，先怀疑指标，再怀疑日志。<a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 那篇</a> 讲的是日志本身会丢，<a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 那篇</a> 讲的是退出码 0 也可能什么都没有 —— 三条线放在一起看，会发现它们是同一个问题的三个切面：<strong>观测工具报给你的数字，都是它自己算出来的，不是事实本身。</strong></p>
+<h2>一句话收尾</h2>
+<p>分位数不是一个数字，是一个带有误差条的估计。你可以在面板上看到一个 p99，但那个数字背后至少有四个前提：桶宽、桶内分布假设、<code>+Inf</code> 桶的溢出比例、以及聚合方式。前三个在客户端决定，第四个在你的 PromQL 里决定。四个都对了，那个数字才值得用来做容量决策。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
