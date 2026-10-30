@@ -738,7 +738,12 @@ def generate_index(articles, header, footer, lang='cn'):
 
 
 def generate_sitemap(articles, today):
-    """生成 sitemap XML — 极简格式，仅保留 Google 实际读取的 <loc> + <lastmod>"""
+    """生成 sitemap XML — 极简格式，仅保留 Google 实际读取的 <loc> + <lastmod>
+
+    2026-10-30 变更（Bing「站点地图缺少重要页面」）：
+      - 补入固定页 about.html / privacy-policy.html（此前只收录文章页 → Bing 判定缺页）
+      - 固定页仅在其文件真实存在时才写入，避免产生 404 条目
+    """
     lines = ['<?xml version="1.0" encoding="UTF-8"?>',
              '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
              '  <url>',
@@ -749,6 +754,13 @@ def generate_sitemap(articles, today):
              '    <loc>https://yaohehe.github.io/index-en.html</loc>',
              f'    <lastmod>{today}</lastmod>',
              '  </url>']
+    # 固定页（非日期命名，原先被 get_date_from_filename 过滤掉）
+    for static_page in ('about.html', 'privacy-policy.html'):
+        if os.path.exists(os.path.join(BLOG_DIR, static_page)):
+            lines.append('  <url>')
+            lines.append(f'    <loc>https://yaohehe.github.io/{static_page}</loc>')
+            lines.append(f'    <lastmod>{today}</lastmod>')
+            lines.append('  </url>')
     for date, filename, title in articles:
         url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
         lines.append('  <url>')
@@ -833,10 +845,25 @@ def main():
     print(f"✅ index-en.html 已更新（{len(en_articles)} 篇）")
 
     # 生成 sitemap.xml
+    # 2026-10-30：加防缩水断言。Bing 报「站点地图缺少重要页面」的机制之一，
+    # 是某次生成的 sitemap 条目数骤减后覆盖了线上地图（本地镜像不完整时尤其危险）。
     sitemap = generate_sitemap(all_articles, today)
-    with open(os.path.join(BLOG_DIR, 'sitemap.xml'), 'w', encoding='utf-8') as f:
-        f.write(sitemap)
-    print(f"✅ sitemap.xml 已更新（{len(all_articles)} 篇）")
+    sitemap_path = os.path.join(BLOG_DIR, 'sitemap.xml')
+    old_count = 0
+    if os.path.exists(sitemap_path):
+        try:
+            with open(sitemap_path, encoding='utf-8') as f:
+                old_count = f.read().count('<loc>')
+        except Exception:
+            old_count = 0
+    new_count = sitemap.count('<loc>')
+    if new_count < old_count:
+        print(f"⚠️ 新 sitemap 条目 {new_count} < 现有 {old_count}，拒绝覆盖（防地图缩水）")
+    else:
+        with open(sitemap_path, 'w', encoding='utf-8') as f:
+            f.write(sitemap)
+        print(f"✅ sitemap.xml 已更新（{len(all_articles)} 篇文章 + 固定页，共 {new_count} 条）")
+
 
     print(f"📅 更新日期：{today}")
 
