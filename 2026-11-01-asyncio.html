@@ -76,18 +76,18 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <main id="main-content">
   <h1>asyncio 取消与超时：六处不报错的失效点（实测）</h1>
   <div class="post-tags">
-    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">asyncio</span><span class="tag">异步</span>
+    <span class="tag">Python</span><span class="tag">asyncio</span><span class="tag">异步</span>
   </div>
   <div class="content">
-    <p><strong>TL;DR</strong>：asyncio 里的取消是一次异常，超时是取消的二次包装。这两件事有六个地方既不抛错也不写日志：<code>except Exception</code> 看不见 <code>CancelledError</code>；<code>except OSError</code> 会把超时和网络错误一起吞掉；<code>wait_for</code> 的 deadline 能被内层协程吃成一个「业务返回值」；<code>asyncio.timeout()</code> 打不断同步阻塞；<code>shield</code> 之后内层抛出的异常没人认领；<code>run_in_executor</code> 的 <code>cancel()</code> 只改了 Future 的状态。六个场景我都在 CPython 3.13.14 加 Windows 11 上真跑了一遍，下面每条都附可复制脚本与修法。</p>
+    <p><strong>TL;DR</strong>：<a href="/2026-11-01-asyncio-cancellation-six-silent-failures-reproduce-en.html" class="internal-link">asyncio</a> 里的取消是一次异常，超时是取消的二次包装。这两件事有六个地方既不抛错也不写日志：<code>except Exception</code> 看不见 <code>CancelledError</code>；<code>except OSError</code> 会把超时和网络错误一起吞掉；<code>wait_for</code> 的 deadline 能被内层协程吃成一个「业务返回值」；<code>asyncio.timeout()</code> 打不断同步阻塞；<code>shield</code> 之后内层抛出的异常没人认领；<code>run_in_executor</code> 的 <code>cancel()</code> 只改了 Future 的状态。六个场景我都在 CPython 3.13.14 加 Windows 11 上真跑了一遍，下面每条都附可复制脚本与修法。</p>
 <h2>先说清楚为什么这六处都不会报错</h2>
 <p>asyncio 的取消机制只有两个动作：取消是在目标任务的某个 <code>await</code> 点上抛出 <code>asyncio.CancelledError</code>；超时是定时器到点后对<strong>当前任务</strong>发起取消，再由上下文管理器在退出时把 <code>CancelledError</code> 转换成 <code>TimeoutError</code>。</p>
 <p>官方文档把第二句话写在 <code>asyncio.timeout()</code> 的 Note 里：「The <code>asyncio.timeout()</code> context manager is what transforms the <code>asyncio.CancelledError</code> into a <code>TimeoutError</code>, which means the <code>TimeoutError</code> can only be caught *outside* of the context manager.」</p>
 <p>这两句话能推出三件事，六个坑全部由它们派生：</p>
-<ul><li>取消与超时走同一条通道，<strong>谁把 <code>CancelledError</code> 接住吃掉，超时就一起消失</strong>，而且不报错。</li><li><code>CancelledError</code> 自 <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.8 起直接继承 <code>BaseException</code>，<strong><code>except Exception</code> 这一层完全看不到它</strong>。</li><li>取消只能落在 <code>await</code> 点上，<strong>手里没有 await 的同步代码收不到任何信号</strong>。</li></ul>
+<ul><li>取消与超时走同一条通道，<strong>谁把 <code>CancelledError</code> 接住吃掉，超时就一起消失</strong>，而且不报错。</li><li><code>CancelledError</code> 自 Python 3.8 起直接继承 <code>BaseException</code>，<strong><code>except Exception</code> 这一层完全看不到它</strong>。</li><li>取消只能落在 <code>await</code> 点上，<strong>手里没有 await 的同步代码收不到任何信号</strong>。</li></ul>
 <h2>环境与复现命令</h2>
 <pre><code>python -V
-# <a href="/2026-10-28-json-vs-orjson-vs-msgspec-nine-defaults-tested-en.html" class="internal-link">Python</a> 3.13.14</code></pre>
+# Python 3.13.14</code></pre>
 <p>文档口径读自 docs.python.org/3（2026-11-01 抓取）。我实际在本机跑了二十来段最小复现，下面每个数字都是脚本打印出来的：CPython 3.13.14 加 Windows 11。</p>
 <h2>坑一 except Exception 抓不到取消</h2>
 <pre><code>import asyncio
