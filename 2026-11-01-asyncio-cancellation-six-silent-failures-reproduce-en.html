@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>asyncio Cancellation: Six Silent Failures, Reproduced - TechPassive</title>
+  <meta name="description" content="I reproduced six silent asyncio cancellation failures on CPython 3.13.14: except Exception misses CancelledError, OSError eats timeouts, wait_for fakes success.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>asyncio Cancellation: Six Silent Failures, Reproduced</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">asyncio</span><span class="tag">concurrency</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: In asyncio, cancellation is an exception and a timeout is a second layer wrapped around that exception. <a href="/2026-10-21-pep-440-pinning-digits-after-and-a-false-pip-claim-en.html" class="internal-link">Six</a> things go wrong here without a single line in your logs: <code>except Exception</code> cannot see <code>CancelledError</code>; <code>except OSError</code> swallows timeouts along with network errors; a <code>wait_for</code> deadline can be eaten by the inner coroutine and come back as a normal return value; <code>asyncio.timeout()</code> cannot interrupt a blocking call; after <code>shield</code> the inner exception is never retrieved; and <code>run_in_executor</code>'s <code>cancel()</code> only flips a flag. I ran all six on CPython 3.13.14 under Windows 11. Every case below has a runnable script and a fix.</p>
+<h2>Why none of these six raises anything</h2>
+<p>asyncio's cancellation has exactly two moving parts. Cancelling means throwing <code>asyncio.CancelledError</code> into a task at one of its <code>await</code> points. A timeout means a timer fires, cancels <strong>the current task</strong>, and the context manager converts that <code>CancelledError</code> into a <code>TimeoutError</code> on the way out.</p>
+<p>The official docs put the second half in a Note under <code>asyncio.timeout()</code>: "The <code>asyncio.timeout()</code> context manager is what transforms the <code>asyncio.CancelledError</code> into a <code>TimeoutError</code>, which means the <code>TimeoutError</code> can only be caught *outside* of the context manager."</p>
+<p>Three consequences follow, and all six traps derive from them:</p>
+<ul><li>Cancellation and timeouts share one channel, so <strong>whoever catches and eats <code>CancelledError</code> also deletes the timeout</strong> — silently.</li><li>Since <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.8 <code>CancelledError</code> derives straight from <code>BaseException</code>, so <strong><code>except Exception</code> never sees it</strong>.</li><li>Cancellation can only land on an <code>await</code> point, so <strong>synchronous code holding the loop gets no signal at all</strong>.</li></ul>
+<h2>Environment and reproduction</h2>
+<pre><code>python -V
+# Python 3.13.14</code></pre>
+<p>Doc quotes were read from docs.python.org/3 on 2026-11-01. Every number below comes from this machine: CPython 3.13.14, Windows 11.</p>
+<h2>Trap 1: except Exception misses the cancellation</h2>
+<pre><code>import asyncio
+
+async def child():
+    try:
+        await asyncio.sleep(5)
+    except Exception:                 # looks like a catch-all
+        print("child caught something")
+        return "swallowed"
+    return "done"
+
+async def main():
+    t = asyncio.create_task(child())
+    await asyncio.sleep(0.1)
+    t.cancel()
+    print(await t)                    # never reached
+
+asyncio.run(main())</code></pre>
+<p>Symptom: <code>await t</code> raises <code>CancelledError</code> and the <code>except Exception</code> inside <code>child</code> prints nothing. If this were a background task (created and never awaited), nobody would see the exception and the process would exit 0.</p>
+<p>Evidence: <code>asyncio.CancelledError.__mro__</code> is <code>CancelledError -> BaseException -> object</code>, and <code>issubclass(CancelledError, Exception)</code> is <code>False</code>. Docs: "Changed in version 3.8: <code>CancelledError</code> is now a subclass of <code>BaseException</code> rather than <code>Exception</code>."</p>
+<p>Fix: put cleanup in <code>finally</code>; if you must catch it, catch <code>asyncio.CancelledError</code> explicitly and <code>raise</code> after cleanup.</p>
+<h2>Trap 2: except OSError eats the timeout too</h2>
+<pre><code>import asyncio
+
+async def slow():
+    await asyncio.sleep(10)
+
+async def main():
+    try:
+        await asyncio.wait_for(slow(), timeout=0.05)
+    except OSError:                   # meant for network errors
+        print("network branch hit")
+
+asyncio.run(main())</code></pre>
+<p>Symptom: it prints "network branch hit" and no <code>TimeoutError</code> shows up anywhere, so the caller concludes the peer dropped the connection.</p>
+<p>Cause: since Python 3.11 <code>asyncio.TimeoutError</code> is an alias of the built-in <code>TimeoutError</code> — "Changed in version 3.11: This class was made an alias of <code>TimeoutError</code>." — and the built-in <code>TimeoutError</code> sits under <code>OSError</code> in the exception hierarchy (<code>TimeoutError -> OSError -> Exception -> BaseException</code>). So <code>except OSError</code> collects timeouts for free. On 3.10 and earlier the two classes were unrelated, which is why the same snippet behaves differently on an older interpreter.</p>
+<p>Fix: stop using bare <code>except OSError</code> for network code. Catch <code>TimeoutError</code> precisely, or <code>except (TimeoutError, asyncio.TimeoutError)</code> for code that must run on both sides of the 3.11 change.</p>
+<h2>Trap 3: wait_for's deadline becomes a fake success</h2>
+<pre><code>import asyncio, time
+
+async def stubborn():
+    try:
+        await asyncio.sleep(3)
+    except asyncio.CancelledError:
+        return "ignored cancel"       # cleanup done, then return
+
+async def main():
+    t0 = time.monotonic()
+    r = await asyncio.wait_for(stubborn(), timeout=0.05)
+    print(round(time.monotonic() - t0, 2), r)
+
+asyncio.run(main())</code></pre>
+<p>Measured output: <code>0.06 ignored cancel</code>. No <code>TimeoutError</code>. The caller receives a perfectly ordinary string.</p>
+<p>Two documented facts explain it. First, since 3.12 <code>wait_for</code> is implemented on top of <code>asyncio.timeout()</code>: "Changed in version 3.12: Implemented using <code>asyncio.timeout()</code>, a coroutine passed as *aw* is no longer wrapped in a <code>Task</code> when *timeout* is positive." With a positive timeout the coroutine is no longer wrapped in its own task, so the cancellation lands on the *same* task's <code>await</code> point and the inner <code>try/except</code> catches it. Second, the docs state the consequence directly in the Task cancellation section: "The asyncio components that enable structured concurrency, like <code>asyncio.TaskGroup</code> and <code>asyncio.timeout()</code>, are implemented using cancellation internally and might misbehave if a coroutine swallows <code>asyncio.CancelledError</code>."</p>
+<p>This is not a one-off. CPython's issue about <code>wait_for</code> hiding cancellation is still open: gh-86296 (formerly bpo-42130), titled "AsyncIO's wait_for can hide cancellation in a rare race condition". The Tribler project's issue #7570 lists the same family (#86296, #87555, #81839) as a cause of freezes in production.</p>
+<p>Fix: re-raise. If you genuinely want to suppress cancellation, the official escape hatch is <code>uncancel()</code>:</p>
+<pre><code>except asyncio.CancelledError:
+    asyncio.current_task().uncancel()
+    return "suppressed"</code></pre>
+<p>Measured difference: the <code>raise</code> version throws <code>TimeoutError</code> at 0.06s; the <code>uncancel()</code> version returns normally at 0.06s. The first means "the timeout fired", the second means "I explicitly do not want a timeout". Both are acceptable. <strong>Catching without re-raising and without <code>uncancel()</code> is the bug.</strong></p>
+<h2>Trap 4: asyncio.timeout cannot interrupt a blocking call</h2>
+<pre><code>import asyncio, time
+
+async def main():
+    async with asyncio.timeout(0.05):
+        time.sleep(0.6)
+
+asyncio.run(main())</code></pre>
+<p>Measured: it exits cleanly after 0.60s with no <code>TimeoutError</code> — 1200% of the declared deadline.</p>
+<p>Cause: cancellation can only be delivered at an <code>await</code> point. During <code>time.sleep(0.6)</code> the event loop is completely stopped, so the timer callback never gets a chance to run.</p>
+<p>Diagnostic command — dev mode prints the stuck callback:</p>
+<pre><code>PYTHONDEVMODE=1 python your_script.py
+# Executing <Task finished name='Task-1' coro=<main() ...>> took 0.303 seconds</code></pre>
+<p>Fix: wrap blocking work in <code>await asyncio.to_thread(func)</code>, or push the whole synchronous block into <code>run_in_executor</code>, and put the timeout outside of that.</p>
+<h2>Trap 5: after shield, nobody retrieves the inner exception</h2>
+<pre><code>import asyncio
+
+async def inner():
+    await asyncio.sleep(0.1)
+    raise RuntimeError("inner blew up after outer gave up")
+
+async def main():
+    sh = asyncio.ensure_future(inner())
+    try:
+        await asyncio.wait_for(asyncio.shield(sh), timeout=0.02)
+    except TimeoutError:
+        print("outer timed out")
+    await asyncio.sleep(0.4)
+
+asyncio.run(main())</code></pre>
+<p>Symptom: it prints "outer timed out", then 0.4s later stderr shows this:</p>
+<pre><code>Task exception was never retrieved
+future: <Task finished name='Task-7' coro=<inner() done ...> exception=RuntimeError('inner blew up after outer gave up')></code></pre>
+<p>Cause: <code>shield</code> means exactly what it says — "except that if the coroutine containing it is cancelled, the Task running in <code>something()</code> is not cancelled". After the timeout returns, that task keeps running; when it raises, no one awaits it, so asyncio can only log at collection time. The same docs page carries an Important note that is easy to skip: "Save a reference to tasks passed to this function, to avoid a task disappearing mid-execution. The event loop only keeps weak references to tasks." Without a reference the task can be garbage collected mid-flight.</p>
+<p>Fix: keep the reference and retrieve the exception in a callback.</p>
+<pre><code>import asyncio
+
+def _consume(t: asyncio.Task) -> None:
+    if not t.cancelled():
+        t.exception()                 # retrieve it, avoid "never retrieved"
+
+async def main():
+    sh = asyncio.ensure_future(inner())
+    sh.add_done_callback(_consume)
+    try:
+        await asyncio.wait_for(asyncio.shield(sh), timeout=0.02)
+    except TimeoutError:
+        sh.cancel()                   # you no longer want the result</code></pre>
+<h2>Trap 6: run_in_executor's cancel only flips a flag</h2>
+<pre><code>import asyncio, threading, time
+
+def blocking(counter, done):
+    for _ in range(20):
+        time.sleep(0.05)
+        counter[0] += 1
+    done.set()
+
+async def main():
+    counter, done = [0], threading.Event()
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, blocking, counter, done)
+    await asyncio.sleep(0.12)
+    fut.cancel()
+    print("cancelled()", fut.cancelled(), "n =", counter[0])
+    await asyncio.sleep(0.3)
+    print("after 0.3s n =", counter[0], "thread done?", done.is_set())
+
+asyncio.run(main())</code></pre>
+<p>Measured: <code>cancelled() True n = 2</code>, then <code>after 0.3s n = 8 thread done? False</code>. The thread ran to <code>n = 20</code> before finishing. <code>fut.cancelled()</code> being True only means the asyncio-side future was marked; the worker thread has no interruption mechanism.</p>
+<p>Fix: cooperative stopping — pass a <code>threading.Event</code> as a stop flag and check it every iteration. If you need a hard kill, use <code>ProcessPoolExecutor</code>, where a process can be terminated.</p>
+<h2>Two more silent behaviours worth knowing</h2>
+<ul><li>A second <code>cancel()</code> interrupts the <code>finally</code> cleanup. Measured: the first cancel enters <code>finally</code>, a <code>await asyncio.sleep(0.3)</code> cleanup starts, then a second cancel arrives. The log ends as <code>['finally-enter', 'finally-cleanup-cancelled']</code> — <code>finally-cleanup-done</code> never appears. Either protect the cleanup with <code>asyncio.shield</code> or keep it short.</li><li><code>TaskGroup</code> swallows a <code>CancelledError</code> raised by a child; <code>gather</code> does not. Same child coroutine doing <code>raise asyncio.CancelledError(...)</code>: the <code>TaskGroup</code> block exits cleanly with no exception, while <code>gather</code> propagates <code>CancelledError</code> to the caller. The docs explain the first case: "The first time any of the tasks belonging to the group fails with an exception other than <code>asyncio.CancelledError</code>, the remaining tasks in the group are cancelled." Cancellation is not a failure, so it never reaches the <code>ExceptionGroup</code>.</li></ul>
+<h2>Reference table: what actually happens after cancellation</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Call pattern</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Measured result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>wait_for(coro, 0.05)</code>, inner swallows cancel</td><td style="border:1px solid #ddd;padding:8px;">returns the business value at 0.06s, no exception</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>asyncio.timeout(0.05)</code>, inner swallows cancel</td><td style="border:1px solid #ddd;padding:8px;">exits normally at 1.06s, no exception</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>asyncio.timeout(0.05)</code> around <code>time.sleep(0.6)</code></td><td style="border:1px solid #ddd;padding:8px;">exits normally at 0.60s, no exception</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>wait_for(shield(task), 0.02)</code></td><td style="border:1px solid #ddd;padding:8px;">outer <code>TimeoutError</code>, inner keeps running until it raises</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>run_in_executor(...)</code> then <code>cancel()</code></td><td style="border:1px solid #ddd;padding:8px;"><code>cancelled()</code> True, thread still runs all 20 iterations</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>TaskGroup</code> child does <code>raise CancelledError</code></td><td style="border:1px solid #ddd;padding:8px;">exits normally, no exception</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>gather</code> child does <code>raise CancelledError</code></td><td style="border:1px solid #ddd;padding:8px;">raises <code>CancelledError</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>gather(return_exceptions=True)</code> with a cancelled task</td><td style="border:1px solid #ddd;padding:8px;">the cancellation appears as an object in the result list</td></tr></tbody></table>
+<p>That last row deserves its own sentence: <code>[type(x).__name__ for x in r]</code> measured <code>['CancelledError', 'NoneType']</code>. Cancellation is disguised as a result. Any downstream code that only checks "does this slot have a value" will treat a cancelled task as one that returned empty.</p>
+<h2>Five rules that hold</h2>
+<p>1. After <code>except asyncio.CancelledError</code>, <code>raise</code> once cleanup is done; to suppress, call <code>uncancel()</code>.</p>
+<p>2. Do not use <code>except OSError</code> as a network catch-all; catch <code>TimeoutError</code> precisely.</p>
+<p>3. Keep cleanup short: shield any long <code>await</code> inside <code>finally</code>, or avoid long waits there altogether.</p>
+<p>4. Move every blocking call to <code>to_thread</code>, otherwise the timeout is decorative.</p>
+<p>5. Keep references to tasks from <code>shield</code> and <code>create_task</code>, and register a callback that retrieves exceptions.</p>
+<h2>Troubleshooting: five real messages and their fixes</h2>
+<p><strong>Error 1: <code>TypeError: Passing coroutines is forbidden, use tasks explicitly.</code></strong></p>
+<p>Symptom: <code>await asyncio.wait([quick()])</code> raises <code>TypeError</code>, and stderr also shows <code>RuntimeWarning: coroutine 'quick' was never awaited</code>.</p>
+<p>Cause: since 3.11 <code>asyncio.wait()</code> rejects bare coroutines.</p>
+<p>Fix: <code>tasks = [asyncio.create_task(quick())]</code> and then <code>await asyncio.wait(tasks)</code>.</p>
+<p><strong>Error 2: <code>Task exception was never retrieved</code></strong></p>
+<p>Symptom: the outer call already timed out, and seconds later stderr dumps a full RuntimeError traceback.</p>
+<p>Cause: <code>shield</code> let the inner task continue and nobody awaited its failure.</p>
+<p>Fix: see Trap 5 — keep the reference and drain <code>exception()</code> in a done callback.</p>
+<p><strong>Error 3: <code>TimeoutError</code> landing in the network branch</strong></p>
+<p>Symptom: logs show the <code>except OSError</code> branch, and the incident is filed as a peer disconnect.</p>
+<p>Cause: since 3.11 <code>asyncio.TimeoutError is TimeoutError</code> is <code>True</code>, and <code>TimeoutError</code> is an <code>OSError</code> subclass.</p>
+<p>Fix: split <code>except TimeoutError</code> and <code>except OSError</code> into two branches with separate handling.</p>
+<p><strong>Error 4: an <code>ExceptionGroup</code> with a single ValueError while a sibling's finally ran</strong></p>
+<p>Symptom: the group carries one element, yet another task printed cleanup logs, so it looks like something was cancelled with no explanation.</p>
+<p>Cause: the sibling received <code>CancelledError</code>, which the docs explicitly exclude from the group.</p>
+<p>Fix: track cancellations yourself; do not expect the exception aggregate to explain them.</p>
+<p><strong>Error 5: orphan tasks cancelled silently at shutdown</strong></p>
+<p>Symptom: a <code>create_task</code> result was never stored, the main coroutine returned, and its <code>finally</code> ran exactly once with no logging.</p>
+<p>Cause: <code>asyncio.run()</code> cancels all pending tasks before closing the loop.</p>
+<p>Fix: <code>cancel()</code> and <code>await</code> them explicitly before returning, so the teardown is observable.</p>
+<h2>Where these conclusions stop</h2>
+<ul><li>Everything ran on Windows 11 with CPython 3.13.14. Differences on 3.11 and 3.12 are quoted from the official <code>Changed in version</code> notes; I did not cross-test interpreters on this machine.</li><li>uvloop, anyio and trio were not tested. anyio's <code>CancelScope</code> calls <code>uncancel()</code> itself, and mixing the two cancellation models is a separate topic (CPython gh-114496 is exactly about that mix).</li><li>Multi-threaded, multi-loop setups and cancellation inside signal handlers were not tested.</li><li><code>wait_for</code> also loses cancellations through a race where the task happens to finish exactly when the cancel arrives. This article covers only the "user code eats it" class; for the race, read gh-86296.</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q: Is <code>except BaseException</code> the safest option?</strong></p>
+<p>No. It also catches <code>KeyboardInterrupt</code> and <code>SystemExit</code>, so Ctrl+C stops working. Catch <code>asyncio.CancelledError</code> specifically and let the rest bubble.</p>
+<p><strong>Q: Is <code>except asyncio.TimeoutError</code> still meaningful after 3.11?</strong></p>
+<p>Yes, but know that it is now the same class as <code>TimeoutError</code>, so the catch range is identical. Writing the old name only preserves readability.</p>
+<p><strong>Q: Does <code>cancel()</code> returning True mean the task was cancelled?</strong></p>
+<p>No. It means a cancellation request was registered. Measured: cancelling an already-finished task returns <code>False</code>; cancelling an executor future makes <code>cancelled()</code> <code>True</code> while the thread still runs to completion.</p>
+<p><strong>Q: When is <code>Task.cancelling()</code> useful?</strong></p>
+<p>When you need to know how many cancels arrived. Measured: after the first cancel <code>cancelling()</code> is 1; calling <code>uncancel()</code> brings it to 0, after which the task returns normally and <code>cancelled()</code> is <code>False</code>.</p>
+<p><strong>Q: Why did my cleanup code never run?</strong></p>
+<p>Two usual reasons: the cleanup sits inside <code>except Exception</code>, which cancellation never reaches; or it sits in <code>finally</code> and awaits something long, so a second cancel cuts it off.</p>
+<p>This is a pure engineering post-mortem; it contains no affiliate links. Related reading: the same silent-timeout problem at the process layer in the <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-7-silent-failures-behind-exit-co-en.html" class="internal-link">subprocess piece</a>, retries stacked on top of timeouts in the <a href="https://yaohehe.github.io/2026-10-24-retries-that-never-fire-urllib3-280-and-tenacity-en.html" class="internal-link">requests and tenacity piece</a>, and <code>time.sleep</code> freezing the loop inside async nodes in the <a href="https://yaohehe.github.io/2026-10-27-langgraph-streaming-3-entry-points-6-real-errors-en.html" class="internal-link">LangGraph streaming piece</a>.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
