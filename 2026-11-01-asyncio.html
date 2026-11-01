@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>asyncio 取消与超时：六处不报错的失效点 - TechPassive</title>
+  <meta name="description" content="我在 CPython 3.13.14 上复现了 asyncio 取消与超时的六处静默失效：except Exception 漏掉 CancelledError、except OSError 连超时一起吞、wait_for 把超时变成假成功、executor 的 cancel 杀不掉线程。每条给出可复制脚本与修法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>asyncio 取消与超时：六处不报错的失效点（实测）</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">asyncio</span><span class="tag">异步</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：asyncio 里的取消是一次异常，超时是取消的二次包装。这两件事有六个地方既不抛错也不写日志：<code>except Exception</code> 看不见 <code>CancelledError</code>；<code>except OSError</code> 会把超时和网络错误一起吞掉；<code>wait_for</code> 的 deadline 能被内层协程吃成一个「业务返回值」；<code>asyncio.timeout()</code> 打不断同步阻塞；<code>shield</code> 之后内层抛出的异常没人认领；<code>run_in_executor</code> 的 <code>cancel()</code> 只改了 Future 的状态。六个场景我都在 CPython 3.13.14 加 Windows 11 上真跑了一遍，下面每条都附可复制脚本与修法。</p>
+<h2>先说清楚为什么这六处都不会报错</h2>
+<p>asyncio 的取消机制只有两个动作：取消是在目标任务的某个 <code>await</code> 点上抛出 <code>asyncio.CancelledError</code>；超时是定时器到点后对<strong>当前任务</strong>发起取消，再由上下文管理器在退出时把 <code>CancelledError</code> 转换成 <code>TimeoutError</code>。</p>
+<p>官方文档把第二句话写在 <code>asyncio.timeout()</code> 的 Note 里：「The <code>asyncio.timeout()</code> context manager is what transforms the <code>asyncio.CancelledError</code> into a <code>TimeoutError</code>, which means the <code>TimeoutError</code> can only be caught *outside* of the context manager.」</p>
+<p>这两句话能推出三件事，六个坑全部由它们派生：</p>
+<ul><li>取消与超时走同一条通道，<strong>谁把 <code>CancelledError</code> 接住吃掉，超时就一起消失</strong>，而且不报错。</li><li><code>CancelledError</code> 自 <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.8 起直接继承 <code>BaseException</code>，<strong><code>except Exception</code> 这一层完全看不到它</strong>。</li><li>取消只能落在 <code>await</code> 点上，<strong>手里没有 await 的同步代码收不到任何信号</strong>。</li></ul>
+<h2>环境与复现命令</h2>
+<pre><code>python -V
+# <a href="/2026-10-28-json-vs-orjson-vs-msgspec-nine-defaults-tested-en.html" class="internal-link">Python</a> 3.13.14</code></pre>
+<p>文档口径读自 docs.python.org/3（2026-11-01 抓取）。我实际在本机跑了二十来段最小复现，下面每个数字都是脚本打印出来的：CPython 3.13.14 加 Windows 11。</p>
+<h2>坑一 except Exception 抓不到取消</h2>
+<pre><code>import asyncio
+
+async def child():
+    try:
+        await asyncio.sleep(5)
+    except Exception:                 # 以为能兜住一切
+        print("child caught something")
+        return "swallowed"
+    return "done"
+
+async def main():
+    t = asyncio.create_task(child())
+    await asyncio.sleep(0.1)
+    t.cancel()
+    print(await t)                    # 这行不会被执行到
+
+asyncio.run(main())</code></pre>
+<p>现象：<code>await t</code> 直接抛 <code>CancelledError</code>，<code>child</code> 里的 <code>except Exception</code> 一行日志都没打。如果这是后台任务（<code>create_task</code> 之后没人 await），异常就没人看见，进程正常退出。</p>
+<p>口径：<code>asyncio.CancelledError.__mro__</code> 是 <code>CancelledError → BaseException → object</code>，<code>issubclass(CancelledError, Exception)</code> 为 False。文档原话「Changed in version 3.8: <code>CancelledError</code> is now a subclass of <code>BaseException</code> rather than <code>Exception</code>.」</p>
+<p>修法：清理逻辑放 <code>finally</code>；需要接住时用 <code>except asyncio.CancelledError</code>，收尾之后必须 <code>raise</code>。</p>
+<h2>坑二 except OSError 把超时一起吞了</h2>
+<pre><code>import asyncio
+
+async def slow():
+    await asyncio.sleep(10)
+
+async def main():
+    try:
+        await asyncio.wait_for(slow(), timeout=0.05)
+    except OSError:                   # 本想兜网络类异常
+        print("网络异常分支被命中")
+
+asyncio.run(main())</code></pre>
+<p>现象：打印「网络异常分支被命中」，日志里找不到 <code>TimeoutError</code>，上游以为是对端连接断了。</p>
+<p>原因：Python 3.11 起 <code>asyncio.TimeoutError</code> 变成内置 <code>TimeoutError</code> 的别名（文档原话「Changed in version 3.11: This class was made an alias of <code>TimeoutError</code>.」），而内置 <code>TimeoutError</code> 在异常层级里挂在 <code>OSError</code> 下面（<code>TimeoutError → OSError → Exception → BaseException</code>）。于是 <code>except OSError</code> 顺手把超时也接住了。3.10 及以前两个类是互不相干的，同一段代码换旧版本不会出现这个现象。</p>
+<p>修法：网络异常别用 <code>OSError</code> 一把兜；要精确就写 <code>except TimeoutError</code>，要兼容旧代码写 <code>except (TimeoutError, asyncio.TimeoutError)</code>（3.11 之后两者是同一个类）。</p>
+<h2>坑三 wait_for 的 deadline 被内层吃成假成功</h2>
+<pre><code>import asyncio, time
+
+async def stubborn():
+    try:
+        await asyncio.sleep(3)
+    except asyncio.CancelledError:
+        return "ignored cancel"       # 收尾做完了，然后 return
+
+async def main():
+    t0 = time.monotonic()
+    r = await asyncio.wait_for(stubborn(), timeout=0.05)
+    print(round(time.monotonic() - t0, 2), r)
+
+asyncio.run(main())</code></pre>
+<p>实测输出是 <code>0.06 ignored cancel</code>，<code>wait_for</code> 没有抛 <code>TimeoutError</code>，调用方拿到一个来路正常的字符串。</p>
+<p>原因分两层。一是 3.12 起 <code>wait_for</code> 改用 <code>asyncio.timeout()</code> 实现，官方改动记录写着「Changed in version 3.12: Implemented using <code>asyncio.timeout()</code>, a coroutine passed as *aw* is no longer wrapped in a <code>Task</code> when *timeout* is positive.」正超时下协程不再被包成独立任务，取消落在同一个任务的 <code>await</code> 点上，被内层的 <code>try/except</code> 直接接住。二是官方在 Task cancellation 小节自己写明了后果：「The asyncio components that enable structured concurrency, like <code>asyncio.TaskGroup</code> and <code>asyncio.timeout()</code>, are implemented using cancellation internally and might misbehave if a coroutine swallows <code>asyncio.CancelledError</code>.」</p>
+<p>这不是孤例。CPython 关于 wait_for 吞取消的 issue 至今仍是 open 状态：gh-86296（原 bpo-42130），标题「AsyncIO's wait_for can hide cancellation in a rare race condition」；第三方项目 Tribler 的 issue #7570 把同一族问题（#86296 / #87555 / #81839）列为程序卡死的成因之一。</p>
+<p>修法：接住取消必须 re-raise。确实想抑制取消，官方给的姿势是显式 <code>uncancel()</code>：</p>
+<pre><code>except asyncio.CancelledError:
+    asyncio.current_task().uncancel()
+    return "suppressed"</code></pre>
+<p>实测两种写法的差别：<code>raise</code> 版在 0.06s 抛 <code>TimeoutError</code>；<code>uncancel()</code> 版在 0.06s 正常返回。前者是「超时生效」，后者是「我明确不要超时」，两者都能接受；<strong>只 try/except、既不 re-raise 也不 uncancel，才是那个 bug</strong>。</p>
+<h2>坑四 asyncio.timeout 打不断同步阻塞</h2>
+<pre><code>import asyncio, time
+
+async def main():
+    async with asyncio.timeout(0.05):
+        time.sleep(0.6)
+
+asyncio.run(main())</code></pre>
+<p>实测：0.60s 后正常退出，没有 <code>TimeoutError</code>，实际耗时是 deadline 的 1200%。</p>
+<p>原因很直白：取消只能在 <code>await</code> 点送达，而 <code>time.sleep(0.6)</code> 期间事件循环整个停摆，定时器回调根本没机会跑。</p>
+<p>诊断命令，dev 模式会把卡住的回调打出来：</p>
+<pre><code>PYTHONDEVMODE=1 python your_script.py
+# Executing <Task finished name='Task-1' coro=<main() ...>> took 0.303 seconds</code></pre>
+<p>修法：阻塞调用换成 <code>await asyncio.to_thread(func)</code>，或者把整段同步逻辑丢进 <code>run_in_executor</code>，再在外面套 timeout。</p>
+<h2>坑五 shield 之后内层异常没人认领</h2>
+<pre><code>import asyncio
+
+async def inner():
+    await asyncio.sleep(0.1)
+    raise RuntimeError("inner blew up after outer gave up")
+
+async def main():
+    sh = asyncio.ensure_future(inner())
+    try:
+        await asyncio.wait_for(asyncio.shield(sh), timeout=0.02)
+    except TimeoutError:
+        print("外层已超时")
+    await asyncio.sleep(0.4)
+
+asyncio.run(main())</code></pre>
+<p>现象：外层打印「外层已超时」，0.4s 之后 stderr 出现下面的内容。</p>
+<pre><code>Task exception was never retrieved
+future: <Task finished name='Task-7' coro=<inner() done ...> exception=RuntimeError('inner blew up after outer gave up')></code></pre>
+<p>原因：<code>shield</code> 的语义就是「外层被取消，内层不受影响」，文档原话「*except* that if the coroutine containing it is cancelled, the Task running in <code>something()</code> is not cancelled」。超时返回之后这个 Task 还在跑，抛出的异常没有任何人 await 它，asyncio 只能在回收时打一条日志。同一页还有一条容易被忽略的 Important：「Save a reference to tasks passed to this function, to avoid a task disappearing mid-execution. The event loop only keeps weak references to tasks.」连引用都不存，任务可能在跑完前就被 GC 回收。</p>
+<p>修法：留引用，并注册回调把异常取走。</p>
+<pre><code>import asyncio
+
+def _consume(t: asyncio.Task) -> None:
+    if not t.cancelled():
+        t.exception()                 # 取出来，避免 never retrieved
+
+async def main():
+    sh = asyncio.ensure_future(inner())
+    sh.add_done_callback(_consume)
+    try:
+        await asyncio.wait_for(asyncio.shield(sh), timeout=0.02)
+    except TimeoutError:
+        sh.cancel()                   # 既然不要结果了，就明确取消</code></pre>
+<h2>坑六 run_in_executor 的 cancel 只是改了个状态</h2>
+<pre><code>import asyncio, threading, time
+
+def blocking(counter, done):
+    for _ in range(20):
+        time.sleep(0.05)
+        counter[0] += 1
+    done.set()
+
+async def main():
+    counter, done = [0], threading.Event()
+    loop = asyncio.get_running_loop()
+    fut = loop.run_in_executor(None, blocking, counter, done)
+    await asyncio.sleep(0.12)
+    fut.cancel()
+    print("cancelled()", fut.cancelled(), "n =", counter[0])
+    await asyncio.sleep(0.3)
+    print("0.3s 后 n =", counter[0], "线程结束吗", done.is_set())
+
+asyncio.run(main())</code></pre>
+<p>实测输出：<code>cancelled() True n = 2</code>，然后 <code>0.3s 后 n = 8 线程结束吗 False</code>。线程最后跑到 n = 20 才结束。<code>fut.cancelled()</code> 为 True 只说明 asyncio 这一侧的 Future 被标记了，底层线程没有中断机制。</p>
+<p>修法：线程池任务用协作式停止，拿一个 <code>threading.Event</code> 当停止信号，函数里每轮检查一次；需要硬中断就用 <code>ProcessPoolExecutor</code>，进程可以被 terminate。</p>
+<h2>两条补充观察也都不报错</h2>
+<ul><li>第二次 <code>cancel()</code> 会打断 <code>finally</code> 里的清理。实测第一次取消进入 <code>finally</code>，里面 <code>await asyncio.sleep(0.3)</code> 做清理时再来一次取消，日志只剩 <code>['finally-enter', 'finally-cleanup-cancelled']</code>，<code>finally-cleanup-done</code> 永远不出现。清理要么在 <code>finally</code> 里用 <code>asyncio.shield</code> 保护，要么干脆不做长等待。</li><li><code>TaskGroup</code> 会吞掉子任务主动抛出的 <code>CancelledError</code>，<code>gather</code> 不会。同一个子协程里 <code>raise asyncio.CancelledError(...)</code>，<code>TaskGroup</code> 上下文正常退出、无异常；<code>gather</code> 直接把 <code>CancelledError</code> 抛给调用方。文档对前者的解释是「The first time any of the tasks belonging to the group fails with an exception other than <code>asyncio.CancelledError</code>, the remaining tasks in the group are cancelled.」取消不算失败，所以不会被打包进 <code>ExceptionGroup</code>。</li></ul>
+<h2>一张对照表：取消送到之后实际发生了什么</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实测结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>wait_for(协程, 0.05)</code> 且内层吞取消</td><td style="border:1px solid #ddd;padding:8px;">0.06s 返回业务值，无异常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>asyncio.timeout(0.05)</code> 且内层吞取消</td><td style="border:1px solid #ddd;padding:8px;">1.06s 正常退出，无异常</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>asyncio.timeout(0.05)</code> 内放 <code>time.sleep(0.6)</code></td><td style="border:1px solid #ddd;padding:8px;">0.60s 正常退出，无异常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>wait_for(shield(task), 0.02)</code></td><td style="border:1px solid #ddd;padding:8px;">外层 <code>TimeoutError</code>，内层继续跑到抛异常</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>run_in_executor(...)</code> 后 <code>cancel()</code></td><td style="border:1px solid #ddd;padding:8px;"><code>cancelled()</code> 为 True，线程跑满 20 轮</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>TaskGroup</code> 子任务 <code>raise CancelledError</code></td><td style="border:1px solid #ddd;padding:8px;">正常退出，无异常</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>gather</code> 子任务 <code>raise CancelledError</code></td><td style="border:1px solid #ddd;padding:8px;">抛出 <code>CancelledError</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>gather(return_exceptions=True)</code> 含被取消任务</td><td style="border:1px solid #ddd;padding:8px;">结果列表里是 <code>CancelledError</code> 对象</td></tr></tbody></table>
+<p>最后一行值得单独说：<code>[type(x).__name__ for x in r]</code> 实测得到 <code>['CancelledError', 'NoneType']</code>，取消被伪装成「结果」。下游只判「这一项有没有值」，就会把一个被取消的任务当成返回了空。</p>
+<h2>正确的写法：五条规则</h2>
+<p>1. <code>except asyncio.CancelledError</code> 之后，清理完必须 <code>raise</code>；要抑制就调 <code>uncancel()</code>。</p>
+<p>2. 不要用 <code>except OSError</code> 兜网络异常，用 <code>TimeoutError</code> 精确接。</p>
+<p>3. 清理路径要短：<code>finally</code> 里的长 await 用 <code>shield</code> 包住，或者不做长等待。</p>
+<p>4. 任何阻塞调用都换成 <code>to_thread</code>，否则超时只是写给自己看的。</p>
+<p>5. <code>shield</code> 与 <code>create_task</code> 产生的任务必须留引用，并注册回调取走异常。</p>
+<h2>Troubleshooting：五条报错原文与修法</h2>
+<p><strong>报错一：<code>TypeError: Passing coroutines is forbidden, use tasks explicitly.</code></strong></p>
+<p>现象：<code>await asyncio.wait([quick()])</code> 直接抛 TypeError，同时 stderr 出现 <code>RuntimeWarning: coroutine 'quick' was never awaited</code>。</p>
+<p>原因：3.11 起 <code>asyncio.wait()</code> 不再接受裸协程，必须先包成任务。</p>
+<p>修法：<code>tasks = [asyncio.create_task(quick())]</code> 之后再 <code>await asyncio.wait(tasks)</code>。</p>
+<p><strong>报错二：<code>Task exception was never retrieved</code></strong></p>
+<p>现象：外层已经超时返回，几秒后 stderr 打出完整的 RuntimeError traceback。</p>
+<p>原因：<code>shield</code> 让内层继续跑，而异常没人 await。</p>
+<p>修法：见坑五，保存引用并 <code>add_done_callback</code> 取走 <code>exception()</code>。</p>
+<p><strong>报错三：<code>TimeoutError</code> 出现在「网络异常」分支里</strong></p>
+<p>现象：日志显示走了 <code>except OSError</code>，业务侧判定为对端断连。</p>
+<p>原因：3.11 起 <code>asyncio.TimeoutError is TimeoutError</code> 为 True，而 <code>TimeoutError</code> 是 <code>OSError</code> 子类。</p>
+<p>修法：把 <code>except TimeoutError</code> 与 <code>except OSError</code> 拆成两个分支，处理逻辑分开写。</p>
+<p><strong>报错四：<code>ExceptionGroup</code> 里只有一条 ValueError，兄弟任务的 finally 却执行了</strong></p>
+<p>现象：<code>TaskGroup</code> 抛出的 <code>ExceptionGroup</code> 只有 1 个元素，另一个任务的 <code>finally</code> 打了清理日志，看起来「被取消了却没人告诉它为什么」。</p>
+<p>原因：兄弟任务收到的是 <code>CancelledError</code>，官方明确它不算失败，不会进 <code>ExceptionGroup</code>。</p>
+<p>修法：需要知道谁被取消了就自己记账，别指望异常聚合。</p>
+<p><strong>报错五：退出时孤儿任务被静默取消</strong></p>
+<p>现象：<code>create_task</code> 出来的任务没存引用，主协程 return 后它的 <code>finally</code> 只执行一次，没有任何日志说明原因。</p>
+<p>原因：<code>asyncio.run()</code> 在关闭事件循环前会取消所有 pending task。</p>
+<p>修法：主协程退出前显式 <code>cancel()</code> 并 <code>await</code>，把收尾放在可观测的位置。</p>
+<h2>什么时候这些结论不成立</h2>
+<ul><li>只在 Windows 11 加 CPython 3.13.14 上跑过。3.11 与 3.12 的行为差异只引官方 <code>Changed in version</code> 记录，没有在本机做跨版本对拍。</li><li>没测 uvloop、anyio、trio。anyio 的 CancelScope 自己在调 <code>uncancel()</code>，两套取消语义混用是另一个话题（CPython gh-114496 讨论的就是这种混用）。</li><li>没测多线程加多事件循环，也没测信号处理路径里的取消。</li><li><code>wait_for</code> 吞取消还有一类原因是竞态：取消到达时任务恰好已经完成。本篇只覆盖「用户代码主动吞掉」这一类，竞态那类请看 gh-86296 原文。</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q：<code>except BaseException</code> 是不是最保险？</strong></p>
+<p>不是。它会把 <code>KeyboardInterrupt</code> 和 <code>SystemExit</code> 一起收走，脚本的 Ctrl+C 会失灵。正确姿势是只接 <code>asyncio.CancelledError</code>，其余交给上层。</p>
+<p><strong>Q：3.11 之后还写 <code>except asyncio.TimeoutError</code> 有意义吗？</strong></p>
+<p>有，但要知道它和 <code>TimeoutError</code> 现在是同一个类，捕获范围完全一样；写旧名字只是保留可读性。</p>
+<p><strong>Q：<code>cancel()</code> 返回 True 就代表取消了？</strong></p>
+<p>不代表，它只表示取消请求已登记。实测对一个已完成的任务再 <code>cancel()</code> 返回 False；对 executor 的 future <code>cancel()</code> 之后 <code>cancelled()</code> 为 True，线程照样跑完。</p>
+<p><strong>Q：<code>Task.cancelling()</code> 什么时候有用？</strong></p>
+<p>排查「到底被取消了几次」的时候。实测第一次取消后 <code>cancelling()</code> 为 1，调用 <code>uncancel()</code> 归零，任务随后正常返回且 <code>cancelled()</code> 为 False。</p>
+<p><strong>Q：为什么我的清理代码从来没跑过？</strong></p>
+<p>两种常见原因：清理写在 <code>except Exception</code> 里，取消根本进不去；或者清理写在 <code>finally</code> 里并长时间 await，被第二次取消打断。</p>
+<p>本文是纯技术复盘，不含任何联盟推广链接。相关阅读：进程层同样静默的超时问题见 <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 篇</a>，网络层重试与超时叠加的实测见 <a href="https://yaohehe.github.io/2026-10-24-requests-2342-tenacity-921.html" class="internal-link">requests 与 tenacity 篇</a>，异步节点里 <code>time.sleep</code> 卡死事件循环的实测见 <a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式篇</a>。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
