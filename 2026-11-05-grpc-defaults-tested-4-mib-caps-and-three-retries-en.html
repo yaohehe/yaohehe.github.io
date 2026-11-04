@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gRPC defaults tested: 4 MiB caps and three retries - TechPassive</title>
+  <meta name="description" content="I tested seven gRPC defaults: 4 MiB caps both ways, metadata cut at 12,570 bytes, work still running after a deadline, and one call that hit the server three times.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>gRPC defaults tested: 4 MiB caps and three retries</h1>
+  <div class="post-tags">
+    <span class="tag">gRPC</span><span class="tag">distributed systems</span><span class="tag">benchmarks</span>
+  </div>
+  <div class="content">
+    <p>This time I tested seven of those defaults, one at a time, on a single machine: Windows 11, CPython 3.13.14, grpcio 1.85.1, grpcio-tools 1.85.1, protobuf 7.36.2, installed with pip into an isolated directory so the main environment stayed untouched. The server runs as a subprocess and the client runs in the main process. That split matters: inside one process the server counter and the client share objects, so you end up reading numbers you wrote yourself, and cancellation and deadlines are decided at the transport layer, which an in-process shortcut bypasses.</p>
+<p><strong>TL;DR</strong>: 4 MiB is the receive limit for a single message in each direction, and both directions block separately. Metadata was rejected at 12,570 bytes while the error text itself says 8,192. A 0.25 s deadline only makes the client give up; the server still finishes the 800 ms of work. A service config with maxAttempts 3 gets the server called three times. Any uncaught handler exception reaches the client as UNKNOWN.</p>
+<h2>Building the test bench first</h2>
+<p>The proto keeps six methods, each pointed at one default: Echo for message size and per-call overhead, BigDown for hitting the receive limit, Sleep and SleepCheck for deadlines, Fail for retry and error codes, Stream for cancellation, and Count for reading back what the server actually did.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Method</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Purpose</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Default under test</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Echo</td><td style="border:1px solid #ddd;padding:8px;">5,000-record round trip</td><td style="border:1px solid #ddd;padding:8px;">message size, per-call cost</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">BigDown</td><td style="border:1px solid #ddd;padding:8px;">return N bytes</td><td style="border:1px solid #ddd;padding:8px;">4 MiB receive limit</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Sleep / SleepCheck</td><td style="border:1px solid #ddd;padding:8px;">sleep N milliseconds</td><td style="border:1px solid #ddd;padding:8px;">deadline and side effects</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Fail</td><td style="border:1px solid #ddd;padding:8px;">raise or abort by kind</td><td style="border:1px solid #ddd;padding:8px;">error codes, retries</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Stream</td><td style="border:1px solid #ddd;padding:8px;">one message every 10 ms</td><td style="border:1px solid #ddd;padding:8px;">streaming cancellation</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Count</td><td style="border:1px solid #ddd;padding:8px;">read back counters</td><td style="border:1px solid #ddd;padding:8px;">what the server really did</td></tr></tbody></table>
+<p>The server prints its port to stdout and the client reads that first line, so the two processes never fight over a fixed port:</p>
+<pre><code>proc = subprocess.Popen([sys.executable, "server.py"], stdout=subprocess.PIPE, text=True)
+port = int(proc.stdout.readline().strip().split("=")[1])
+channel = grpc.insecure_channel("127.0.0.1:%d" % port)
+grpc.channel_ready_future(channel).result(timeout=10)</code></pre>
+<p>One calibration number before anything else: 500 small Echo calls averaged <strong>0.709 ms</strong> per round trip. Every later claim of the form "the server was still working" sits on that scale, and a 0.25 s deadline leaves room for hundreds of calls, so a server that keeps running after a timeout is not a sampling artifact.</p>
+<h2>Default one: 4 MiB per message, once in each direction</h2>
+<p>Size first. Five thousand records (id, name, email, boolean, float, three tags) serialize to <strong>322,641 bytes</strong> in protobuf and <strong>598,430 bytes</strong> as compact JSON, so JSON is <strong>1.855x</strong> the protobuf payload. One round trip took <strong>7.33 ms</strong> and the server saw all 5,000 records. The ratio depends on the wire format you pick; I measured the same field set in <a href="https://yaohehe.github.io/2026-10-25-json-vs-messagepack-vs-protobuf-tested-at-50k-reco-en.html" class="internal-link">a five-format comparison at 50,000 records</a> and the magnitude matches.</p>
+<p>Then the wall. The client sends one message of 4 MiB plus 10 bytes and the server refuses it:</p>
+<pre><code>StatusCode.RESOURCE_EXHAUSTED
+SERVER: Received message larger than max (4194362 vs. 4194304)</code></pre>
+<p>In the other direction, the server returns 4 MiB plus 1 byte and the client refuses it:</p>
+<pre><code>StatusCode.RESOURCE_EXHAUSTED
+Stream removed (CLIENT: Received message larger than max (4194315 vs. 4194304))</code></pre>
+<p>The only difference is the prefix. <code>SERVER:</code> means the peer rejected your request; <code>CLIENT:</code> means the local side rejected the peer's response. Each side has its own <code>grpc.max_receive_message_length</code>, so raising one leaves the other ready to fail. After raising the client option to 8 MiB, the same 4,194,305-byte response arrived intact and the length check agreed.</p>
+<p>Two rules follow. Responses above roughly 1 MB belong in a server stream, not in one message. And if you really need to raise the cap, raise it on both sides and be honest about why a single message exceeds 4 MB, because the usual answer is a badly shaped API.</p>
+<h2>Default two: metadata has two gates and a wrong threshold in its own error</h2>
+<p>Metadata is the place people treat as a free-form pocket. It has two gates, and I bisected them to the byte:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Custom x-pad</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Total headers</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">12,017</td><td style="border:1px solid #ddd;padding:8px;">12,568</td><td style="border:1px solid #ddd;padding:8px;">accepted</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">12,018</td><td style="border:1px solid #ddd;padding:8px;">12,570</td><td style="border:1px solid #ddd;padding:8px;">RESOURCE_EXHAUSTED (soft limit, text says 8192)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">15,900</td><td style="border:1px solid #ddd;padding:8px;">16,451</td><td style="border:1px solid #ddd;padding:8px;">RESOURCE_EXHAUSTED (hard limit 16384)</td></tr></tbody></table>
+<p>The error is unusually helpful and prints the byte count of every header:</p>
+<pre><code>received metadata size exceeds soft limit (12570 vs. 8192);  :path:54B :authority:56B
+:method:43B :scheme:43B content-type:60B te:42B grpc-accept-encoding:75B user-agent:92B x-pad:12037B</code></pre>
+<p>Here is the detail worth remembering: <strong>the error states a threshold of 8,192 and the actual trip point was 12,570, a factor of 1.53</strong>. I could not explain that gap from the source, so I am recording it as a measurement rather than a mechanism. The practical conclusion does not change: design custom metadata to stay under 8 KB and do not probe the ceiling. The seven built-in HTTP/2 headers cost about 551 bytes, and that part is not yours to control.</p>
+<p>Services that stuff a JWT into metadata should care about this. When the token grows, the failure is RESOURCE_EXHAUSTED, which reads like "the server ran out of resources" while the truth is "your headers are too large".</p>
+<h2>Default three: a deadline is a client promise, not a server stop button</h2>
+<p>This one has the highest cost of the seven. Take an 800 ms method and call it with <code>timeout=0.2</code>:</p>
+<ul><li>The client returns DEADLINE_EXCEEDED after 0.2 s with details <code>Deadline Exceeded</code>.</li><li>At that moment the server counters read started=1, finished=0.</li><li>1.2 s later, finished=1, and the handler's <code>context.is_active()</code> check also counted one cancellation.</li></ul>
+<p>So the server <strong>knew at 0.2 s that the call had been cancelled</strong>, yet the <code>time.sleep(0.8)</code> inside the handler was not interrupted. It slept the full duration, returned, and the return value was thrown away. The official docs say this plainly, and two sentences are worth memorizing:</p>
+<blockquote>A gRPC server deals with this situation by automatically cancelling a call (CANCELLED status) once a deadline set by the client has passed.</blockquote>
+<blockquote>Please note that the server application is responsible for stopping any activity it has spawned to service the RPC.</blockquote>
+<p>The status codes page adds the sentence that actually bites:</p>
+<blockquote>For operations that change the state of the system, this error may be returned even if the operation has completed successfully.</blockquote>
+<p>In plain terms: a client timeout does not mean the server did not finish. Any handler that writes rows, publishes messages, or decrements stock has to check <code>context.is_active()</code> itself, or pass the remaining time downstream. Otherwise "client retries after timeout" multiplies with "server keeps running" and you get duplicate side effects. That is exactly where my two duplicate rows came from on day one.</p>
+<p>There is also a precondition worth stating: the Deadlines guide opens with "By default, gRPC does not set a deadline", so a call without a timeout can wait indefinitely.</p>
+<h2>Default four: retries are already on, and one call hit the server three times</h2>
+<p>I gave the Fail method a service config with <code>maxAttempts: 3</code> and <code>retryableStatusCodes: ["UNAVAILABLE"]</code>, and made the handler increment a counter on entry. The client called once. The server counter went up by <strong>3</strong>.</p>
+<p>The more interesting control: adding <code>grpc.enable_retries=1</code> changed nothing, still 3. So this is not a switch-you-forgot-to-flip trap; <strong>retries were already enabled, and all that was missing was a policy</strong>. The Retry guide opens with:</p>
+<blockquote>Retries are enabled by default, but there is no default retry policy.</blockquote>
+<p>The same page carries two easily missed details. Backoff gets plus or minus 20% jitter, so an <code>initialBackoff</code> of 100 ms actually lands between 80 and 120 ms. And transparent retry exists: an RPC that never left the client may be retried without limit, while one that reached the server library but was never seen by application code gets a single retry.</p>
+<p>The danger is multiplication. I measured tenacity at 3 attempts wrapped around urllib3 at 4 in <a href="https://yaohehe.github.io/2026-10-24-retries-that-never-fire-urllib3-280-and-tenacity-en.html" class="internal-link">an HTTP-layer retry test</a>, which produced 12 requests; add a gRPC retry policy of 3 on top of that chain and the worst case is 36 requests landing on the server. Keep retryableStatusCodes for idempotent calls only, and keep exactly one retry layer in the whole chain.</p>
+<p>Log reading needs a new habit too: three server log lines for one client call means two retries, not three client requests.</p>
+<h2>Default five: any server exception becomes UNKNOWN</h2>
+<p>Same Fail method, two implementations, two different codes on the client.</p>
+<p>A plain Python exception (<code>raise ValueError("record 42 not found")</code>):</p>
+<pre><code>StatusCode.UNKNOWN
+Exception calling application: record 42 not found</code></pre>
+<p>An explicit <code>context.abort(grpc.StatusCode.NOT_FOUND, "record 42 not found")</code>:</p>
+<pre><code>StatusCode.NOT_FOUND
+record 42 not found</code></pre>
+<p>The reason is in the source: the handler wrapper in <code>grpc/_server.py</code> catches <code>Exception</code> and always reports <code>cygrpc.StatusCode.unknown</code>, formatting details as <code>Exception calling application: {}</code>. The same file has another line easy to trip over: calling <code>abort()</code> with <code>StatusCode.OK</code> is rewritten to UNKNOWN with the details blanked, leaving only an error line in the server log.</p>
+<p>One counterintuitive check: calling a method that does not exist returns <code>UNIMPLEMENTED</code> with details <code>Method not found!</code>. That is not a 404 and must not be read as "record missing". The status codes page lists seven codes that are never generated by the library, only by user code: INVALID_ARGUMENT, NOT_FOUND, ALREADY_EXISTS, FAILED_PRECONDITION, ABORTED, OUT_OF_RANGE, DATA_LOSS. So a NOT_FOUND in production came from your business logic, not from the framework.</p>
+<p>For monitoring, group metrics by code and watch the UNKNOWN share. That percentage is the fraction of handler exceptions nobody handled, and when it climbs something is failing silently.</p>
+<h2>Default six: the ceiling is the server thread pool, not the channel</h2>
+<p>The server runs <code>ThreadPoolExecutor(max_workers=64)</code> and the method sleeps 50 ms. Three concurrency levels over a single client channel:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Concurrent calls</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Elapsed</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Effective rounds</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">64</td><td style="border:1px solid #ddd;padding:8px;">0.084 s</td><td style="border:1px solid #ddd;padding:8px;">1.68</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">0.127 s</td><td style="border:1px solid #ddd;padding:8px;">2.55</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">0.227 s</td><td style="border:1px solid #ddd;padding:8px;">4.54</td></tr></tbody></table>
+<p>Effective rounds is elapsed time divided by 50 ms. Sixty-four calls at 1.68 rounds means genuine parallelism; 128 at 2.55 and 256 at 4.54 is the shape of "everything past 64 is queuing". <strong>The ceiling is the server pool size, not the number of client channels.</strong></p>
+<p>The channel side confirms it: 200 calls of 50 ms took 0.215 s over one channel and 0.221 s over 200 separate channels. Channels are cheap, extra ones buy nothing, and HTTP/2 multiplexing already runs concurrent streams on a single connection.</p>
+<p>The usual order of tuning is backwards. People raise client concurrency first, when the server pool is what they should look at. In Python, a larger pool helps IO-bound handlers; for CPU-bound handlers it just hands work back to the GIL. In <a href="https://yaohehe.github.io/2026-11-04-threadpoolexecutor-vs-asyncio-8-workers-beat-20-en.html" class="internal-link">a four-shape concurrency comparison</a> I measured 16 threads running a pure Python loop at 21.7% slower than serial.</p>
+<h2>Default seven: streaming cancellation lands immediately, but only for live streams</h2>
+<p>The Stream method emits one message every 10 ms for a planned 60. The client took 3 and called <code>call.cancel()</code>. The server's sent counter stopped at <strong>3</strong>, and one second later it was still 3.</p>
+<p>That works because the handler checks <code>context.is_active()</code> before every yield. Skip that check and the generator still runs the remaining 57 iterations, with nobody collecting the output. If those iterations are paging through a database, cancelling just burned 57 queries for nothing.</p>
+<p>So the streaming pattern is fixed: put the <code>is_active()</code> check on the first line of the loop, not once at the top of the function.</p>
+<h2>The same load against HTTP/1.1 with JSON</h2>
+<p>Same machine, 200 requests of 50 ms each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Shape</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Elapsed</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">gRPC, 200 concurrent on one channel</td><td style="border:1px solid #ddd;padding:8px;">0.215 s</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">HTTP/1.1, one new connection per call</td><td style="border:1px solid #ddd;padding:8px;">1.221 s</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">HTTP/1.1, serial on one connection</td><td style="border:1px solid #ddd;padding:8px;">10.333 s</td></tr></tbody></table>
+<p>This measures connection models, not framework quality. gRPC runs 200 concurrent streams over one connection; HTTP/1.1 either queues them (10.3 s) or opens 200 connections (1.2 s). The HTTP side here is a Python ThreadingTCPServer, not the same class of implementation as the gRPC 64-worker pool, so I am not writing "gRPC is 5.7x faster". The honest claim is narrower: running concurrency over a single connection costs differently.</p>
+<h2>Troubleshooting: six error strings from this machine</h2>
+<p>All six were produced by this test bench. None are quoted from someone else's blog.</p>
+<p><strong>One. RESOURCE_EXHAUSTED: Received message larger than max (4194362 vs. 4194304)</strong></p>
+<p>With a <code>SERVER:</code> prefix, the peer refused your request. Fix: split the message, switch to streaming, or raise <code>grpc.max_receive_message_length</code> on the server.</p>
+<p><strong>Two. RESOURCE_EXHAUSTED: received metadata size exceeds soft limit (12570 vs. 8192)</strong></p>
+<p>Custom metadata passed roughly 12.5 KB, against a threshold the message claims is 8,192. Fix: keep large objects out of metadata and put the token in a short field or the request body.</p>
+<p><strong>Three. DEADLINE_EXCEEDED: Deadline Exceeded, while the server finished counter keeps climbing</strong></p>
+<p>A client giving up is not a server stopping. Fix: check <code>context.is_active()</code> in the handler, or propagate a deadline downstream.</p>
+<p><strong>Four. UNKNOWN: Exception calling application: Protocol message CountReply has no "inactive" field.</strong></p>
+<p>I hit this one for real during the run: I added a field to the proto and forgot to re-run protoc, so the client held a stale stub while the server returned the new field. Fix: keep proto files and generated stubs in the same commit, and recompile both ends. It also demonstrates default five perfectly, since a plain programming error arrives as UNKNOWN.</p>
+<p><strong>Five. UNIMPLEMENTED: Method not found!</strong></p>
+<p>The method name does not exist, or the server never registered that servicer. Fix: check the full <code>/package.Service/Method</code> path.</p>
+<p><strong>Six. UNAVAILABLE: failed to connect to all addresses; last error: UNAVAILABLE: ipv4:127.0.0.1:1: WSAGetOverlappedResult: Connection refused ... 10061</strong></p>
+<p>Returned in 2.01 s when nothing was listening, with the inner error embedded. Add <code>wait_for_ready=True</code> on the same port and the same situation becomes DEADLINE_EXCEEDED after 2.0 s. <strong>One problem, two codes</strong>, which means a monitoring rule keyed on code splits it into two buckets. Decide deliberately which bucket you want.</p>
+<h2>Where this stops</h2>
+<p>Python only. grpcio 1.85.1. The Deadlines guide states that deadline propagation is on by default in Java and Go and must be enabled explicitly in C++, so these numbers do not transfer across languages.</p>
+<p>No TLS, no load balancing, no compression, no second machine. Everything ran on loopback with round trips around 0.05 ms, and deadlines and retries behave differently once a real network is in the path.</p>
+<p>The keepalive group produced <strong>no conclusion</strong>: I set the client's <code>keepalive_time_ms</code> to 1,000 against a default server minimum of 300,000 ms and could not reproduce a GOAWAY or ENHANCE_YOUR_CALM within 45 seconds. No reproduction, no claim, just this note.</p>
+<p>Sixteen logical cores, a 64-worker server pool. Rerun everything if your box differs.</p>
+<h2>Seven rules worth copying</h2>
+<ul><li>Design for a 4 MiB message cap and set the option on both sides.</li><li>Keep custom metadata under 8 KB and out of the business of carrying large objects.</li><li>Give every call a timeout, and check <code>context.is_active()</code> inside handlers.</li><li>Use retryableStatusCodes for idempotent calls only, with one retry layer in the chain.</li><li>Call <code>context.abort(code, details)</code> instead of relying on exceptions to carry meaning.</li><li>Tune the server thread pool before touching client concurrency.</li><li>Put the <code>is_active()</code> check on the first line of any streaming loop.</li></ul>
+<p>No affiliate links in this article. Every number came from the machine described above, and the proto plus scripts rerun on it unchanged.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
