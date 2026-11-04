@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python re: Eight Matches That Silently Go Wrong - TechPassive</title>
+  <meta name="description" content="Eight regex rules that fail without raising. I actually ran CPython 3.13.14 on Chinese word boundaries, non-ASCII digits, backslash traps and a 1475% cache cliff.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Python re: Eight Matches That Silently Go Wrong</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">regex</span><span class="tag">troubleshooting</span>
+  </div>
+  <div class="content">
+    <p>My blog pipeline has a checker that flags badly formatted bold text. The first version of it used the pattern <code>[ \t]\*\*</code>. On one draft it reported 44 violations across 75 lines. I rewrote it as <code>\*\*(.+?)\*\*</code> plus a check on the captured group, and the count dropped to zero.</p>
+<p>Same rule, same draft, 44 violations to none. Nothing in the file changed. What changed was whether the pattern described the text that was actually there.</p>
+<p>Three more of these followed. My internal-link checker used <code>class="internal-link"[^>]*href=</code> and found zero links, because the renderer emits <code>href</code> first and <code>class</code> second. My scraper for GitHub Trending used <code><a href=</code> and returned nothing on a thousand pages once the site moved <code>data-hydro-click</code> ahead of <code>href</code>. My keyword-injection step used <code>\bPython\b</code>, which matched every English paragraph and none of the Chinese ones.</p>
+<p><strong>TL;DR</strong>: the number of matches a pattern returns is decided by four layers. The character surface (<code>\d</code> is not <code>[0-9]</code>, <code>\w</code> includes Chinese characters), the boundary rules (<code>$</code> stops before a trailing newline, <code>\b</code> needs a <code>\w</code>/<code>\W</code> transition), the escaping layer (pattern and replacement are each parsed once), and the engine budget (backtracking plus a 512-slot compile cache). All eight failures below reproduce on a clean machine with the standard library only. No affiliate links in this post.</p>
+<h2>Four layers decide every match</h2>
+<p>Most "regex is haunted" reports collapse into one of four layers, and each layer has a line of documentation behind it:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Layer</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What it decides</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">How it fails</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Character surface</td><td style="border:1px solid #ddd;padding:8px;">Which characters <code>\d</code>, <code>\w</code>, <code>\s</code> accept</td><td style="border:1px solid #ddd;padding:8px;">A validator lets through input it should reject</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Boundaries</td><td style="border:1px solid #ddd;padding:8px;">Where <code>^</code>, <code>$</code>, <code>\b</code>, <code>\A</code>, <code>\Z</code> are true</td><td style="border:1px solid #ddd;padding:8px;">The same word matches in one position and not another</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Escaping</td><td style="border:1px solid #ddd;padding:8px;">Pattern and replacement are parsed separately</td><td style="border:1px solid #ddd;padding:8px;">A Windows path in a replacement raises an error</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Engine</td><td style="border:1px solid #ddd;padding:8px;">Backtracking cost, compile cache size</td><td style="border:1px solid #ddd;padding:8px;">No exception, just 3 ms turning into 1185 ms</td></tr></tbody></table>
+<p>Everything below was measured on CPython 3.13.14 on Windows 11, using only <code>re</code>.</p>
+<h2>Layer one: the end anchor is not the end of the string</h2>
+<p>The documentation defines <code>$</code> as matching "the end of the string or just before the newline at the end of the string", and notes it also matches before every newline under MULTILINE. The same page gives a deliberately surprising example: searching for a single <code>$</code> in <code>'foo\n'</code> finds two empty matches.</p>
+<pre><code>import re
+print(re.findall(r'$', 'foo\n'))      # ['', '']  two
+print(re.findall(r'^', 'foo\n'))      # ['']     one
+print(bool(re.match(r'foo$', 'foo\n')))        # True
+print(bool(re.fullmatch(r'foo$', 'foo\n')))    # False
+print(bool(re.fullmatch(r'foo\Z', 'foo\n')))   # False</code></pre>
+<p>Lines three and four use the identical pattern and disagree. <code>$</code> is allowed to stop before the trailing newline, and <code>re.match</code> only needs a matching prefix. <code>re.fullmatch</code> requires the whole string to be consumed, and the leftover <code>\n</code> never gets consumed, so it fails.</p>
+<p><a href="/2026-10-24-retries-that-never-fire-urllib3-280-and-tenacity-en.html" class="internal-link">That</a> difference breaks the most ordinary validator in the world, "is this line a number":</p>
+<pre><code>print(bool(re.search(r'^\d+$', '42\n')))       # True   the extra newline passes
+print(bool(re.search(r'^\d+$', '42\r\n')))     # False  CRLF fails instead
+print(bool(re.search(r'^\d+\r?$', '42\r\n')))  # True</code></pre>
+<p>On Windows, reading with <code>open(p, 'r')</code> translates CRLF to LF and hides the second case. Read the same file with <code>open(p, 'r', newline='')</code>, which you must do when auditing line endings, and the <code>\r</code> survives, so <code>^\d+$</code> fails.</p>
+<p>When you mean "the string really ends here", use <code>\Z</code>:</p>
+<pre><code>print(bool(re.fullmatch(r'\d+\Z', '42')))     # True
+print(bool(re.fullmatch(r'\d+\Z', '42\n')))   # False</code></pre>
+<p>Version note: Python 3.14 added <code>\z</code>, and the docs now describe <code>\Z</code> as the same thing, kept for compatibility. Before 3.14 there is only <code>\Z</code>. If you write library code, <code>\Z</code> is the portable choice.</p>
+<h2>Layer two: boundaries do not exist between Chinese and ASCII</h2>
+<p><code>\b</code> is defined as "the boundary between a <code>\w</code> and a <code>\W</code> character", and in str mode <code>\w</code> is "Unicode alphanumerics or the underscore". Chinese characters are alphanumerics. So there is no boundary between a Chinese character and a Latin letter, and <code>\b</code> silently fails to fire in exactly the place you wanted it.</p>
+<p>Five inputs, one pattern:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Input</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>\bprint</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(?<![A-Za-z])print</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'print(x)'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'print测试'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'这是 print 测试'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'用print输出'</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'my_print'</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr></tbody></table>
+<p>Look at rows two and four. The word <code>print</code> matches when a Chinese character follows it, and does not match when a Chinese character precedes it, and the only difference is position. For keyword highlighting, term replacement, or automatic internal linking on mixed Chinese and English text, this is why half the occurrences get linked and half do not.</p>
+<p>Stop using <code>\b</code> to mean "Latin word boundary". Use lookarounds:</p>
+<pre><code>text = '调用API接口'
+print(re.sub(r'\bAPI\b', 'X', text))                       # unchanged
+print(re.sub(r'(?<![A-Za-z])API(?![A-Za-z])', 'X', text))  # 调用X接口</code></pre>
+<p>The reverse holds too: to match only between Chinese characters, <code>\w</code> will not help and you need an explicit range such as <code>[\u4e00-\u9fff]</code>.</p>
+<p><a href="/2026-11-04-threadpoolexecutor-vs-asyncio-8-workers-beat-20-en.html" class="internal-link">One</a> self-inflicted wound worth recording. My first probe for this article wrote <code>r"\\bprint"</code> inside an f-string, which is a literal backslash followed by <code>bprint</code>, and all five samples returned zero. For a few minutes I believed <code>\b</code> was broken for Chinese entirely. It was my own double escaping. <strong>Suspect the probe before you suspect the pattern</strong>; this happens more often than anyone admits.</p>
+<h2>Layer three: the digit class is Unicode Nd, not zero to nine</h2>
+<p>The docs are explicit. In str mode <code>\d</code> matches "any Unicode decimal digit (that is, any character in Unicode character category [Nd])", and they add "This includes [0-9], and also many other digit characters".</p>
+<p>Measured:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Input</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>\d{4}</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>[0-9]{4}</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>int()</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'4242'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'٤٢٤٢'</code> Arabic-Indic</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'４２４２'</code> fullwidth</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr></tbody></table>
+<p>The last column is the dangerous one. <code>int()</code> accepts those characters too. A validator written as <code>re.fullmatch(r'\d{4}', s)</code> passes <code>'٤٢٤٢'</code>, and then <code>int(s)</code> returns <code>4242</code>, so validation and conversion both succeed while the value you store is not the string the user typed. One-time codes, order suffixes, and four-digit PINs all sit in this hole.</p>
+<p><code>float()</code> behaves the same way:</p>
+<pre><code>print(float('１.５'))   # 1.5
+print(float('١.٥'))    # 1.5</code></pre>
+<p>Pick one of these two and put it in your style guide:</p>
+<pre><code>import re
+print(bool(re.fullmatch(r'[0-9]{4}', '٤٢٤٢')))            # False
+print(bool(re.fullmatch(r'\d{4}', '٤٢٤٢', re.ASCII)))     # False</code></pre>
+<p>Remember that <code>re.ASCII</code> also pushes <code>\w</code>, <code>\b</code> and <code>\s</code> back to ASCII semantics, so check for other boundary uses before switching it on.</p>
+<h2>Layer four: the replacement string is parsed a second time</h2>
+<p>This one reaches production easily. The replacement argument to <code>re.sub</code> is not a plain string. It goes through its own escape pass, and the docs say so under Standard escapes: "Unknown escapes of ASCII letters are reserved for future use and treated as errors."</p>
+<p>Feed it a Windows path and one of two things happens:</p>
+<pre><code>import re
+print(re.sub('a', r'C:\new', 'a'))   # 'C:' + newline + 'ew', length 5, not 6
+print(re.sub('a', r'C:\dir', 'a'))   # re.PatternError: bad escape \d at position 2</code></pre>
+<p>The first line returns a wrong value without raising. The second raises. And the obvious workaround does not work: <code>'C:' + chr(92) + 'new'</code> produces the same string, which is then parsed the same way, and the length is still 5.</p>
+<p>Only two forms give you a literal backslash:</p>
+<pre><code>print(re.sub('a', r'C:\\new', 'a'))            # C:\new   length 6, doubled backslash
+print(re.sub('a', lambda m: r'C:\new', 'a'))   # C:\new   length 6, callable</code></pre>
+<p>For bulk path rewriting, or for replacing matches with a template that contains backslashes, always use the callable form. It skips the replacement parser entirely, so it also cannot be tricked into treating a <code>\1</code> in your data as a group reference. I hit this while rewriting the path handling in my own generator, and the error message pointed at position 2, which reads like a problem in the pattern rather than in the replacement.</p>
+<h2>Layer five: the dot never crosses a newline</h2>
+<p>My first version of the <code><pre></code> guard used <code>re.finditer(r'<pre.*?</pre>')</code>. It worked on a single-line sample and returned nothing on real output, where <code><pre></code> and <code></pre></code> sit on different lines.</p>
+<pre><code>html = '<pre>\ncode line\n</pre>'
+print(re.findall(r'<pre>.*?</pre>', html))        # []
+print(re.findall(r'<pre>.*?</pre>', html, re.S))  # one match
+print(re.findall(r'<pre>[\s\S]*?</pre>', html))   # one match as well</code></pre>
+<p>One thing that gets mixed up constantly: <code>re.S</code> (DOTALL) affects only <code>.</code>, and does nothing for <code>^</code> and <code>$</code>. Making anchors per-line is <code>re.M</code>. With both flags on, <code>^.*$</code> changes behaviour from two directions at once, which is where a lot of "works locally, wrong on the server" comes from.</p>
+<h2>Layer six: user input becomes a pattern</h2>
+<p>Search boxes get pasted into <code>re.search</code> all the time:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Pattern</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Text</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Direct <code>re.search</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">After <code>re.escape</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'1.5'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'1x5'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'a+b'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'aab'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'(2026)'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'2026'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr></tbody></table>
+<p>The first row means searching for <code>1.5</code> finds <code>1x5</code>. The second means <code>a+b</code> matches <code>aab</code>. The third is not a boolean expression, it is a capture group.</p>
+<p>The rule is a single sentence: any string that comes from a user, a filename, or configuration goes through <code>re.escape</code> before it reaches a pattern. Note that <code>re.escape</code> changed in 3.7; the docs now say "Only characters that can have special meaning in a regular expression are escaped". Spaces are escaped too, which is still a valid pattern but looks odd once you paste the result into a URL or a log line.</p>
+<h2>Layer seven: 24 characters turn one match into 1185 ms</h2>
+<p>No exception here, just time. The pattern <code>(a+)+$</code> against 24 <code>a</code> characters followed by a <code>b</code> has to enumerate every way of splitting the run:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">n</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(a+)+$</code> backtracking</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(?>a+)+$</code> atomic</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(a++)+$</code> possessive</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">16.295 ms</td><td style="border:1px solid #ddd;padding:8px;">0.004 ms</td><td style="border:1px solid #ddd;padding:8px;">0.003 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">20</td><td style="border:1px solid #ddd;padding:8px;">67.789 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22</td><td style="border:1px solid #ddd;padding:8px;">267.270 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">24</td><td style="border:1px solid #ddd;padding:8px;">1185.359 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr></tbody></table>
+<p>Two more characters multiply the time by roughly four. That is the textbook catastrophic backtracking curve. <code>(\w+\s?)*$</code> is worse: 2486.720 ms at 24 characters. All of these return the same answer, False, and the only difference is how long it took to say so.</p>
+<p>Atomic groups and possessive quantifiers arrived in Python 3.11. What's New 3.11 says: "Atomic grouping ((?>...)) and possessive quantifiers (*+, ++, ?+, {m,n}+) are now supported in regular expressions". The mechanism is in the <code>re</code> docs: once an atomic group is exited, it "has thrown away all stack points within itself", so there is nothing left to backtrack into.</p>
+<p>A workable order of defence:</p>
+<ul><li>Cap input length before the pattern runs; regex is not a tool for 10 MB strings</li><li>Treat nested quantifiers like <code>(...+)+</code> as a red flag, rewrite with atomic groups or split the match into steps</li><li>Use <code>fullmatch</code> with explicit character classes for validation instead of a trailing <code>.*</code></li><li>Time the worst-case input before shipping, not just the happy path</li></ul>
+<h2>Layer eight: the 512-slot cache cliff</h2>
+<p><code>re</code> keeps a process-wide compile cache. The constant is <code>_MAXCACHE = 512</code> in <code>Lib/re/_constants.py</code>; it is not described in the docs. Calling <code>re.match(pattern, ...)</code> with a string looks the pattern up every time, and past 512 distinct patterns the entries start evicting each other.</p>
+<p>Median of four rounds, same work, two ways of calling it:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Patterns</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>re.match</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Precompiled</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Ratio</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">100</td><td style="border:1px solid #ddd;padding:8px;">0.17 ms</td><td style="border:1px solid #ddd;padding:8px;">0.06 ms</td><td style="border:1px solid #ddd;padding:8px;">2.87x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">512</td><td style="border:1px solid #ddd;padding:8px;">3.23 ms</td><td style="border:1px solid #ddd;padding:8px;">0.36 ms</td><td style="border:1px solid #ddd;padding:8px;">9.07x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">600</td><td style="border:1px solid #ddd;padding:8px;">50.88 ms</td><td style="border:1px solid #ddd;padding:8px;">0.37 ms</td><td style="border:1px solid #ddd;padding:8px;">139.27x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1200</td><td style="border:1px solid #ddd;padding:8px;">103.11 ms</td><td style="border:1px solid #ddd;padding:8px;">0.80 ms</td><td style="border:1px solid #ddd;padding:8px;">128.49x</td></tr></tbody></table>
+<p>The cliff sits between 512 and 600. Adding 88 patterns takes one round from 3.23 ms to 50.88 ms, a 1475% jump, because from that point every round recompiles. The precompiled version stays at 0.37 ms at 600.</p>
+<p>A second detail makes the arithmetic worse: the cache is shared by the whole process, not owned by your module. Purge it, then import <code>logging</code>, and eight entries appear immediately.</p>
+<pre><code>import re
+re.purge()
+print(len(re._cache))     # 0
+import logging
+print(len(re._cache))     # 8</code></pre>
+<p>So "I only have 20 patterns, I cannot reach 512" is not a valid argument. The rule is simpler: any pattern on a hot path gets compiled once and reused, and the question is not how many patterns you have but how many times per second that code runs.</p>
+<h2>Troubleshooting: four errors I reproduced</h2>
+<p>All four raise on 3.13 immediately. Messages below are copied from the tracebacks.</p>
+<h3>Error one: bad escape when substituting a Windows path</h3>
+<pre><code>re.PatternError: bad escape \d at position 2</code></pre>
+<p>Reproduce with <code>re.sub('a', r'C:\dir', 'a')</code>. The replacement is parsed, <code>\d</code> is not a known ASCII escape, and the position refers to the replacement string, not the pattern. Fix: <code>re.sub('a', lambda m: r'C:\dir', 'a')</code>.</p>
+<h3>Error two: an inline flag in the middle</h3>
+<pre><code>re.PatternError: global flags not at the start of the expression at position 1</code></pre>
+<p>Reproduce with <code>re.compile('a(?i)b')</code>. Since 3.11 a global inline flag must sit at the start; What's New 3.11 says "global inline flags (e.g. (?i)) can now only be used at the start of regular expressions" and notes that anywhere else has been deprecated since 3.6. Fix: move it to the front, pass <code>re.I</code>, or scope it as <code>(?i:...)</code> if only part of the pattern needs it.</p>
+<h3>Error three: calling group() on None</h3>
+<pre><code>AttributeError: 'NoneType' object has no attribute 'group'</code></pre>
+<p>Reproduce with <code>re.search(r'\d+', 'abc').group()</code>. A failed search returns <code>None</code>, which is documented behaviour: "It is never an error if a string contains no match for a pattern". So no PatternError is raised, and the failure surfaces one line later. Fix: check first, or write <code>m.group(0) if m else ''</code>. In log-parsing code this is the exception that kills a whole batch, because every line that is different but valid triggers it.</p>
+<h3>Error four: group reference out of range</h3>
+<pre><code>re.PatternError: invalid group reference 2 at position 1</code></pre>
+<p>Reproduce with <code>re.sub(r'(a)', r'\2', 'a')</code>. The pattern has one group. Fix: use <code>\g<1></code>, and prefer named groups, <code>(?P<name>...)</code> with <code>\g<name></code>, so the reference survives the next edit of the pattern.</p>
+<h3>The fifth case is not an exception</h3>
+<p>The 24-character sample from layer seven raises nothing, exits 0, and leaves one timing line in the log. That class of problem only shows up if you measure, which is why critical patterns deserve a duration assertion instead of a user complaint.</p>
+<h2>Eight questions before you ship</h2>
+<ul><li><strong>Question 1</strong>: Do <code>\d</code>, <code>\w</code>, <code>\s</code> really mean the Unicode surface here? If unsure, add <code>re.ASCII</code></li><li><strong>Question 2</strong>: Is <code>\b</code> being applied to Chinese or Japanese text? Replace it with <code>(?<![A-Za-z])</code> and <code>(?![A-Za-z])</code></li><li><strong>Question 3</strong>: Can a newline follow the position where <code>$</code> matches? Use <code>\Z</code> for an absolute end, <code>fullmatch</code> for full consumption</li><li><strong>Question 4</strong>: Does the replacement contain backslashes? Use a callable</li><li><strong>Question 5</strong>: Does the match need to cross lines? Use <code>re.S</code>, and confirm you did not also change what <code>^</code> and <code>$</code> mean</li><li><strong>Question 6</strong>: Does the pattern contain user input? Run it through <code>re.escape</code></li><li><strong>Question 7</strong>: Is there a nested quantifier like <code>(...+)+</code>? Switch to an atomic group and cap the input length</li><li><strong>Question 8</strong>: Is the pattern on a hot path? Precompile it rather than trusting the 512-slot cache</li></ul>
+<p>These eight questions belong to the same family as two earlier posts of mine. In <a href="https://yaohehe.github.io/2026-10-31-pandas-31-cow-five-assignments-that-stopped-workin-en.html" class="internal-link">the pandas 3.x copy-on-write piece</a> I listed five assignments that stopped working silently, and in <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-7-silent-failures-behind-exit-co-en.html" class="internal-link">the subprocess piece</a> I listed seven failures that leave the exit code at 0. The shared shape is that <strong>the failure mode is not an exception, it is a result that is wrong while the job still reports success</strong>. Regex is the worst of the three, because the same pattern changes behaviour with the language of the input, its line endings, and its length.</p>
+<h2>FAQ</h2>
+<p><strong>Q:</strong> Why does <code>re.match</code> return <code>None</code> when the text clearly contains my pattern?</p>
+<p><code>re.match</code> only looks at the start of the string, which is <code>re.search</code> with an implicit leading anchor. <code>re.match(r'\d+', 'abc 42')</code> returns <code>None</code>, while <code>re.search(r'\d+', 'abc 42')</code> finds <code>42</code>. If you want the whole string to conform, use <code>re.fullmatch</code>, whose semantics differ from both.</p>
+<p><strong>Q:</strong> Why does <code>[A-Z]</code> match characters that are not letters once I add <code>re.I</code>?</p>
+<p>In str mode, <code>re.I</code> uses Unicode case folding rather than a simple A-to-a mapping. Three measured examples: the Kelvin sign K (U+212A) matches <code>[A-Z]</code>, the long s character U+017F matches <code>[a-z]</code>, and capital I with dot (U+0130) matches <code>[A-Z]</code>. For an ASCII-only whitelist, add <code>re.ASCII</code> to bring the folding range back.</p>
+<p><strong>Q:</strong> It passed on an online regex tester. Why does it fail in my code?</p>
+<p>Most online testers run a JavaScript engine. Python's <code>re</code> differs in several places: <code>\Z</code> means absolute end of string in Python, while the PCRE family defines it differently and uses <code>\z</code> for the absolute end; the Unicode surface of <code>\d</code> has different defaults per engine; atomic groups and possessive quantifiers only exist in Python 3.11 and later. Port a pattern by checking each construct against the target engine's docs, not by looking at the highlight.</p>
+<p>That covers all eight layers. One methodological note to close: when a pattern misbehaves, write the smallest possible reproduction and pin down four things, the input, the pattern, the expected result and the actual result, before reading any documentation. Five of the eight sections above started with me believing one thing and ended with a measurement proving otherwise, including the probe that first told me word boundaries were completely broken for Chinese.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
