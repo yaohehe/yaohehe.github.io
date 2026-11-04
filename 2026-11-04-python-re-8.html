@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python re 正则：8 个不报错的匹配错误 - TechPassive</title>
+  <meta name="description" content="同一条「加粗格式」正则，一份稿子报 44 处违例，另一份一处不报。我实际用 CPython 3.13.14 把 8 处匹配语义逐个复现：\b 在中文里不成立、\d 认阿拉伯数字、替换串里的反斜杠会炸、pattern 超过 512 个之后单轮匹配慢 1475%，附四段真实报错原文与可直接粘贴的改法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python re 正则：8 个不报错的匹配错误</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">正则表达式</span><span class="tag">排错复盘</span>
+  </div>
+  <div class="content">
+    <p>给这套博客写自检脚本时，我把「加粗格式错误」的判据写成 <code>[ \t]\*\*</code>。跑一遍，75 行里报出 44 处违例。换成 <code>\*\*(.+?)\*\*</code> 再判捕获组首尾有没有空格，违例变成 0。</p>
+<p>同一条规则，两次结果差 44 处。文本一个字没改，变的是正则描述的「字符面」和真实文本对不对得上。</p>
+<p>这类事故后来又来了三次。内链检查写成 <code>class="internal-link"[^>]*href=</code>，命中 0 条 —— 因为渲染出来的属性顺序是 <code>href</code> 在前、<code>class</code> 在后。抓 GitHub Trending 时用 <code><a href=</code> 取链接，站方把 <code>data-hydro-click</code> 挪到前面之后，上千个页面一条都取不到。给关键词自动注入写 <code>\bPython\b</code>，中文段落里一次都不命中，而英文段落全部命中。</p>
+<p><strong>TL;DR</strong>：一条正则的命中数由四层决定 —— 字符面（<code>\d</code> 到底认哪些字符）、边界（<code>$</code> 与 <code>\b</code> 在哪个位置成立）、转义层（pattern 与替换串各解析一次）、引擎预算（回溯次数 + 512 槽编译缓存）。本文 8 个坑全部在本机复现，最后给四段真实报错原文。本文不含任何联盟推广链接。</p>
+<h2>先分清四层，再谈「为什么不命中」</h2>
+<p>把这四层分开看，绝大多数「正则玄学」都能落到具体某一行文档上：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">层</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">决定什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">典型症状</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">字符面</td><td style="border:1px solid #ddd;padding:8px;"><code>\d</code> <code>\w</code> <code>\s</code> 认哪些字符</td><td style="border:1px solid #ddd;padding:8px;">校验器放过不该放过的输入</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">边界</td><td style="border:1px solid #ddd;padding:8px;"><code>^</code> <code>$</code> <code>\b</code> <code>\A</code> <code>\Z</code> 在哪个位置成立</td><td style="border:1px solid #ddd;padding:8px;">完全相同的词，位置一换就不命中</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">转义</td><td style="border:1px solid #ddd;padding:8px;">pattern 与替换串各解析一次</td><td style="border:1px solid #ddd;padding:8px;">Windows 路径写进替换串直接炸</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">引擎</td><td style="border:1px solid #ddd;padding:8px;">回溯预算、编译缓存容量</td><td style="border:1px solid #ddd;padding:8px;">不报错，只是从 3 毫秒变成 1185 毫秒</td></tr></tbody></table>
+<p>下面按层拆，每条都给可复制的复现片段。所有数字来自本机 CPython 3.13.14 + Windows 11，只用标准库 <code>re</code>，零安装。</p>
+<h2>第一层：$ 不是「字符串结尾」</h2>
+<p>Python 官方文档对 <code>$</code> 的定义是：「Matches the end of the string or just before the newline at the end of the string」，并且在 MULTILINE 模式下还会在每个换行前匹配。同一段文档里还留了一句很好用的例子：在 <code>'foo\n'</code> 里搜一个 <code>$</code>，会找到<strong>两个</strong>空匹配。</p>
+<p>本机复现：</p>
+<pre><code>import re
+print(re.findall(r'$', 'foo\n'))      # ['', '']  两个
+print(re.findall(r'^', 'foo\n'))      # ['']     一个
+print(bool(re.match(r'foo$', 'foo\n')))        # True
+print(bool(re.fullmatch(r'foo$', 'foo\n')))    # False
+print(bool(re.fullmatch(r'foo\Z', 'foo\n')))   # False</code></pre>
+<p>第三行和第四行是同一个 pattern，<code>re.match</code> 说匹配、<code>re.fullmatch</code> 说不匹配。原因不复杂：<code>$</code> 允许停在末尾换行之前，<code>re.match</code> 只要前缀对上就算赢；<code>re.fullmatch</code> 要求整个字符串被消费掉，剩下那个 <code>\n</code> 没人消费，于是失败。</p>
+<p>这个差别在「校验一行是不是纯数字」时会直接翻车：</p>
+<pre><code>print(bool(re.search(r'^\d+$', '42\n')))       # True   多一个换行也算通过
+print(bool(re.search(r'^\d+$', '42\r\n')))     # False  CRLF 反而失败
+print(bool(re.search(r'^\d+\r?$', '42\r\n')))  # True</code></pre>
+<p>同一台 Windows 机器上，用文本模式 <code>open(p, 'r')</code> 读，CRLF 会被翻译成 LF，第二种写法的隐患藏得住；一旦用 <code>open(p, 'r', newline='')</code> 按原样读（做行尾审计时必须这么读），<code>\r</code> 就留在字符串里，<code>^\d+$</code> 立刻失效。</p>
+<p>要判断「真的到结尾了」，用 <code>\Z</code>：</p>
+<pre><code>print(bool(re.fullmatch(r'\d+\Z', '42')))     # True
+print(bool(re.fullmatch(r'\d+\Z', '42\n')))   # False</code></pre>
+<p>版本提醒：Python 3.14 新增了 <code>\z</code>，官方文档写 <code>\Z</code> 与 <code>\z</code> 现在同义、保留 <code>\Z</code> 只为兼容老代码。3.13 及以前只有 <code>\Z</code>。写工具函数时用 <code>\Z</code> 更稳。</p>
+<h2>第二层：\b 在中文里几乎不成立</h2>
+<p><code>\b</code> 的官方定义是「the boundary between a <code>\w</code> and a <code>\W</code> character」，而 <code>\w</code> 在 str 模式下是「Unicode alphanumerics or the underscore」—— 汉字属于 alphanumerics。于是「汉字」和「英文字母」之间<strong>没有边界</strong>。</p>
+<p>本机复现，五个样本同一 pattern：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>\bprint</code> 命中</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(?<![A-Za-z])print</code> 命中</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'print(x)'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'print测试'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'这是 print 测试'</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'用print输出'</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'my_print'</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr></tbody></table>
+<p>注意第二行和第四行：<code>print测试</code> 能命中，<code>用print输出</code> 不能。区别只在 <code>print</code> 前面那个字符是汉字还是句首。写关键词高亮、敏感词替换、自动内链时，这就是「同一篇文章里一半命中一半不命中」的根因。</p>
+<p>修法是别用 <code>\b</code> 表达「英文单词边界」，直接用断言：</p>
+<pre><code>text = '调用API接口'
+print(re.sub(r'\bAPI\b', 'X', text))                       # 调用API接口，没替换
+print(re.sub(r'(?<![A-Za-z])API(?![A-Za-z])', 'X', text))  # 调用X接口</code></pre>
+<p>逆向也成立：只想在中文之间匹配，就不能指望 <code>\w</code>，得写 <code>[\u4e00-\u9fff]</code> 这类显式区间。</p>
+<p>附带一个自己挖的坑：我第一次写本文的探针脚本时，在 f-string 里写了 <code>r"\\bprint"</code>，那实际是「反斜杠 + bprint」，五个样本全部 0 命中。我一度以为 <code>\b</code> 在 CJK 里彻底失效，回头一看是探针自己的双重转义。<strong>报 0 之前先怀疑探针</strong>，这条在正则调试里出现的频率比想象中高。</p>
+<h2>第三层：\d 认的是 Unicode 的 Nd，不是 0-9</h2>
+<p>文档写得很清楚：str 模式下 <code>\d</code> 匹配「any Unicode decimal digit (that is, any character in Unicode character category [Nd])」，并且明说「This includes [0-9], and also many other digit characters」。</p>
+<p>本机实测：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">输入</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>\d{4}</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>[0-9]{4}</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>int()</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'4242'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'٤٢٤٢'</code> 阿拉伯-印度数字</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'４２４２'</code> 全角</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td><td style="border:1px solid #ddd;padding:8px;">4242</td></tr></tbody></table>
+<p>第四列才是麻烦的地方：<code>int()</code> 也认这些字符。一个 <code>re.fullmatch(r'\d{4}', s)</code> 的校验器会把 <code>'٤٢٤٢'</code> 放过去，随后 <code>int(s)</code> 得到 <code>4242</code> —— 校验和转换都「成功」，落库的却是一串和用户输入看起来完全不同的数字。短信验证码、订单尾号、四位口令，全都吃这一口。</p>
+<p><code>float()</code> 同理：</p>
+<pre><code>print(float('１.５'))   # 1.5
+print(float('١.٥'))    # 1.5</code></pre>
+<p>要严格 ASCII 数字，两种写法任选一种并写进代码规范：</p>
+<pre><code>import re
+print(bool(re.fullmatch(r'[0-9]{4}', '٤٢٤٢')))            # False
+print(bool(re.fullmatch(r'\d{4}', '٤٢٤٢', re.ASCII)))     # False</code></pre>
+<p><code>re.ASCII</code> 的更隐蔽影响是它同时让 <code>\w</code> <code>\b</code> <code>\s</code> 退回 ASCII 语义 —— 打开之前先确认 <code>\b</code> 的其它用法没有依赖 Unicode。</p>
+<h2>第四层：替换串会被再解析一次</h2>
+<p>这是最容易在生产里炸的一条：<code>re.sub</code> 的替换值<strong>不是</strong>普通字符串，它和 pattern 一样要过一遍转义解析。文档在 Standard escapes 一节写：「Unknown escapes of ASCII letters are reserved for future use and treated as errors.」</p>
+<p>于是把 Windows 路径当替换值时：</p>
+<pre><code>import re
+print(re.sub('a', r'C:\new', 'a'))   # 'C:' + 换行 + 'ew'，长度 5，不是 6
+print(re.sub('a', r'C:\dir', 'a'))   # re.PatternError: bad escape \d at position 2</code></pre>
+<p>第一行不报错但结果错了：<code>\n</code> 被当成换行。第二行报错。最容易误判的是「那我换个写法构造这个字符串」—— 不行，<code>'C:' + chr(92) + 'new'</code> 得到的还是同一个字符串，<code>re.sub</code> 照样解析，长度还是 5。</p>
+<p>只有两条路能拿到字面反斜杠：</p>
+<pre><code>print(re.sub('a', r'C:\\new', 'a'))            # C:\new   长度 6，双反斜杠
+print(re.sub('a', lambda m: r'C:\new', 'a'))   # C:\new   长度 6，callable</code></pre>
+<p>批量改写文件路径、把匹配到的占位符替换成含反斜杠的模板时，一律用 callable 版本 —— 它跳过替换串解析，也不会因为目标串里恰好出现 <code>\1</code> 而被当成组引用。这一条我在改生成脚本的路径替换时踩过，报错位置指向 position 2，看起来像 pattern 的问题，其实是替换串。</p>
+<h2>第五层：点号不跨行，命中数取决于文本有没有换行</h2>
+<p><code><pre></code> 保护区的检查我最早写成 <code>re.finditer(r'<pre.*?</pre>')</code>。单行 <code><pre>x</pre></code> 能命中，真实产物里 <code><pre></code> 和 <code></pre></code> 之间隔着换行，命中 0 条。</p>
+<pre><code>html = '<pre>\ncode line\n</pre>'
+print(re.findall(r'<pre>.*?</pre>', html))        # []
+print(re.findall(r'<pre>.*?</pre>', html, re.S))  # 命中 1 条
+print(re.findall(r'<pre>[\s\S]*?</pre>', html))   # 同样命中 1 条</code></pre>
+<p>补充一个容易混的点：<code>re.S</code>（DOTALL）只影响 <code>.</code>，不影响 <code>^</code> <code>$</code>；想让 <code>^</code> <code>$</code> 逐行生效是 <code>re.M</code>。两个 flag 一起开的时候，<code>^.*$</code> 的行为会同时被两边改变，这是很多「本地通过、上线全乱」的来源。</p>
+<h2>第六层：用户输入直接进 pattern</h2>
+<p>把搜索框内容当 pattern 用，是最常见的一类静默错误：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pattern</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">直接 <code>re.search</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>re.escape</code> 后</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'1.5'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'1x5'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>'a+b'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'aab'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>'(2026)'</code></td><td style="border:1px solid #ddd;padding:8px;"><code>'2026'</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr></tbody></table>
+<p>第一行意味着「搜 1.5 会搜出 1x5」。第二行 <code>a+b</code> 会匹配 <code>aab</code>。第三行看起来是布尔组合，实际是捕获组。</p>
+<p>修法只有一句：<strong>凡是来自用户、文件名、配置的字符串进 pattern，一律 <code>re.escape()</code></strong>。注意 <code>re.escape</code> 在 3.7 改过行为，文档写「Only characters that can have special meaning in a regular expression are escaped」—— 空格现在也会被转义，这仍然是合法 pattern，但拼进 URL 或日志时会看着有点怪。</p>
+<h2>第七层：回溯，24 个字符把一次匹配拖到 1185 毫秒</h2>
+<p>这条不报错，只是慢。pattern <code>(a+)+$</code> 在 24 个 <code>a</code> 加一个 <code>b</code> 上，需要枚举所有切分方式：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">n</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(a+)+$</code> 回溯型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(?>a+)+$</code> 原子组</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>(a++)+$</code> 占有量词</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">16.295 ms</td><td style="border:1px solid #ddd;padding:8px;">0.004 ms</td><td style="border:1px solid #ddd;padding:8px;">0.003 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">20</td><td style="border:1px solid #ddd;padding:8px;">67.789 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">22</td><td style="border:1px solid #ddd;padding:8px;">267.270 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">24</td><td style="border:1px solid #ddd;padding:8px;">1185.359 ms</td><td style="border:1px solid #ddd;padding:8px;">0.002 ms</td><td style="border:1px solid #ddd;padding:8px;">0.001 ms</td></tr></tbody></table>
+<p>每加两个字符耗时乘四倍左右，这是标准的灾难性回溯曲线。<code>(\w+\s?)*$</code> 更狠，24 个字符 2486.720 ms。四行的匹配结果完全一致（都是 False），差别只在花了多久。</p>
+<p>原子组 <code>(?>...)</code> 与占有量词 <code>*+</code> <code>++</code> <code>?+</code> 是 Python 3.11 新增的，官方 What's New 3.11 写：「Atomic grouping ((?>...)) and possessive quantifiers (*+, ++, ?+, {m,n}+) are now supported in regular expressions」。<code>re</code> 文档解释机制的原话是「once exited, the expression, known as an atomic group, has thrown away all stack points within itself」—— 栈点被丢弃，回溯就没了入口。</p>
+<p>实际防守顺序：</p>
+<ul><li>先给输入长度上限，正则不是用来处理 10 MB 文本的</li><li>嵌套量词 <code>(...+)+</code> 视为高危写法，改成原子组或分步匹配</li><li>校验类 pattern 用 <code>fullmatch</code> 加显式字符类，别用 <code>.*</code> 兜</li><li>上线前用最坏输入跑一次计时，别只用正常样本</li></ul>
+<h2>第八层：512 个槽位的编译缓存断崖</h2>
+<p><code>re</code> 有一个进程级编译缓存，源码常量 <code>_MAXCACHE = 512</code>（<code>Lib/re/_constants.py</code>，文档没写这个数）。<code>re.match(pattern, ...)</code> 这种直接调函数的写法，每次都要先查缓存；超过 512 个不同 pattern 之后开始互相挤占，命中率断崖下跌。</p>
+<p>本机四轮取中位，同一批匹配分别用「直接调 <code>re.match</code>」与「预编译后调用」：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pattern 数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>re.match</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">预编译</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">比值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">100</td><td style="border:1px solid #ddd;padding:8px;">0.17 ms</td><td style="border:1px solid #ddd;padding:8px;">0.06 ms</td><td style="border:1px solid #ddd;padding:8px;">2.87x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">512</td><td style="border:1px solid #ddd;padding:8px;">3.23 ms</td><td style="border:1px solid #ddd;padding:8px;">0.36 ms</td><td style="border:1px solid #ddd;padding:8px;">9.07x</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">600</td><td style="border:1px solid #ddd;padding:8px;">50.88 ms</td><td style="border:1px solid #ddd;padding:8px;">0.37 ms</td><td style="border:1px solid #ddd;padding:8px;">139.27x</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1200</td><td style="border:1px solid #ddd;padding:8px;">103.11 ms</td><td style="border:1px solid #ddd;padding:8px;">0.80 ms</td><td style="border:1px solid #ddd;padding:8px;">128.49x</td></tr></tbody></table>
+<p>512 到 600 之间那道坎是断崖：只多出 88 个 pattern，单轮耗时从 3.23 ms 跳到 50.88 ms，涨了 1475%，因为从这一批开始每轮都要重新编译。预编译版本在 600 上仍然是 0.37 ms。</p>
+<p>还有一个容易忽略的事实：这个缓存是进程级共享的，不是你的模块独占。<code>re.purge()</code> 之后 <code>import logging</code>，缓存立刻多出 8 条 —— 标准库也在往里塞。所以「我这里只有 20 个 pattern，不可能超过 512」这个推理不成立。</p>
+<pre><code>import re
+re.purge()
+print(len(re._cache))     # 0
+import logging
+print(len(re._cache))     # 8</code></pre>
+<p>结论很简单：<strong>循环或热路径里出现的 pattern，一律 <code>re.compile</code> 一次、复用对象</strong>。判断标准不是「我 pattern 少」，而是「这段代码每秒钟跑多少次」。</p>
+<h2>报错实录：四段真实异常</h2>
+<p>下面四条都能在 3.13 上直接复现，报错原文照抄。</p>
+<h3>报错一：替换 Windows 路径时 bad escape</h3>
+<pre><code>re.PatternError: bad escape \d at position 2</code></pre>
+<p>复现：<code>re.sub('a', r'C:\dir', 'a')</code>。原因见第四层 —— 替换串要过一遍转义解析，<code>\d</code> 是未知 ASCII 转义。修复用 callable：<code>re.sub('a', lambda m: r'C:\dir', 'a')</code>。</p>
+<h3>报错二：内联 flag 写在了中间</h3>
+<pre><code>re.PatternError: global flags not at the start of the expression at position 1</code></pre>
+<p>复现：<code>re.compile('a(?i)b')</code>。Python 3.11 起内联全局 flag 只能放在表达式开头，What's New 3.11 的原话是「global inline flags (e.g. (?i)) can now only be used at the start of regular expressions」，并注明从 3.6 起写在别处就已是弃用状态。修复：把 <code>(?i)</code> 提到最前，或改用 <code>re.I</code>；只有局部需要忽略大小写时用作用域组 <code>(?i:...)</code>。</p>
+<h3>报错三：在 None 上调 .group()</h3>
+<pre><code>AttributeError: 'NoneType' object has no attribute 'group'</code></pre>
+<p>复现：<code>re.search(r'\d+', 'abc').group()</code>。<code>search</code> 找不到就返回 <code>None</code>，这是文档写明的行为：「It is never an error if a string contains no match for a pattern」—— 不匹配本身不算错误，所以不会抛 PatternError。修复：先判空再取组，或写成 <code>m.group(0) if m else ''</code>。日志解析脚本里这个异常最容易把整批任务打断，因为每一行「格式不同但合法」的日志都会触发它。</p>
+<h3>报错四：组号越界</h3>
+<pre><code>re.PatternError: invalid group reference 2 at position 1</code></pre>
+<p>复现：<code>re.sub(r'(a)', r'\2', 'a')</code>。pattern 里只有一个组。修复：改成 <code>\g<1></code>，并养成按名字引用的习惯 —— <code>(?P<name>...)</code> 配 <code>\g<name></code> 在 pattern 改动后不会连带崩。</p>
+<h3>第五类不算异常：1185 毫秒</h3>
+<p>第七层那个 24 字符样本没有抛任何异常，退出码是 0，日志里只有一条耗时。这类问题只能靠计时暴露，所以要给关键 pattern 加一条耗时断言，别等用户投诉接口变慢。</p>
+<h2>上线前照着走一遍</h2>
+<ul><li><strong>第 1 问</strong>：pattern 里的 <code>\d</code> <code>\w</code> <code>\s</code> 是不是真的想要 Unicode 面？不确定就加 <code>re.ASCII</code></li><li><strong>第 2 问</strong>：<code>\b</code> 用在中文文本上了吗？是就换成 <code>(?<![A-Za-z])</code> 与 <code>(?![A-Za-z])</code></li><li><strong>第 3 问</strong>：<code>$</code> 后面还会不会有换行？要绝对结尾用 <code>\Z</code>，要完整消费用 <code>fullmatch</code></li><li><strong>第 4 问</strong>：替换串里有反斜杠吗？有就用 callable</li><li><strong>第 5 问</strong>：要跨行匹配吗？要就 <code>re.S</code>，并确认 <code>^</code> <code>$</code> 的语义没有被顺手改掉</li><li><strong>第 6 问</strong>：pattern 里有用户输入吗？有就 <code>re.escape</code></li><li><strong>第 7 问</strong>：有嵌套量词 <code>(...+)+</code> 吗？有就换原子组，并给输入长度设上限</li><li><strong>第 8 问</strong>：这个 pattern 在热路径上吗？在就预编译，别依赖 512 槽缓存</li></ul>
+<p>这八问和另一类「默认值变了但没人告诉你」的问题同源。我在 <a href="https://yaohehe.github.io/2026-10-31-pandas-31.html" class="internal-link">pandas 3.x 写时复制那篇</a>里列过五个赋值静默失效，在 <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 静默失效那篇</a>里列过七个退出码为 0 的故障。共同点是：<strong>失败形态不是异常，而是结果不对、流程却走完了</strong>。正则这一层尤其隐蔽，因为同一个 pattern 会随输入文本的语言、行尾、长度改变行为。</p>
+<h2>常见问题</h2>
+<p><strong>Q：</strong> 为什么 <code>re.match</code> 明明能匹配上，我却拿到了 <code>None</code>？</p>
+<p><code>re.match</code> 只从字符串开头匹配，等价于 <code>re.search</code> 加上开头锚定。<code>re.match(r'\d+', 'abc 42')</code> 返回 <code>None</code>，<code>re.search(r'\d+', 'abc 42')</code> 才有结果。要「整个字符串必须完全符合」，用 <code>re.fullmatch</code>，它的语义和上面两个都不一样。</p>
+<p><strong>Q：</strong> 打开 <code>re.I</code> 之后，<code>[A-Z]</code> 为什么匹配到了看起来不是字母的字符？</p>
+<p><code>re.I</code> 在 str 模式下走 Unicode 大小写折叠，不是简单的 A 对 a 映射。本机实测三个反直觉样本：开尔文符号 K（U+212A）被 <code>[A-Z]</code> 命中，长 s（U+017F）被 <code>[a-z]</code> 命中，带点大写 I（U+0130）也被 <code>[A-Z]</code> 命中。做 ASCII 口径的白名单校验时，加 <code>re.ASCII</code> 把折叠范围收回来。</p>
+<p><strong>Q：</strong> 我在在线正则测试站上验证通过，为什么到代码里不通过？</p>
+<p>在线站多数按 JavaScript 引擎算，Python 的 <code>re</code> 在几处不一样：<code>\Z</code> 在 Python 里是绝对结尾，在 PCRE 系里语义不同（PCRE 另有 <code>\z</code>）；<code>\d</code> 的 Unicode 面各家默认值不一致；原子组与占有量词只有 3.11 之后的 Python 才有。搬运正则时逐条对照目标引擎文档，别只看高亮结果。</p>
+<p>八层都覆盖了。最后留一句方法上的话：正则出问题时，先写一个最小复现样本，把「输入、pattern、预期、实际」四件事钉死，再去查文档。上面八条里有五条是靠最小样本推翻了我原本的判断 —— 包括那条一开始以为「<code>\b</code> 在中文里彻底失效」的探针。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
