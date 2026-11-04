@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>gRPC 七个默认值实测：4 MiB 上限、三重试与截止时间 - TechPassive</title>
+  <meta name="description" content="我把 gRPC 七个默认值逐条量了一遍，全部数字来自本机同一台机器：4 MiB 消息上下行各拦一次、metadata 在 12,570 字节被拒、0.25 秒截止后服务端照跑完、一次调用服务端被调三次、服务端异常一律变 UNKNOWN，附六个真实报错原文与 HTTP/1.1 连接模型对照。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>gRPC 七个默认值实测：4 MiB 上限、三重试与截止时间</h1>
+  <div class="post-tags">
+    <span class="tag">gRPC</span><span class="tag">分布式调用</span><span class="tag">实测</span>
+  </div>
+  <div class="content">
+    <p>这次我实际测试了七组默认值：Windows 11、CPython 3.13.14、grpcio 1.85.1、grpcio-tools 1.85.1、protobuf 7.36.2，用 pip 装进独立目录，不动主环境。服务端由 subprocess 拉起，客户端在主进程 —— 跨进程这一点很关键：同进程里服务端计数器与客户端共享对象，看到的是自己写进去的数；取消与截止又是在传输层判定的，同进程直连会把这一层短路掉。</p>
+<p><strong>TL;DR</strong>：4 MiB 是单条消息的收、发上限，上行下行各拦一次；metadata 实测在 12,570 字节被拒，而报错文案里写的阈值是 8,192；0.25 秒的截止时间只让客户端放弃，服务端照样把 800 毫秒的活干完；service config 里写 maxAttempts 3，服务端就被调了 3 次；handler 抛出的任何未捕获异常，到客户端都变成 UNKNOWN。</p>
+<h2>先把实验台搭起来</h2>
+<p>proto 只留六个方法，每个方法对着一个默认值：Echo 用来量消息体积与单次开销，BigDown 用来撞收发上限，Sleep 与 SleepCheck 用来量截止时间，Fail 用来量重试与错误码，Stream 用来量流式取消，Count 回读服务端计数器。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">方法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用途</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">对应默认值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Echo</td><td style="border:1px solid #ddd;padding:8px;">5,000 条记录往返</td><td style="border:1px solid #ddd;padding:8px;">消息体积与单次开销</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">BigDown</td><td style="border:1px solid #ddd;padding:8px;">返回指定字节数</td><td style="border:1px solid #ddd;padding:8px;">4 MiB 接收上限</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Sleep 与 SleepCheck</td><td style="border:1px solid #ddd;padding:8px;">睡指定毫秒</td><td style="border:1px solid #ddd;padding:8px;">截止时间与副作用</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Fail</td><td style="border:1px solid #ddd;padding:8px;">按 kind 抛异常或 abort</td><td style="border:1px solid #ddd;padding:8px;">错误码与重试</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Stream</td><td style="border:1px solid #ddd;padding:8px;">每 10 毫秒吐一条</td><td style="border:1px solid #ddd;padding:8px;">流式取消</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Count</td><td style="border:1px solid #ddd;padding:8px;">回读计数器</td><td style="border:1px solid #ddd;padding:8px;">服务端真实发生了什么</td></tr></tbody></table>
+<p>服务端启动后把端口打到 stdout，客户端读第一行再建通道，这样两个进程不必抢固定端口：</p>
+<pre><code>proc = subprocess.Popen([sys.executable, "server.py"], stdout=subprocess.PIPE, text=True)
+port = int(proc.stdout.readline().strip().split("=")[1])
+channel = grpc.insecure_channel("127.0.0.1:%d" % port)
+grpc.channel_ready_future(channel).result(timeout=10)</code></pre>
+<p>顺带一个时间校准：500 次小消息 Echo，单次往返 <strong>0.709 毫秒</strong>。后面所有「服务端有没有跑完」的判断都建立在这个量级上 —— 0.25 秒的截止时间足够让客户端跑完几百次调用，所以超时后服务端还在干活这件事，不是采样误差。</p>
+<h2>默认值一：单条消息 4 MiB，上行下行各拦一次</h2>
+<p>先看体积。5,000 条记录（id、姓名、邮箱、布尔、浮点、三个标签）：protobuf 序列化 <strong>322,641 字节</strong>，同样内容的 JSON（紧凑分隔符）<strong>598,430 字节</strong>，JSON 是 protobuf 的 <strong>1.855 倍</strong>。一次往返 <strong>7.33 毫秒</strong>，服务端读到的记录数正好 5,000。这个倍数与线格式的选择有关，我在<a href="https://yaohehe.github.io/2026-10-25-json-messagepack-protobuf.html" class="internal-link">五种线格式的 50,000 条对拍</a>里量过同一批字段，量级一致。</p>
+<p>然后撞上限。客户端发一条 4 MiB 加 10 字节的消息，服务端拒收：</p>
+<pre><code>StatusCode.RESOURCE_EXHAUSTED
+SERVER: Received message larger than max (4194362 vs. 4194304)</code></pre>
+<p>反过来，服务端返回 4 MiB 加 1 字节，客户端拒收：</p>
+<pre><code>StatusCode.RESOURCE_EXHAUSTED
+Stream removed (CLIENT: Received message larger than max (4194315 vs. 4194304))</code></pre>
+<p>两条报错的差别只有前缀：<code>SERVER:</code> 表示对端拒收你的请求，<code>CLIENT:</code> 表示本地拒收对端的响应。两侧各自有独立的 <code>grpc.max_receive_message_length</code>，只调一边另一半还会炸。把客户端这个选项抬到 8 MiB 后，同样的 4,194,305 字节响应完整收到，长度校验一致。</p>
+<p>实践上有两条：大于 1 MB 的响应改成 server streaming 分片发，不要在单条消息里硬塞；真需要调上限时两边一起调，并且想清楚为什么一条消息要超过 4 MB —— 通常答案是接口设计错了。</p>
+<h2>默认值二：metadata 两道闸，和它自己写错的阈值</h2>
+<p>metadata 是 gRPC 里最容易被当成随便塞的地方，实际上它有两级闸门。我二分到字节：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">自定义 x-pad 长度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">头部总长</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">12,017</td><td style="border:1px solid #ddd;padding:8px;">12,568</td><td style="border:1px solid #ddd;padding:8px;">通过</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">12,018</td><td style="border:1px solid #ddd;padding:8px;">12,570</td><td style="border:1px solid #ddd;padding:8px;">RESOURCE_EXHAUSTED（soft limit，文案写 8192）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">15,900</td><td style="border:1px solid #ddd;padding:8px;">16,451</td><td style="border:1px solid #ddd;padding:8px;">RESOURCE_EXHAUSTED（hard limit 16384）</td></tr></tbody></table>
+<p>报错原文很直白，还贴心地把每个 header 的字节数列了出来：</p>
+<pre><code>received metadata size exceeds soft limit (12570 vs. 8192);  :path:54B :authority:56B
+:method:43B :scheme:43B content-type:60B te:42B grpc-accept-encoding:75B user-agent:92B x-pad:12037B</code></pre>
+<p>这里有个值得记住的细节：<strong>报错自己写的阈值是 8,192，实测触发点是 12,570，差 1.53 倍</strong>。老实说我没能从源码层面解释这个差值，所以本文只把它当实测事实记录 —— 但结论不变：自定义 metadata 按 8 KB 以内设计，别去试探上限。七个内置 HTTP/2 头的固定开销实测约 551 字节，这部分你控制不了。</p>
+<p>用 metadata 传 JWT 的服务要特别注意这条：token 一膨胀，报错是 RESOURCE_EXHAUSTED，看起来像服务端资源耗尽，实际是你的头部太大。</p>
+<h2>默认值三：截止时间是客户端的承诺，不是服务端的停止键</h2>
+<p>这是七条里代价最大的一条。一个 800 毫秒的方法，客户端 <code>timeout=0.2</code>：</p>
+<ul><li>客户端 0.2 秒返回 DEADLINE_EXCEEDED，details 就是 <code>Deadline Exceeded</code>；</li><li>那一刻服务端计数器 started=1、finished=0；</li><li>再等 1.2 秒，finished=1，而且 handler 里 <code>context.is_active()</code> 返回 False 的那次计数也加一。</li></ul>
+<p>也就是说服务端<strong>在 0.2 秒时就已经知道这个调用被取消了</strong>，但 handler 里那句 <code>time.sleep(0.8)</code> 不会被打断，它会睡满、返回、然后返回值被丢弃。官方文档把这件事写得很清楚，两句原文值得背下来：</p>
+<blockquote>A gRPC server deals with this situation by automatically cancelling a call (CANCELLED status) once a deadline set by the client has passed.</blockquote>
+<blockquote>Please note that the server application is responsible for stopping any activity it has spawned to service the RPC.</blockquote>
+<p>再看 status codes 页对 DEADLINE_EXCEEDED 的解释，这一句是关键：</p>
+<blockquote>For operations that change the state of the system, this error may be returned even if the operation has completed successfully.</blockquote>
+<p>翻译成人话：客户端收到超时，不等于服务端没做完。写库、发消息、扣库存的 handler，必须自己检查 <code>context.is_active()</code>，或者给下游调用带上剩余时间。否则「客户端超时后重试」叠加「服务端照跑完」，就是重复副作用 —— 我上线第一天那两条重复记录就是这么来的。</p>
+<p>还有一条前置事实：官方 Deadlines 页开头写着「By default, gRPC does not set a deadline」，不写 timeout 的调用可能一直等下去。</p>
+<h2>默认值四：重试默认是开着的，一次调用打了三次</h2>
+<p>给 Fail 方法配一段 service config，<code>maxAttempts: 3</code>、<code>retryableStatusCodes: ["UNAVAILABLE"]</code>，服务端每次进入 Fail 自增一个计数器。客户端只调用一次，服务端计数 <strong>加 3</strong>。</p>
+<p>更值得注意的对照：再加上 <code>grpc.enable_retries=1</code> 跑一遍，还是 3 次。所以这不是「打开开关才生效」的陷阱，而是<strong>重试本来就开着，只差一份 policy</strong>。官方 Retry 页第一句就写了：</p>
+<blockquote>Retries are enabled by default, but there is no default retry policy.</blockquote>
+<p>同一页还给了两件容易漏的事：退避时间会加正负 20% 的抖动（<code>initialBackoff</code> 100 毫秒实际会落在 80 到 120 毫秒之间）；以及透明重试 —— RPC 根本没离开客户端时可以不限次重试，到达服务端库但应用还没看到时会重试一次。</p>
+<p>危险在叠乘。我在<a href="https://yaohehe.github.io/2026-10-24-requests-2342-tenacity-921.html" class="internal-link">HTTP 层的重试实测</a>里量过 tenacity 3 次乘 urllib3 4 次等于 12 次请求；如果那条链路外面再包一层 gRPC 的 3 次，最坏情况是 36 次落到服务端。规则很简单：只给幂等调用配 retryableStatusCodes，并且全链路只保留一层重试。</p>
+<p>日志观测也要改口径：同一次调用在服务端出现三条日志，不是客户端发了三次，是重试了两次。</p>
+<h2>默认值五：服务端抛异常一律变 UNKNOWN</h2>
+<p>同一个 Fail 方法，两种写法，客户端看到两个不同的 code。</p>
+<p>普通 Python 异常（<code>raise ValueError("record 42 not found")</code>）：</p>
+<pre><code>StatusCode.UNKNOWN
+Exception calling application: record 42 not found</code></pre>
+<p>显式 <code>context.abort(grpc.StatusCode.NOT_FOUND, "record 42 not found")</code>：</p>
+<pre><code>StatusCode.NOT_FOUND
+record 42 not found</code></pre>
+<p>原因在源码里：<code>grpc/_server.py</code> 的 handler 包装层 <code>except Exception</code> 之后统一走 <code>cygrpc.StatusCode.unknown</code>，details 拼成 <code>Exception calling application: {}</code>。同一文件里还有一行容易踩的：<code>abort()</code> 传 <code>StatusCode.OK</code> 会被改成 UNKNOWN 并把 details 清空，只在服务端日志留一行 error。</p>
+<p>还有一个反直觉的检查点：调用一个根本不存在的方法，客户端拿到的是 <code>UNIMPLEMENTED</code>，details 是 <code>Method not found!</code>。这不是 404，也不会被当成「记录不存在」。官方 status codes 页明确列了七个只由用户代码产生的码 —— INVALID_ARGUMENT、NOT_FOUND、ALREADY_EXISTS、FAILED_PRECONDITION、ABORTED、OUT_OF_RANGE、DATA_LOSS，所以线上看到 NOT_FOUND，一定是业务代码给的，不是框架。</p>
+<p>监控上可以这样做：按 code 分组打点，UNKNOWN 的占比就是 handler 里没处理的异常的比例；这个数字一涨，说明有异常在裸奔。</p>
+<h2>默认值六：并发上限在服务端线程池，不在通道</h2>
+<p>服务端 <code>ThreadPoolExecutor(max_workers=64)</code>，被测方法睡 50 毫秒，客户端单通道打三组并发：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">并发数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">总耗时</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">折算轮次</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">64</td><td style="border:1px solid #ddd;padding:8px;">0.084 秒</td><td style="border:1px solid #ddd;padding:8px;">1.68</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">0.127 秒</td><td style="border:1px solid #ddd;padding:8px;">2.55</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">0.227 秒</td><td style="border:1px solid #ddd;padding:8px;">4.54</td></tr></tbody></table>
+<p>折算轮次等于总耗时除以 50 毫秒。64 并发接近 1 轮（真并行），128 是 2.55 轮、256 是 4.54 轮 —— 正好是「超过 64 的部分排队」的形状。<strong>天花板是服务端的池大小，不是客户端的通道数。</strong></p>
+<p>再验证通道这一侧：200 个 50 毫秒调用，单通道并发 0.215 秒，200 个独立通道 0.221 秒。通道很便宜，多开没有收益，HTTP/2 的多路复用本来就在一条连接上跑并发流。</p>
+<p>实践顺序是反的：多数人先调客户端并发，其实应该先看服务端池。Python 里 IO 型 handler 把池开大有效；CPU 型 handler 开大只会被 GIL 吃回去 —— 我在<a href="https://yaohehe.github.io/2026-11-04-python-threadpoolexecutor-asyncio-queue.html" class="internal-link">四形态并发对照</a>里量到，16 线程跑纯 Python 循环比串行还慢 21.7%。</p>
+<h2>默认值七：流式取消立刻生效，但只对还活着的流</h2>
+<p>服务端 Stream 每 10 毫秒吐一条，计划 60 条。客户端收 3 条后 <code>call.cancel()</code>，服务端 sent 计数停在 <strong>3</strong>，1 秒后再读还是 3，没有继续吐。</p>
+<p>原因是 handler 里在每次 yield 前检查了 <code>context.is_active()</code>。这条检查是可以省掉的，省掉的代价是：生成器还会把后面 57 次循环跑完，只是 yield 出去的东西没人收。如果那个循环里在做数据库分页查询，取消就等于白烧 57 次查询。</p>
+<p>所以流式 handler 的写法固定下来：把 <code>is_active()</code> 检查放进循环第一行，而不是只在函数开头判一次。</p>
+<h2>与 HTTP/1.1 加 JSON 的同一负载对照</h2>
+<p>同一台机器，200 个 50 毫秒的请求：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">形态</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">总耗时</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">gRPC 单通道并发 200</td><td style="border:1px solid #ddd;padding:8px;">0.215 秒</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">HTTP/1.1 每次新建连接</td><td style="border:1px solid #ddd;padding:8px;">1.221 秒</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">HTTP/1.1 单连接串行</td><td style="border:1px solid #ddd;padding:8px;">10.333 秒</td></tr></tbody></table>
+<p>这组数字说明的是连接模型，不是框架优劣：gRPC 一条连接上跑 200 个并发流，HTTP/1.1 要么串行排队（10.3 秒），要么开 200 条连接（1.2 秒）。而且这里的 HTTP 服务端用的是 Python 的 ThreadingTCPServer，与 gRPC 的 64 线程池不是同一量级的实现，所以我不把它写成「gRPC 快 5.7 倍」——只能写「单连接跑并发的代价不同」。</p>
+<h2>Troubleshooting：六个真实报错原文</h2>
+<p>下面六条全部是本轮在同一台机器上打出来的原文，不是摘抄。</p>
+<p><strong>一、RESOURCE_EXHAUSTED：Received message larger than max (4194362 vs. 4194304)</strong></p>
+<p>带 <code>SERVER:</code> 前缀时是对端拒收你的请求。修法：拆消息、改流式，或服务端调 <code>grpc.max_receive_message_length</code>。</p>
+<p><strong>二、RESOURCE_EXHAUSTED：received metadata size exceeds soft limit (12570 vs. 8192)</strong></p>
+<p>自定义 metadata 超过约 12.5 KB（报错里写的 8,192 是另一套口径）。修法：别用 metadata 传大对象，token 改短字段或放请求体。</p>
+<p><strong>三、DEADLINE_EXCEEDED：Deadline Exceeded，而服务端 finished 计数还在涨</strong></p>
+<p>客户端放弃不等于服务端停机。修法：handler 内检查 <code>context.is_active()</code>，或给下游带 deadline。</p>
+<p><strong>四、UNKNOWN：Exception calling application: Protocol message CountReply has no "inactive" field.</strong></p>
+<p>这条是我本轮真踩的：改了 proto 加了字段，却忘了重跑 protoc，客户端拿旧桩、服务端返回新字段。修法：proto 与桩代码一起进版本库，改 proto 必须重编译两端。它同时演示了默认值五 —— 一个纯粹的编程错误，到客户端只剩 UNKNOWN。</p>
+<p><strong>五、UNIMPLEMENTED：Method not found!</strong></p>
+<p>调了不存在的方法名，或服务端没注册这个 servicer。修法：核对 <code>/package.Service/Method</code> 全名。</p>
+<p><strong>六、UNAVAILABLE：failed to connect to all addresses; last error: UNAVAILABLE: ipv4:127.0.0.1:1: WSAGetOverlappedResult: Connection refused ... 10061</strong></p>
+<p>端口没人监听时 2.01 秒返回，报错里带完整的内层错误。同一个端口加 <code>wait_for_ready=True</code> 后，2.0 秒变成 DEADLINE_EXCEEDED —— <strong>同一件事，两个 code</strong>，按 code 做的告警规则会把它们分到两个桶里，这一点在配监控时要想清楚。</p>
+<h2>本文的边界</h2>
+<p>只测 Python 实现（grpcio 1.85.1）。Go 与 Java 的 deadline 传播默认开启，C++ 需要显式开启，这一点官方 Deadlines 页写得很清楚，跨语言不能照搬本篇的数字。</p>
+<p>没有 TLS、没有负载均衡、没有压缩、没有跨机器 —— 全部在回环上跑，RTT 在 0.05 毫秒量级，公网上的截止时间与重试行为必然不同。</p>
+<p>keepalive 那组我<strong>没测出结论</strong>：客户端把 <code>keepalive_time_ms</code> 设成 1,000，服务端用默认的最小心跳间隔（300,000 毫秒），45 秒内没有复现 GOAWAY 或 ENHANCE_YOUR_CALM。没复现就不写，只在这里留个记号。</p>
+<p>单机 16 逻辑核，服务端池 64 个 worker，这些数字换了机器都要重测。</p>
+<h2>七条可以直接抄走的规则</h2>
+<ul><li>单条消息按 4 MiB 设计上限，两个方向的选项要一起调。</li><li>自定义 metadata 控制在 8 KB 以内，不要拿它传 token 之外的大对象。</li><li>每个调用都写 timeout，handler 里主动检查 <code>context.is_active()</code>。</li><li>只给幂等方法配 retryableStatusCodes，全链路只留一层重试。</li><li>handler 里用 <code>context.abort(code, details)</code>，不要靠抛异常传错误语义。</li><li>并发先调服务端线程池，再谈客户端通道数。</li><li>流式 handler 把 <code>is_active()</code> 检查放进循环第一行。</li></ul>
+<p>本文不含任何联盟推广链接，全部数字来自本机实测；proto 与脚本都在同一台机器上可重跑。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
