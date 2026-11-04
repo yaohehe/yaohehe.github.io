@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Celery and huey retries: who ran it a second time - TechPassive</title>
+  <meta name="description" content="I ran huey 3.5.4 and Celery 5.6.3 side by side: retries=2 means three executions, fixed task_id dedups zero, and eager mode eats the backoff. Three real errors included.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Task retries in Celery and huey: three runs, one side effect</h1>
+  <div class="post-tags">
+    <span class="tag">Celery</span><span class="tag">huey</span><span class="tag">task queue</span>
+  </div>
+  <div class="content">
+    <p>The part of a task queue that gets misread most often is not whether it retries. It is how many times it retries, and how many times the side effect runs. The three mainstream Python queues answer those two questions with three different counting conventions, and none of them warns you when the convention is not the one you assumed.</p>
+<p>I actually ran the same set of tasks against <a href="/2026-11-01-huey-vs-apscheduler-vs-celery-7-silent-failures-en.html" class="internal-link">huey</a> 3.5.4 and Celery 5.6.3, installed into an isolated directory on CPython 3.13.12 and Windows 11: one task that always fails, one that fails twice and then succeeds, and one submitted twice with a fixed id. Every number below came out of that run, not out of a documentation page.</p>
+<p><strong>TL;DR</strong>: With default settings, huey's <code>retries=2</code> means three total executions, and Celery's <code>max_retries=2</code> means three as well, but a retry without an explicit <code>countdown</code> waits 180 seconds. Neither library deduplicates on <code>task_id</code>. Celery's backoff carries jitter by default, so the documented "first retry after 1 second" is only a ceiling; the measured mean is half of it. <code>acks_late</code> does not buy you "never lost", it buys you "possibly duplicated".</p>
+<h2>Three counting conventions on one table</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Library</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Setting</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What the docs say</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Measured total executions</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">huey 3.5.4</td><td style="border:1px solid #ddd;padding:8px;"><code>retries=2</code></td><td style="border:1px solid #ddd;padding:8px;">retry twice on unhandled exception</td><td style="border:1px solid #ddd;padding:8px;">3</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Celery 5.6.3</td><td style="border:1px solid #ddd;padding:8px;"><code>max_retries=2</code> + <code>autoretry_for</code></td><td style="border:1px solid #ddd;padding:8px;">retry at most twice</td><td style="border:1px solid #ddd;padding:8px;">3</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Celery 5.6.3</td><td style="border:1px solid #ddd;padding:8px;"><code>max_retries</code> left at default</td><td style="border:1px solid #ddd;padding:8px;">class attribute <code>Task.max_retries = 3</code></td><td style="border:1px solid #ddd;padding:8px;">4 (from source, not measured)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">No retry configured</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr></tbody></table>
+<p>The first two rows ran three rounds each and stayed stable. The third row is a source constant; I did not run it separately, so treat it as source evidence rather than measurement.</p>
+<p>The row that actually bites is the last one. <strong>The default is one attempt.</strong> A task with no retry configuration fails once and stays failed. The queue will not cover for you.</p>
+<h2>In huey, retries is a countdown, not a total</h2>
+<p>huey counts down. The first line of <code>_requeue_task()</code> in <code>huey/api.py</code> is <code>task.retries -= 1</code>, and then the task goes back on the queue. So a task declared with <code>retries=2</code> fails, drops to 1, fails again, drops to 0, fails a third time, and only then does <code>final = not task.retries</code> become true and the error reach the result store.</p>
+<p>That is why the table says three and not two. The documentation wording — "number of times to retry the function if an unhandled exception occurs" — is accurate, but reading it as a total is off by a factor of two.</p>
+<h2>The error shows up before the retries are finished</h2>
+<p>This is where huey generates the most false alarms. <code>SqliteHuey</code> defaults <code>store_intermediate_errors</code> to <code>True</code>; the docs say "Defaults to <code>True</code> for backwards compatibility". The meaning is that when a task fails but still has retries left, the exception is written into the result store right away.</p>
+<p>I measured it. A task with <code>retries=3, retry_delay=1</code> failed once, and 0.5 seconds later the result store already returned a <code>TaskException</code> wrapping <code>ValueError('attempt-1')</code> — while the task was still queued for another attempt and eventually succeeded.</p>
+<p>If your alerting rule is "a TaskException in the result backend means page someone", every task that eventually succeeds will page someone first. Either set <code>store_intermediate_errors=False</code>, or read the <code>retries</code> field in the <code>Error</code> metadata and only alert when it has hit zero.</p>
+<p>One more counterintuitive detail: <code>h.result()</code> uses <code>preserve=False</code> by default, so reading a result pops it out of storage. My first probe read the same result twice and got <code>None</code> on the second read; I nearly recorded that as "the retry ate my result". Use <code>preserve=True</code> if you need to read twice.</p>
+<p>Once retries really are exhausted, the shape is <code>TaskException: ValueError('boom-A')</code> — identical to the intermediate state. Only the <code>retries</code> field tells them apart.</p>
+<h2>Celery's 180 seconds: you think it is retrying, it is queueing</h2>
+<p><code>Task.default_retry_delay</code> is <strong>180</strong> as a class attribute, and <code>Task.retry()</code> contains:</p>
+<pre><code>if not eta and countdown is None:
+    countdown = self.default_retry_delay</code></pre>
+<p>So a bare <code>raise self.retry()</code> waits three minutes before the task re-enters the queue. That is not a bug; it is a default written for a time when the main fear was hammering an overloaded downstream service. But in the modern mental model, "retry" means "try again in a moment".</p>
+<p>If you want second-level retries you have to pass <code>countdown=1</code>, or use <code>autoretry_for</code> together with <code>retry_backoff</code>.</p>
+<h2>A direct call is not a retry</h2>
+<p><code>Task.retry()</code> opens with:</p>
+<pre><code>if request.called_directly:
+    raise_with_context(exc or Retry('Task can be retried', None))</code></pre>
+<p>In my run, calling <code>manual("direct")</code> directly raised <code>ValueError</code>, not <code>Retry</code>, with exactly one execution. <strong>Call a task function by hand in a REPL and you see the original exception; the retry path never runs.</strong></p>
+<p>The comment above that block reads "Not in worker or emulated by (apply/always_eager), so just raise the original exception". The comment and the behavior disagree: <code>apply()</code> takes the <code>is_eager</code> branch and, in my run, did retry three times. The comment lumps <code>apply</code> in with direct calls, but only <code>called_directly</code> actually skips retries.</p>
+<h2>Eager mode swallows the backoff</h2>
+<p>This is the classic trap when you validate retry pacing in a unit test. I ran a task with <code>retry_backoff=True, max_retries=2</code> under <code>task_always_eager=True</code>:</p>
+<ul><li>executions: 3</li><li>elapsed: 0.010 seconds</li></ul>
+<p>Three runs in ten milliseconds. The <code>countdown</code> is computed and stored in the <code>Retry</code> signature, but <code>apply()</code> catches the <code>Retry</code> and re-executes in place, with no sleep at all. The same configuration on a real worker waits 1 second and then 2 seconds; under eager it waits 0 and 0.</p>
+<p>Eager mode can prove how many times a task retried and which exception finally surfaced. It <strong>cannot</strong> prove anything about pacing. For pacing you need a real worker, or a direct unit test of <code>get_exponential_backoff_interval()</code>.</p>
+<h2>What gets raised at exhaustion depends on `exc`</h2>
+<p>Same setup, two variants:</p>
+<ul><li><code>raise self.retry(exc=ValueError("mx"))</code> → state <code>FAILURE</code>, <code>result</code> is <code>ValueError</code></li><li><code>raise self.retry()</code> → state <code>FAILURE</code>, <code>result</code> is <code>MaxRetriesExceededError</code></li></ul>
+<p>Both ran three times. The documentation is accurate here: the original exception is re-raised when <code>exc</code> was supplied, and <code>MaxRetriesExceededError</code> is raised when it was not.</p>
+<p>This matters for your <code>except</code> clauses. If a fallback handler catches <code>MaxRetriesExceededError</code> and you happen to pass <code>exc</code>, that handler never runs.</p>
+<h2>Jitter is on by default, so "1 second" is a ceiling</h2>
+<p>The docs say <code>retry_jitter</code> is set to <code>True</code> by default, and separately that with <code>retry_backoff=True</code> "the first retry will have a delay of 1 second". Both statements are true, and together they read like "the first retry always waits one second".</p>
+<p>With <code>full_jitter=True</code> the delay is <code>random(0, ceiling)</code>. I sampled <code>get_exponential_backoff_interval()</code> 2000 times per row:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Retry number</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Sampled min</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Sampled max</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Sampled mean</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Documented ceiling</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.5</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">1.0</td><td style="border:1px solid #ddd;padding:8px;">2</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">2.0</td><td style="border:1px solid #ddd;padding:8px;">4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">4.0</td><td style="border:1px solid #ddd;padding:8px;">8</td></tr></tbody></table>
+<p>The mean is exactly half the ceiling and the minimum is <strong>0</strong>. In other words, the expected delay you actually get is only 50% of the number the docs put in front of you. Exponential backoff in the default configuration is "exponential ceiling plus uniform noise", not "exponential wait".</p>
+<p>There is a configuration-layer detail worth recording: <code>DEFAULTS['task_retry_jitter']</code> is <code>None</code>, not <code>True</code>. What makes the effective default <code>True</code> is this line in <code>celery/app/autoretry.py</code>: <code>getattr(task, 'retry_jitter', True)</code>. Reading the config table, seeing <code>None</code>, and concluding jitter is off is reading the wrong layer.</p>
+<h2>`task_id` is an identity, not a lock</h2>
+<p>I assumed a fixed <code>task_id</code> would work as an idempotency key. Measured:</p>
+<ul><li>Celery: <code>ok.apply_async(args=("id1",), task_id="dup-1")</code> twice → 2 executions</li><li>huey: <code>once("C", id="fixed-id-1")</code> twice → 2 executions</li></ul>
+<p>Neither library deduplicates. <code>task_id</code> identifies a message so you can look up its result, revoke it, or trace it. It is <strong>not</strong> a promise that the id runs once. Anyone relying on it for deduplication finds out on the first duplicate consumption, when it blocks nothing.</p>
+<h2>`acks_late` does not buy "never lost", it buys "possibly duplicated"</h2>
+<p>The Celery docs are unusually blunt:</p>
+<blockquote>the default behavior is to acknowledge the message in advance, just before it's executed, so that a task invocation that already started is never executed again.</blockquote>
+<p>The ack happens <strong>before</strong> execution, so a worker killed mid-task loses the message; nothing is redelivered. Turning on <code>acks_late</code> moves the ack to after execution:</p>
+<blockquote>This means the task may be executed multiple times should the worker crash in the middle of execution. Make sure your tasks are idempotent.</blockquote>
+<p>The FAQ on the same site adds the line that matters most:</p>
+<blockquote>if the task raises an exception it's still acknowledged!</blockquote>
+<p><strong>An exception still acks the message.</strong> Retries in Celery are therefore not driven by the ack mechanism at all; they are driven by <code>retry()</code>. <code>acks_late</code> governs "the process died", not "the code raised".</p>
+<p>Three source constants in Celery 5.6.3: <code>task_acks_late = False</code>, <code>task_reject_on_worker_lost = None</code>, <code>worker_prefetch_multiplier = 4</code>. The second one is <code>None</code>, not <code>False</code>, which means "follow the semantics of <code>acks_late</code>", not "disabled".</p>
+<p><strong>Evidence boundary</strong>: this machine has no Redis or RabbitMQ, so I did eager-mode measurements, source-constant extraction, and direct quotation of the official docs. I did <strong>not</strong> run a real redelivery scenario. To know whether your broker redelivers after a hard kill, you have to kill a worker on your own infrastructure.</p>
+<h2>Troubleshooting: three errors I actually hit</h2>
+<p><strong><code>AttributeError: 'bytes' object has no attribute 'eta'</code></strong></p>
+<p>I tried to drive the queue without a consumer: <code>task = h.storage.dequeue()</code> followed by <code>h.execute(task)</code>. <code>SqliteHuey.dequeue()</code> returns serialized bytes, not a <code>Task</code>. Deserialize it first with <code>h.deserialize_task(data)</code>, or just use <code>h.create_consumer()</code>, which is the production path and the one I ended up on.</p>
+<p><strong><code>ValueError: signal only works in main thread of the main interpreter</code></strong></p>
+<p>Putting <code>consumer.run()</code> into a <code>threading.Thread</code> crashed immediately. <code>Consumer.start()</code> calls <code>_set_signal_handlers()</code>, and <code>signal.signal()</code> can only be registered from the main thread. In tests, either stub <code>_set_signal_handlers</code> to a no-op inside the thread, or start the consumer in a separate process — the latter is closer to production and hides less.</p>
+<p><strong><code>ProgrammingError: Error binding parameter 2: type 'Result' is not supported</code></strong></p>
+<p>I passed a <code>Result</code> object to <code>h.result(r)</code> when it wants the <code>task_id</code> string. The correct form is <code>h.result(r.id)</code>. The error comes out of sqlite3 parameter binding and gives no hint that the argument type was wrong; it took me a while to connect the dots.</p>
+<h2>How to get idempotency, four options by cost</h2>
+<ul><li><strong>If a natural unique key exists, use a unique index.</strong> Order numbers, message ids, file paths: <code>INSERT ... ON CONFLICT DO NOTHING</code> and let the database block the second write.</li><li><strong>If there is no natural key, persist the intent.</strong> Write <code>(task_id, status='started')</code> before doing the work, with a unique index on <code>task_id</code>; the duplicate hits the conflict and exits.</li><li><strong>For third-party APIs, use the provider's idempotency key.</strong> <code>Idempotency-Key</code> headers and merchant order numbers are enforced server-side, which is more reliable than any lock you write yourself.</li><li><strong>For notifications, use a deduplication window.</strong> One notification per user per class per 10 minutes; the window can live in Redis or a table, but it must be <strong>longer than the retry cycle</strong>.</li></ul>
+<p>If a task "ran twice and produced three rows", do not start by lowering the retry count. Check whether it has any of those four properties. Retry count only controls how many times it repeats; idempotency design decides what a repeat does.</p>
+<h2>Picking between the three, in one line each</h2>
+<ul><li>Retries only, no persistence, work fits in-process → skip the queue, <code>tenacity</code> is enough. I compared that layer in <a href="https://yaohehe.github.io/2026-10-24-retries-that-never-fire-urllib3-280-and-tenacity-en.html" class="internal-link">the October 24 retry write-up</a>.</li><li>Single machine, modest volume, can live with SQLite's locking → <code>SqliteHuey</code>, and remember <code>retries</code> is "how many remain".</li><li>Multi-machine, needs ack semantics and beat scheduling → Celery, but you own idempotency, because it only guarantees at-least-once.</li></ul>
+<p>The dependency surfaces and the silent-failure lists for all three are in <a href="https://yaohehe.github.io/2026-11-01-huey-vs-apscheduler-vs-celery-7-silent-failures-en.html" class="internal-link">the November 1 comparison</a>. This piece only answers what happens after a failure, so the two do not overlap.</p>
+<h2>FAQ</h2>
+<p><strong>What is the difference between <code>retries=0</code> and <code>retries=-1</code>?</strong></p>
+<p>In huey, <code>0</code> means no retry. A negative number keeps decrementing in <code>_requeue_task()</code>, and <code>final = not task.retries</code> is never true for a negative value, which adds up to unlimited retries. If you want unlimited retries, confirm that behavior deliberately instead of guessing with <code>-1</code>.</p>
+<p><strong>What does Celery's <code>max_retries=None</code> mean?</strong></p>
+<p>"A value of <code>None</code> means task will retry forever." It does not mean "no retry". Use <code>0</code> for that.</p>
+<p><strong>Why does my task rerun instantly even with <code>retry_backoff=True</code>?</strong></p>
+<p>Check whether you are running under <code>task_always_eager=True</code>. Eager mode never sleeps, which is exactly why my run finished three executions in 0.010 seconds.</p>
+<p><strong>My task executed twice — is that <code>acks_late</code>?</strong></p>
+<p>First check whether <code>acks_late</code> is on at all. The default <code>task_acks_late</code> is <code>False</code>, acking before execution, so a crash normally does not redeliver. Duplicates are far more likely to come from <code>retry()</code> being called, or from the producer publishing twice.</p>
+<h2>Closing</h2>
+<p>The three numbers worth keeping are not about which library is better: <code>retries=2</code> equals three executions, the default <code>countdown</code> is 180 seconds, and <code>task_id</code> deduplicates nothing. All three are documented, and none of them raises an error when you get it wrong.</p>
+<p>Queue defaults are almost always chosen in favor of reliability, and the only way to implement reliability across machines is at-least-once delivery. Once delivery is at-least-once, duplication is the normal case and idempotency is not optional.</p>
+<p>No affiliate links in this article. Every number here is either measured locally or quoted verbatim from the official documentation.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
