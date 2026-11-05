@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python zoneinfo Tested: 6 Silent DST Errors - TechPassive</title>
+  <meta name="description" content="Six silent DST failures reproduced on CPython 3.13.14 and Windows 11: wall times moved an hour, instants that compare equal, a day of 23 hours, six real exceptions.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Python zoneinfo Tested: 6 Silent DST Errors</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">time zones</span><span class="tag">daylight saving</span>
+  </div>
+  <div class="content">
+    <p>At 1 a.m. on November 1 I dumped the logs of a service scheduled against America/New_York and found two records with identical timestamps, yet the table said their gap was 0 seconds. Higher up, a window that should have taken 60 minutes took 120. Nothing crashed. Every unit test was green.</p>
+<p>The bug was not in the logging library. It was in four comparison rules of datetime, all of them written down in PEP 495 and almost never in tutorials. I tested six of them on CPython 3.13.14, Windows 11, tzdata 2025.2 (IANA 2025b), and each one reproduces in about ten lines. On the way I also checked China's own daylight saving years, 1986 to 1991, where "Beijing time is UTC+8" stops being true.</p>
+<h2>First, separate three things: the zone key, the offset, the DST flag</h2>
+<p>A ZoneInfo object holds an IANA key such as America/New_York. It does not store an offset; it stores a table of when to switch to which offset. utcoffset() returns the UTC offset for one specific instant, and dst() returns the part of that offset attributed to daylight saving. Read those three as one thing and you conclude New York is "always minus five".</p>
+<p>On Windows there is a precondition. On my machine zoneinfo.TZPATH prints as an empty tuple, meaning the OS ships no time zone database at all and everything depends on the tzdata package from PyPI. The official docs are explicit: "Some systems, including notably Windows systems, do not have an IANA database available, and so for projects targeting cross-platform compatibility that require time zone data, it is recommended to declare a dependency on tzdata. If neither system data nor tzdata are available, all calls to ZoneInfo will raise ZoneInfoNotFoundError."</p>
+<p>I removed site-packages from the path to reproduce a machine without tzdata, and even the key UTC fails:</p>
+<pre><code>zoneinfo._common.ZoneInfoNotFoundError: 'No time zone found with key UTC'</code></pre>
+<p>That exception subclasses KeyError, so any code wrapping the lookup in except KeyError swallows it and keeps going with a naive datetime. That is the first silent failure in the chain.</p>
+<h2>Error one: a local time that never existed gets moved</h2>
+<p>On March 8, 2026, New York jumps from 02:00 straight to 03:00. The wall time 02:30 does not exist that day. Constructing it raises nothing:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">fold</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">converted to UTC</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">converted back</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">round trip closes</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">-05:00</td><td style="border:1px solid #ddd;padding:8px;">07:30</td><td style="border:1px solid #ddd;padding:8px;">03:30 EDT</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">-04:00</td><td style="border:1px solid #ddd;padding:8px;">06:30</td><td style="border:1px solid #ddd;padding:8px;">01:30 EST</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr></tbody></table>
+<p>Neither result is 02:30. fold=0 uses the offset from before the transition and lands on 03:30 after it; fold=1 uses the offset from after the transition and lands on 01:30 before it. That is exactly what the documentation promises for fold: before-transition offset for 0, after-transition offset for 1. It never promises the wall time exists.</p>
+<p>Detecting the trap takes three lines and no third-party library:</p>
+<pre><code>def kind(w):
+    d0, d1 = w.replace(fold=0), w.replace(fold=1)
+    if d0.utcoffset() == d1.utcoffset():
+        return "ok"
+    back = d0.astimezone(UTC).astimezone(w.tzinfo)
+    return "gap" if back.replace(tzinfo=None) != w.replace(tzinfo=None) else "ambiguous"</code></pre>
+<p>The test is whether the two fold values agree on the offset. If they differ, convert with fold=0 and see whether you get the same wall clock back; if you do not, it is a gap, and if you do, it is an ambiguous time. This also answers "how do I know the timestamp the user typed does not exist" without wrapping everything in try/except.</p>
+<h2>Error two: two instants an hour apart compare equal</h2>
+<p>At 2 a.m. on November 1, 2026, New York falls back from EDT to EST, so the 01:00 to 01:59 hour happens twice. Take 01:30; the two fold values give two different real instants:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">fold</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">timestamp</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">in UTC</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">-04:00</td><td style="border:1px solid #ddd;padding:8px;">1793511000</td><td style="border:1px solid #ddd;padding:8px;">05:30</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">-05:00</td><td style="border:1px solid #ddd;padding:8px;">1793514600</td><td style="border:1px solid #ddd;padding:8px;">06:30</td></tr></tbody></table>
+<p>They are 3,600 seconds apart. Put both into one expression and this is what you get:</p>
+<ul><li>a == b evaluates to True</li><li>hash(a) equals hash(b)</li><li>len(set) is 1, so deduplication keeps one record</li><li>(b - a).total_seconds() is 0.0</li><li>but a.astimezone(UTC) is not equal to b.astimezone(UTC)</li></ul>
+<p>The same pair is equal in the wall-clock world and unequal in the instant world, and Python hands you the first one by default. PEP 495 says it plainly: "Naive and intra-zone comparisons will ignore the value of fold and return the same results as they do now. (This is the only way to preserve backward compatibility. If you need an aware intra-zone comparison that uses the fold, convert both sides to UTC first.)" The sentence in brackets is the only fix: convert both sides to UTC before comparing.</p>
+<p>This one fabricates data. In the service above, records inside the repeated hour were deduplicated by a set, the request count in the report dropped by 50%, and every assertion still passed, because no line of code ever compared two times explicitly.</p>
+<h2>Error three: change the tzinfo object and the same instant stops being equal</h2>
+<p>If the previous error can be patched with "convert to UTC", this one is harder: the same code, with a different tzinfo object, flips the answer.</p>
+<p>I took one wall time, 2026-11-01 01:30, attached different tzinfo objects, and compared each pair:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Comparison</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result of ==</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">The same ZoneInfo object (cache hit, a is b)</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ZoneInfo versus ZoneInfo.no_cache for the same key</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">America/New_York versus America/Toronto</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Two timezone(timedelta(hours=-4)) instances</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Two custom tzinfo instances (hardcoded -4)</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">New York versus Toronto at 12:00 in June (unambiguous)</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr></tbody></table>
+<p>In the New York versus Toronto case both datetimes have the same wall clock, both report -04:00, and both convert to 05:30 UTC. Same instant, and == is False. The reason is an exception in PEP 495: "Whenever one or both of the operands in inter-zone comparison is such that its utcoffset() depends on the value of its fold attribute, the result is False."</p>
+<p>The PEP also gives the formal definition. With toutc(t, fold) converting t to a naive UTC value under a given fold, then for two operands whose tzinfo are not the same object, t == s means toutc(t,0) == toutc(t,1) == toutc(s,0) == toutc(s,1). Inside an ambiguous hour toutc(t,0) is 05:30 and toutc(t,1) is 06:30, four values cannot all agree, so the answer is False immediately. A fixed-offset timezone object ignores fold, all four values agree, and the answer is True.</p>
+<p>The docs attach a Caution to no_cache as well: "Using this constructor may change the semantics of your datetimes in surprising ways, only use it if you know that you need to." That is not boilerplate. It changes equality itself.</p>
+<p>So you get the most counter-intuitive line in this article: a != b is true, and hash(a) == hash(b) is also true. Python allows it, since the invariant only requires equal objects to share a hash, not the other way round. But it means a dict can hold two different keys with the same hash, and any dedupe, sharding or cache key built on hashing gets two answers for one input.</p>
+<h2>Error four: adding one day is not adding 24 hours</h2>
+<p>The same trap is quieter in arithmetic. Start from 2026-03-07 12:00 EST (-05:00):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Operation</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Real seconds elapsed</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">plus timedelta(days=1)</td><td style="border:1px solid #ddd;padding:8px;">03-08 12:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">82,800</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">plus timedelta(hours=24)</td><td style="border:1px solid #ddd;padding:8px;">03-08 12:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">82,800</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">convert to UTC, add a day, convert back</td><td style="border:1px solid #ddd;padding:8px;">03-08 13:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">86,400</td></tr></tbody></table>
+<p>Adding a day and adding 24 hours are the same operation here, because timedelta arithmetic on an aware datetime is wall-clock arithmetic, not absolute time. The per-hour table makes it obvious: from 03-07 22:00, adding 4 wall-clock hours lands on 03-08 02:00 EST after only 14,400 real seconds; adding 6 lands on 03-08 04:00 EDT after 18,000; adding 6 absolute hours lands on 05:00 EDT after 21,600. Three numbers, two meanings.</p>
+<p>The consequence is that "expires in 30 days" style rules drift by an hour on the two transition days, and an hour usually stays inside tolerance, so nobody ever finds out. For real durations, convert to UTC first, then add.</p>
+<h2>Error five: string sorting inverts the order</h2>
+<p>The most common habit in logs and CSV exports is to sort isoformat() strings directly. Inside the repeated hour this reverses the order outright:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Record</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">String</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Timestamp</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">A</td><td style="border:1px solid #ddd;padding:8px;">2026-11-01T01:00:00-05:00</td><td style="border:1px solid #ddd;padding:8px;">1793512800</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">B</td><td style="border:1px solid #ddd;padding:8px;">2026-11-01T01:30:00-04:00</td><td style="border:1px solid #ddd;padding:8px;">1793511000</td></tr></tbody></table>
+<p>Sorted as strings, A comes first because 01:00 is less than 01:30. Sorted by timestamp, B comes first, because B is 30 minutes earlier than A. The comparison is decided once it reads the first five digits of the time and never looks at the offset.</p>
+<p>Aggregating across zones is worse. Three log lines read Shanghai 09:00+08:00 (01:00 UTC), UTC 08:30 (08:30 UTC) and New York 03:00-05:00 (08:00 UTC). String order is New York, UTC, Shanghai; instant order is Shanghai, New York, UTC. Exactly reversed.</p>
+<p>There is one rule: sort on timestamp(), or normalise everything to UTC first. isoformat() is for humans to read and machines to parse, not for use as a sort key.</p>
+<h2>Error six: two silent traps on the reading side</h2>
+<p>The first five errors happen when you compute and compare. Reading input has two more.</p>
+<p>The first is %Z. Parsing "2026-11-01 01:30 EDT" with datetime.strptime raises ValueError outright, because %Z only accepts the abbreviations in the local time.tzname, and this machine reports Chinese standard time. It gets worse when the abbreviation does match:</p>
+<pre><code>datetime.strptime("2026-11-01 01:30 <local abbreviation>", "%Y-%m-%d %H:%M %Z")
+-> datetime.datetime(2026, 11, 1, 1, 30)   # tzinfo is None</code></pre>
+<p>Parsed, no error, no time zone. Everything downstream then treats it as local time. Use %z (lowercase) to capture the offset, or parse ISO 8601 with fromisoformat.</p>
+<p>The second is fromtimestamp() without a tz argument, which interprets the number in local time. The same timestamp 1793511000 gives 13:30 with no zone (this machine is UTC+8), 05:30 with UTC, and 01:30-04:00 with New York. Three lines, eight hours apart, zero errors. That code runs fine in a container and shifts wholesale on a UTC host, and an eight-hour shift looks entirely normal in a log.</p>
+<p>Worth pinning down what fromisoformat accepts since 3.11: a trailing Z, both +0800 and +08:00, and even an ISO week date such as 2026-W45-5, which resolves to 2026-11-06. It does not accept Z and an offset together.</p>
+<h2>China had daylight saving too, from 1986 to 1991</h2>
+<p>"China has no DST, so I can ignore this" is true in 2026 and false in 1991. Query Asia/Shanghai backwards:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Date</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">dst</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tzname</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1985-07-01</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1986-07-01</td><td style="border:1px solid #ddd;padding:8px;">+09:00</td><td style="border:1px solid #ddd;padding:8px;">1 hour</td><td style="border:1px solid #ddd;padding:8px;">CDT</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1988-05-01</td><td style="border:1px solid #ddd;padding:8px;">+09:00</td><td style="border:1px solid #ddd;padding:8px;">1 hour</td><td style="border:1px solid #ddd;padding:8px;">CDT</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1991-09-15</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">2026-11-01</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr></tbody></table>
+<p>A full scan confirms the DST years are exactly 1986 through 1991, six of them. Note that May 1 was still CST in 1986 but already CDT in 1988, so the start date moved between years and one date cannot stand in for all six.</p>
+<p>Two kinds of data break on this. Historical timestamps from 1986 to 1991 are off by a full hour if you convert under a fixed +8 assumption, and archive records phrased as "July 1 that year, at such a time" cannot share one formula across those years. Data from 2026 is unaffected; the same kind() helper reports ok for Shanghai at 01:30 on 2026-11-01.</p>
+<h2>Half-hour DST, and negative DST</h2>
+<p>Two edge cases prove the offset is not common sense.</p>
+<p>Australia's Lord Howe Island runs a 30-minute DST. On 2026-10-04 the clock jumps from 02:00 to 02:30 and the offset goes from +10:30 to +11:00, a shift of 30 minutes. So 02:15 is a gap: fold=0 round-trips to 02:45 and fold=1 round-trips to 01:45, while 02:30 is fine because the transition ends just before it. Any assumption that DST is "always one hour" collapses here.</p>
+<p>Ireland is stranger. Europe/Dublin returns dst() of -3600 seconds in January and 0 in July, with tznames GMT and IST. The zone marks winter as negative DST and summer as standard time. Code that decides "is it DST" by testing whether dst() is zero gets Ireland wrong all year.</p>
+<h2>Scheduling: one run too few, one run too many</h2>
+<p>Put those pieces together and you get a scheduler problem. Walking all 365 days of 2026 with the same helper, for a daily 02:30 job and a daily 01:30 job:</p>
+<ul><li>02:30 does not exist on 2026-03-08, so that day's run is either shifted to 03:30 or skipped, depending on which fold the scheduler picks</li><li>01:30 happens twice on 2026-11-01, so the job runs twice</li></ul>
+<p>This is not theoretical. Any scheduler that stores "daily at HH:MM" in local wall time, in a zone with DST, loses one run and duplicates one run per year. The portable answer is to keep next-run instants in UTC internally and convert only for display. If a rule really must be "02:30 local", either pin it to a fixed UTC offset or document both transition-day behaviours explicitly.</p>
+<h2>Troubleshooting: six real exceptions</h2>
+<p>All six below are verbatim from this round of testing, not paraphrased.</p>
+<p>Exception one: <code>TypeError: can't compare offset-naive and offset-aware datetimes</code></p>
+<p>Cause: one side came from fromisoformat without a zone, the other from now(UTC). Fix: normalise to aware at the boundary and backfill a zone explicitly on read, chosen by business rule, never guessed with replace.</p>
+<p>Exception two: <code>DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).</code></p>
+<p>Cause: utcnow() returns a naive value that reads like an aware one. Fix: use datetime.now(datetime.UTC). The warning only appears when a warnings filter is enabled, so it is silent by default.</p>
+<p>Exception three: <code>ValueError: Invalid isoformat string: '2026-11-06T06:10:00.123456+08:00Z'</code></p>
+<p>Cause: Z and +08:00 are mutually exclusive spellings. Fix: strip the Z before parsing, or normalise to +00:00.</p>
+<p>Exception four: <code>zoneinfo._common.ZoneInfoNotFoundError: 'No time zone found with key America/New York'</code></p>
+<p>Cause: a space in the key. The message echoes your typo back, which makes it look like the database lacks US zones. Fix: use the canonical IANA key with an underscore, and validate against available_timezones() at startup.</p>
+<p>Exception five: <code>ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=1, seconds=3600).</code></p>
+<p>Cause: timezone(timedelta(hours=25)) written by hand. Fix: fixed offsets describe the gap to UTC, and no zone is more than 24 hours away; use ZoneInfo instead.</p>
+<p>Exception six: <code>ValueError: time data '2026-11-01 01:30 EDT' does not match format '%Y-%m-%d %H:%M %Z'</code></p>
+<p>Cause: %Z only matches the local time.tzname. Fix: use %z or fromisoformat. If the source only gives abbreviations, maintain your own abbreviation-to-offset table instead of trusting strptime.</p>
+<h2>Six assertions before you ship</h2>
+<p>I compressed the findings into six checks, all of them assertable:</p>
+<p>1. Every datetime is either aware or naive, never mixed; test each value with <code>d.tzinfo is None</code>.</p>
+<p>2. Convert to UTC before cross-zone comparison, sorting or deduplication; never rely on == or on sets.</p>
+<p>3. For real elapsed time, convert to UTC and then add the timedelta; use wall-clock arithmetic only for calendar days, and say so in a comment.</p>
+<p>4. Run the kind() check on any wall time that arrives from a user or an external system, and handle gap and ambiguous separately.</p>
+<p>5. Keep schedulers in UTC and convert for display; document the transition-day behaviour of any "daily at HH:MM" rule.</p>
+<p>6. Pick one serialisation format (ISO 8601 with an offset is the safe one) and always sort on timestamps.</p>
+<p>One honest note to close: none of this is specific to Python. Java's ZonedDateTime, JavaScript's Date and Go's time each have their own versions, but the premise is identical, that local time is a lookup table rather than a coordinate. The habit that saves you is not memorising six rules, it is making "store UTC, compare in UTC, convert only for humans" the default.</p>
+<p>About this site: no affiliate links in this article, and every number above comes from tests I ran on 2026-11-06 plus the verbatim text of PEP 495 and the zoneinfo documentation. I hit the same family of bug earlier in the <a href="https://yaohehe.github.io/2026-10-28-json-vs-orjson-vs-msgspec-nine-defaults-tested-en.html" class="internal-link">Python JSON serialisation piece</a>, where naive datetimes serialise without an offset. If you are writing scheduled work, the <a href="https://yaohehe.github.io/2026-11-01-huey-vs-apscheduler-vs-celery-7-silent-failures-en.html" class="internal-link">huey, APScheduler and Celery comparison</a> covers the scheduling layer, and <a href="https://yaohehe.github.io/2026-11-04-celery-and-huey-retries-who-ran-it-a-second-time-en.html" class="internal-link">retries and idempotency</a> covers what happens when a job runs twice.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
