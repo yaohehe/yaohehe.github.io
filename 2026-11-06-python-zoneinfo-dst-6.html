@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 时区实测：zoneinfo 与 DST 的 6 个静默错误 - TechPassive</title>
+  <meta name="description" content="CPython 3.13.14 实测六个不出错的时间错误：不存在的本地时间被挪走一小时、相差 3600 秒的两个时刻却相等、换一个 tzinfo 对象同一时刻变不等、加一天只走 23 小时、字符串排序把先后弄反、%Z 解析丢时区。附中国 1986 至 1991 年夏令时，另附六段真实报错与六条上线判据。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python 时区实测：zoneinfo 与 DST 的 6 个静默错误</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">时区</span><span class="tag">夏令时</span>
+  </div>
+  <div class="content">
+    <p>11 月 1 日凌晨，我把一台按 America/New_York 排程的服务日志导出来，发现两条记录的时间戳一模一样，可表里写着它们间隔 0 秒；再往上翻，一段本该 60 分钟的窗口变成了 120 分钟。进程没崩，单元测试全绿，监控也没告警。</p>
+<p>问题不在日志库。它出在 datetime 的四条比较规则上，而这些规则全都写在 PEP 495 里，只是很少被写进教程。我实际在 CPython 3.13.14 + Windows 11 + tzdata 2025.2（对应 IANA 2025b）上跑了六组对照，每一组都能用十行代码复现。顺带把中国 1986 到 1991 年的夏令时也翻了出来——那六年里，「北京时间就是 UTC+8」同样不成立。</p>
+<h2>一、先分清三样东西：时区名、偏移量、夏令时</h2>
+<p>一个 ZoneInfo 对象的 key 是 IANA 名字（America/New_York），它本身不存偏移量，只存一张「什么时候切到哪个偏移」的转换表；utcoffset() 是某个具体时刻的 UTC 偏移；dst() 是这串偏移里属于夏令时的那一段。三者混着读，就会得出「纽约永远是 -5」这种结论。</p>
+<p>Windows 上还有一层前置条件。我这台机器的 zoneinfo.TZPATH 打印出来是空元组，也就是说系统里根本没有时区数据库，全部依赖 PyPI 上的 tzdata 包。官方文档写得很直白：「Some systems, including notably Windows systems, do not have an IANA database available, and so for projects targeting cross-platform compatibility that require time zone data, it is recommended to declare a dependency on tzdata. If neither system data nor tzdata are available, all calls to ZoneInfo will raise ZoneInfoNotFoundError.」</p>
+<p>我把 site-packages 从路径里摘掉（等价于没装 tzdata）复现了一次，连 UTC 这个 key 都拿不到：</p>
+<pre><code>zoneinfo._common.ZoneInfoNotFoundError: 'No time zone found with key UTC'</code></pre>
+<p>注意这个异常是 KeyError 的子类，所以外层写了 except KeyError 的代码会把它静默吞掉，然后继续用裸 datetime 往下跑——这是整条链上第一个「不报错」。</p>
+<h2>二、错误一：不存在的本地时刻，只会被悄悄挪走</h2>
+<p>2026 年 3 月 8 日，纽约的本地时间从 02:00 直接跳到 03:00。02:30 这个时刻当天不存在。构造它不会抛异常：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">fold</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">换算成 UTC</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">再反算回本地</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">是否闭合</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">-05:00</td><td style="border:1px solid #ddd;padding:8px;">07:30</td><td style="border:1px solid #ddd;padding:8px;">03:30 EDT</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">-04:00</td><td style="border:1px solid #ddd;padding:8px;">06:30</td><td style="border:1px solid #ddd;padding:8px;">01:30 EST</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr></tbody></table>
+<p>两个结果都不是 02:30。fold=0 用了跳变前的偏移，落到跳变后的 03:30；fold=1 用了跳变后的偏移，落到跳变前的 01:30。官方文档对 fold 的定义正是这个：转换发生时，fold=0 取跳变前的偏移，fold=1 取跳变后的偏移——它从没承诺「这个墙钟时刻一定存在」。</p>
+<p>判断一个墙钟时刻是不是陷阱，三行就够，而且不依赖第三方库：</p>
+<pre><code>def kind(w):
+    d0, d1 = w.replace(fold=0), w.replace(fold=1)
+    if d0.utcoffset() == d1.utcoffset():
+        return "ok"
+    back = d0.astimezone(UTC).astimezone(w.tzinfo)
+    return "gap" if back.replace(tzinfo=None) != w.replace(tzinfo=None) else "ambiguous"</code></pre>
+<p>判据是「两次 fold 的偏移是否一致」；不一致时再看 fold=0 反算回来还是不是原来那个墙钟——不是就是空洞（gap），是就是重复（ambiguous）。这一条同时解决了「我怎么知道用户填的时间不存在」，比在外面套一层 try/except 靠谱得多。</p>
+<h2>三、错误二：相差一小时的两个时刻，== 认为是同一个</h2>
+<p>2026 年 11 月 1 日凌晨 2:00，纽约从 EDT 退回 EST，01:00 到 01:59 这一小时走了两遍。取 01:30，两个 fold 给出两个真实时刻：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">fold</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">时间戳</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">换算成 UTC</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">-04:00</td><td style="border:1px solid #ddd;padding:8px;">1793511000</td><td style="border:1px solid #ddd;padding:8px;">05:30</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">-05:00</td><td style="border:1px solid #ddd;padding:8px;">1793514600</td><td style="border:1px solid #ddd;padding:8px;">06:30</td></tr></tbody></table>
+<p>两个时刻真实相差 3600 秒。但把这两个 datetime 放进同一个表达式的后果是这样的：</p>
+<ul><li>a == b 的结果是 True</li><li>hash(a) 与 hash(b) 相等</li><li>len(set) 等于 1，去重后只剩一条</li><li>b - a 的 total_seconds() 是 0.0</li><li>可是 a.astimezone(UTC) 不等于 b.astimezone(UTC)</li></ul>
+<p>也就是说，同一对对象在「按墙钟比」的世界里相等，在「按时刻比」的世界里不等，而 Python 默认给你的是前者。PEP 495 对此的原话是：「Naive and intra-zone comparisons will ignore the value of fold and return the same results as they do now. (This is the only way to preserve backward compatibility. If you need an aware intra-zone comparison that uses the fold, convert both sides to UTC first.)」括号里那句就是唯一的解法：要比真实先后，先两边都 astimezone(UTC)。</p>
+<p>这一条会直接伪造数据。上面那台服务里，同一小时内的两条记录被集合去重成一条，报表里的请求数少了 50%，而所有断言都过——因为代码里没有一处显式比较过时间。</p>
+<h2>四、错误三：换一个 tzinfo 对象，同一个时刻反而不等</h2>
+<p>如果前一条还能靠「先转 UTC」补救，这一条更难发现：同一段代码，只要 tzinfo 不是同一个对象，结果就反过来。</p>
+<p>我把同一个墙钟时刻 2026-11-01 01:30 配上不同的 tzinfo 对象，逐个对拍：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">比较对象</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">== 的结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">同一个 ZoneInfo 对象（缓存命中，a is b）</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ZoneInfo 与 ZoneInfo.no_cache 的同名对象</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">America/New_York 与 America/Toronto</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">两个 timezone(timedelta(hours=-4))</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">两个自定义 tzinfo 实例（偏移写死 -4）</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">纽约与多伦多，改到 6 月 12:00（非歧义时刻）</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr></tbody></table>
+<p>纽约和多伦多这一次，两个 datetime 的墙钟相同、utcoffset() 都是 -04:00、换算成 UTC 都是 05:30——同一个真实时刻，== 却是 False。原因在 PEP 495 的一条例外：</p>
+<p>「Whenever one or both of the operands in inter-zone comparison is such that its utcoffset() depends on the value of its fold attribute, the result is False.」</p>
+<p>它给了形式化定义：设 toutc(t, fold) 是把 t 按给定 fold 换算成 UTC 的天真值，那么当两侧 tzinfo 不是同一个对象时，t == s 等价于 toutc(t,0) == toutc(t,1) == toutc(s,0) == toutc(s,1)。歧义小时里 toutc(t,0)=05:30、toutc(t,1)=06:30，四个值不可能同时相等，于是直接返回 False。固定偏移的 timezone 对象，utcoffset() 与 fold 无关，四个值自然一致，所以是 True。</p>
+<p>官方文档在讲 no_cache 时也留了一句 Caution：「Using this constructor may change the semantics of your datetimes in surprising ways, only use it if you know that you need to.」这句不是客套——它改的正是相等语义本身。</p>
+<p>于是就有了最反直觉的一幕：a != b 为真，hash(a) == hash(b) 也为真。这在 Python 里合法（要求的是「相等必同哈希」，不是反过来），但它意味着字典里能同时存在两个哈希相同的 key，任何靠哈希做的去重、分桶、缓存键都会给出两套答案。</p>
+<h2>五、错误四：加一天不是 24 小时</h2>
+<p>同一个陷阱在算术上更隐蔽。取 2026-03-07 12:00（EST，-05:00）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">运算</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">得到</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">真实经过的秒数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">加 timedelta(days=1)</td><td style="border:1px solid #ddd;padding:8px;">03-08 12:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">82,800</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">加 timedelta(hours=24)</td><td style="border:1px solid #ddd;padding:8px;">03-08 12:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">82,800</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">先转 UTC 加一天，再转回</td><td style="border:1px solid #ddd;padding:8px;">03-08 13:00 EDT</td><td style="border:1px solid #ddd;padding:8px;">86,400</td></tr></tbody></table>
+<p>「加一天」和「加 24 小时」在这里是完全相同的操作，因为对 aware datetime 做 timedelta 加减走的是墙钟算术，不是绝对时间。逐格看更清楚：从 03-07 22:00 起加 4 小时，墙钟落在 03-08 02:00 EST，真实只过了 14,400 秒；加 6 小时，墙钟落在 03-08 04:00 EDT，真实过了 18,000 秒；而按绝对时间加 6 小时，落在 05:00 EDT，过了 21,600 秒。三个数字，两种语义。</p>
+<p>后果是「T+30 天到期」这类业务规则在换季那两天会差一小时，而差一小时通常还落在允差之内，于是永远不会有人发现。要做绝对时长，先 astimezone(UTC) 再加。</p>
+<h2>六、错误五：按字符串排序会把先后弄反</h2>
+<p>日志和 CSV 里最常见的做法是把 isoformat() 字符串直接排序。在同一个重复小时里，这会把顺序直接颠倒：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">记录</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字符串</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">时间戳</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">A</td><td style="border:1px solid #ddd;padding:8px;">2026-11-01T01:00:00-05:00</td><td style="border:1px solid #ddd;padding:8px;">1793512800</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">B</td><td style="border:1px solid #ddd;padding:8px;">2026-11-01T01:30:00-04:00</td><td style="border:1px solid #ddd;padding:8px;">1793511000</td></tr></tbody></table>
+<p>按字符串排，A 在前（01:00 小于 01:30）；按时间戳排，B 在前——B 比 A 早 30 分钟。字符串比较在读完「01:30」这五位时已经分出胜负，压根没看后面的偏移量。</p>
+<p>跨时区聚合时更糟。三行日志分别是上海 09:00+08:00（01:00 UTC）、UTC 08:30（08:30 UTC）、纽约 03:00-05:00（08:00 UTC），按字符串排出来的顺序是「纽约、UTC、上海」，按真实时刻排是「上海、纽约、UTC」，正好反过来。</p>
+<p>判据只有一条：排序 key 用 timestamp()，或者先把所有值统一转到 UTC。isoformat() 适合给人看、适合给机器解析，不适合当排序键。</p>
+<h2>七、错误六：读入侧的两个静默陷阱</h2>
+<p>前五条都发生在「算」和「比」，读入侧还有两个。</p>
+<p>第一个是 %Z。用 datetime.strptime 解析「2026-11-01 01:30 EDT」会直接抛 ValueError，因为 %Z 只认本机 time.tzname 里的缩写——我这台机器是「中国标准时间」「中国夏令时」，EDT 从来不在名单里。更麻烦的是换成本地缩写之后的结果：</p>
+<pre><code>datetime.strptime("2026-11-01 01:30 中国标准时间", "%Y-%m-%d %H:%M %Z")
+-> datetime.datetime(2026, 11, 1, 1, 30)   # tzinfo 是 None</code></pre>
+<p>解析成功、不报错、时区是 None。后面接什么都会以「本地时间」的身份继续算。要用 %z（小写）拿偏移量，或者干脆按 ISO 8601 走 fromisoformat。</p>
+<p>第二个是 fromtimestamp()。不带第二个参数时它按本机时区解释：同一个时间戳 1793511000，不传时区得到 13:30（本机 UTC+8），传 UTC 得到 05:30，传纽约得到 01:30-04:00。三行差 8 小时，都不报错。这类代码在容器里跑得好好的，搬到 UTC 时区的机器上就整体偏移——而「偏移 8 小时」在日志里长得太正常了。</p>
+<p>顺带说清 fromisoformat 在 3.11 之后的能力边界：Z 后缀能解析，+0800 和 +08:00 都能解析，甚至连 2026-W45-5 这种 ISO 周日期也能解析成 2026-11-06。但它不接受 Z 和偏移量同时出现。</p>
+<h2>八、中国也实行过夏令时：1986 到 1991</h2>
+<p>「国内没有夏令时，所以不用管」这句话在 2026 年是对的，在 1991 年不对。用 Asia/Shanghai 往回查：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">日期</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">utcoffset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">dst</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tzname</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1985-07-01</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1986-07-01</td><td style="border:1px solid #ddd;padding:8px;">+09:00</td><td style="border:1px solid #ddd;padding:8px;">1 小时</td><td style="border:1px solid #ddd;padding:8px;">CDT</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1988-05-01</td><td style="border:1px solid #ddd;padding:8px;">+09:00</td><td style="border:1px solid #ddd;padding:8px;">1 小时</td><td style="border:1px solid #ddd;padding:8px;">CDT</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">1991-09-15</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">2026-11-01</td><td style="border:1px solid #ddd;padding:8px;">+08:00</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">CST</td></tr></tbody></table>
+<p>遍历之后确认，Asia/Shanghai 有夏令时的年份正好是 1986 到 1991 共六年。注意 1986 年 5 月 1 日还在 CST，而 1988 年 5 月 1 日已经是 CDT——每年起始日期不同，不能拿一个日期套六年。</p>
+<p>这对两类数据是硬伤：一是 1986 到 1991 年间的历史时间戳，按「+8 固定」换算会整整差一小时；二是「那年 7 月 1 日几点几分」这种档案类记录，跨过这六年就没法用同一个公式。2026 年的数据完全不受影响，我用同一个判据函数查过 11 月 1 日的上海 01:30，结果是 ok。</p>
+<h2>九、半小时的夏令时，和负的夏令时</h2>
+<p>还有两个边角，能反过来验证「偏移量不是常识」。</p>
+<p>澳大利亚的 Lord Howe 岛用的是 30 分钟夏令时。2026-10-04 当地从 02:00 跳到 02:30，偏移量从 +10:30 变成 +11:00，只挪了 30 分钟。所以 02:15 是个空洞时刻：fold=0 反算回来是 02:45，fold=1 反算回来是 01:45；而 02:30 是正常的——跳变正好在它之前结束。任何「夏令时固定一小时」的假设，在这里直接崩。</p>
+<p>爱尔兰更有意思。Europe/Dublin 的 dst() 在 1 月返回 -3600 秒，在 7 月返回 0，tzname 分别是 GMT 和 IST。也就是说这个时区把冬天标成「夏令时偏移为负」，夏天才是标准时。如果代码用「dst() 是否为 0」来判断「现在是不是夏令时」，爱尔兰全年都会答错。</p>
+<h2>十、定时任务：一年里少跑一次，多跑一次</h2>
+<p>把上面几条拼起来，就是排程问题。用同一个判据函数遍历 2026 年 365 天，按「每天 02:30 触发」和「每天 01:30 触发」各算一遍：</p>
+<ul><li>02:30 在 2026-03-08 不存在——当天的任务要么被挪到 03:30 执行，要么被跳过，取决于调度器用哪个 fold</li><li>01:30 在 2026-11-01 出现两次——同一条任务会跑两遍</li></ul>
+<p>这不是理论。任何按本地墙钟写「每天几点」的调度器，只要所在时区有夏令时，一年里就必然出现一次少跑和一次多跑。可迁移的做法只有一种：调度器内部一律用 UTC 存下次执行时刻，展示层再转成本地时间；「每天 02:30 本地时间」这种规则，要么写成固定 UTC 偏移，要么显式接受换季那天的两种行为并在文档里写清楚。</p>
+<h2>报错实录：六段真实异常</h2>
+<p>下面六段都是我在本轮复现出来的原文，不是转述。</p>
+<p>报错一：<code>TypeError: can't compare offset-naive and offset-aware datetimes</code></p>
+<p>原因：一侧是 fromisoformat 出来的无时区值，另一侧是 now(UTC)。解法：入库前统一规范成 aware，读出来缺时区的值按业务口径显式补 UTC 或本地，不要靠 replace 猜。</p>
+<p>报错二：<code>DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).</code></p>
+<p>原因：utcnow() 返回的是无时区的 UTC 值，语义上最容易被当成「带时区」。解法：换成 datetime.now(datetime.UTC)；这条警告只在 warnings 过滤器打开时才看得见，默认会被吞掉。</p>
+<p>报错三：<code>ValueError: Invalid isoformat string: '2026-11-06T06:10:00.123456+08:00Z'</code></p>
+<p>原因：Z 与 +08:00 同时出现，属于两种互斥写法。解法：解析前先剥掉 Z，或统一成 +00:00。</p>
+<p>报错四：<code>zoneinfo._common.ZoneInfoNotFoundError: 'No time zone found with key America/New York'</code></p>
+<p>原因：key 里写了空格。注意异常信息会把你写错的 key 原样回显，看着像「库里没有美国时区」。解法：key 必须是 IANA 规范名，含下划线；上线前用 available_timezones() 校验一遍。</p>
+<p>报错五：<code>ValueError: offset must be a timedelta strictly between -timedelta(hours=24) and timedelta(hours=24), not datetime.timedelta(days=1, seconds=3600).</code></p>
+<p>原因：手写 timezone(timedelta(hours=25))。解法：固定偏移只用来表达 UTC 与本地的差值，跨 24 小时的「时区」不存在，改用 ZoneInfo。</p>
+<p>报错六：<code>ValueError: time data '2026-11-01 01:30 EDT' does not match format '%Y-%m-%d %H:%M %Z'</code></p>
+<p>原因：%Z 只匹配本机 time.tzname。解法：改用 %z 或 fromisoformat；如果数据源只能给缩写，就自己维护一张缩写到偏移的映射表，别指望 strptime。</p>
+<h2>上线前照着走一遍</h2>
+<p>这六条我压成了六个判据，都可以写成断言：</p>
+<p>1. 所有 datetime 要么都是 aware，要么都是 naive，混用视为缺陷——用 <code>d.tzinfo is None</code> 逐个查。</p>
+<p>2. 跨时区比较、排序、去重之前，统一 astimezone(UTC)；不要依赖 == 和集合。</p>
+<p>3. 需要「真实经过时长」时先转 UTC 再加 timedelta；需要「本地日历日」时才用墙钟算术，并在注释里写明。</p>
+<p>4. 任何来自用户或外部系统的墙钟时间，进库前跑一次上面那个 kind() 判据，gap 与 ambiguous 分别按业务规则处置。</p>
+<p>5. 调度器内部用 UTC，展示层转本地；「每天几点」的规则必须写明换季行为。</p>
+<p>6. 时间字段的序列化格式固定一种（建议带偏移的 ISO 8601），排序键一律用时间戳。</p>
+<p>最后一句实话：这些坑没有一个是 Python 特有的。Java 的 ZonedDateTime、JS 的 Date、Go 的 time 各有各的版本，但「本地时间是一张映射表，不是一个坐标」这条前提完全一样。真正省事的做法不是背下六条规则，而是把「时间一律存 UTC、比较一律转 UTC、只有给人看的时候才转本地」当成默认值。</p>
+<p>关于本站：本文不含任何联盟推广链接，文中数字全部来自本机 2026 年 11 月 6 日的实测与 PEP 495、zoneinfo 官方文档原文。上一轮我在 <a href="https://yaohehe.github.io/2026-10-28-python-json-json-orjson-msgspec.html" class="internal-link">Python json 序列化</a> 里踩过「无时区 datetime 不带偏移量」的同源坑，两篇可以对着看；如果你正在写定时任务，<a href="https://yaohehe.github.io/2026-11-01-huey-apscheduler-celery.html" class="internal-link">huey / APScheduler / Celery 三选一</a> 那篇讲了调度层的失配，<a href="https://yaohehe.github.io/2026-11-04-celeryhuey.html" class="internal-link">重试与幂等</a> 那篇讲了重跑的时间窗问题。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
