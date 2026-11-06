@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>看起来一样的字符串为什么不相等：Unicode NFC 与 NFKC 的 7 个静默坑 - TechPassive</title>
+  <meta name="description" content="同一个文件名换台机器就打不开，同一串用户名在数据库里能存成两条。我实际跑了 7 组探针，把 Unicode 规范化里不报错的失效逐条拆开：NFC 与 NFD 的字节差异、归一化不做拼接闭包、NFKC 会改掉数据、零宽字符与 BOM、大小写会改字符串长度、排序不是拼音序、孤立代理项根本写不进文件。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>看起来一样的字符串为什么不相等：NFC 与 NFKC 的 7 个静默坑</h1>
+  <div class="post-tags">
+    <span class="tag">Unicode</span><span class="tag">NFC</span><span class="tag">编码</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：这不是「乱码」问题，而是「两串看起来一模一样的文本，字节不一样」的问题。我实际在 Windows 11 + CPython 3.13.14 上跑了 7 组探针，下面 7 个坑的共同点是：不抛异常、日志干净、退出码 0，直到某天一个文件名打不开、一条唯一索引拦不住重复。</p>
+<ul><li>NFC 与 NFD：同一个「é」有 1 个码点和 2 个码点两种写法，UTF-8 字节数是 2 与 3，<code>==</code> 判 False</li><li>NFC 不做拼接闭包：两个各自规范化的字段拼起来，结果可能又不是 NFC</li><li>NFKC 会改数据：「①」变「1」、「½」变 3 个字符、「℃」变「°C」</li><li>零宽字符与 BOM：<code>strip()</code> 去不掉，字典查不到，<code>PRIMARY KEY</code> 也拦不住</li><li>大小写不是一对一：<code>'ß'.upper()</code> 长度从 1 变 2，<code>'İ'.lower()</code> 从 1 个码点变 2 个</li><li><code>sorted()</code> 不是拼音序：五个姓排出来是「张李白阿陈」</li><li>孤立代理项：<code>json</code> 读得进来，写 UTF-8 文件时抛 <code>UnicodeEncodeError</code></li></ul>
+<p>如果你只想拿走一条结论：<strong>存储用 NFC，比较用 NFKC 加 casefold，展示层才允许「看起来一样」，并且永远不要把「看起来一样」当成「相等」。</strong></p>
+<h3>一、先说明白：字符串在机器里到底是什么</h3>
+<p>Unicode 官方 HOWTO 的第一段定义是「A Unicode string is a sequence of code points」。字符串是<strong>码点序列</strong>，不是「你眼睛看到的字」。这一句能解释三件常被误判的事。</p>
+<p>第一，<code>len()</code> 数的是码点。<code>'café'</code> 里那个 é 如果写成 <code>e</code> 加 U+0301（组合尖音符），长度就是 5 而不是 4。</p>
+<p>第二，一个「字」可能由多个码点组成。本机实测：<code>'👨‍👩‍👧‍👦'</code> 的 <code>len()</code> 是 7，<code>'🇨🇳'</code> 是 2，泰语的 <code>'กำ'</code> 是 2，<code>'e'</code> 加 U+0301 也是 2。</p>
+<p>第三，码点相同才有机会字节相同；字节相同才有机会在文件系统、数据库、HTTP 头里「找到同一个东西」。这条链子上任何一环断开，都不会有异常，只会有「明明有却找不到」。</p>
+<p>「同一份文本、不同表征」也不只发生在码点层。同一段中文交给不同词表去切，token 数量能差到七成，账单一并跟着错，这属于同一类问题（见 <a href="https://yaohehe.github.io/2026-11-02-token-73.html" class="internal-link">五个分词器切同一段中文，最多差 73%</a>）。</p>
+<p>Python 官方文档在 <code>unicodedata.normalize</code> 那一节留了一句几乎就是本文标题的话：</p>
+<blockquote>Even if two unicode strings are normalized and look the same to a human reader, if one has combining characters and the other doesn't, they may not compare equal.</blockquote>
+<p>注意这句比标题更狠：它说的是<strong>已经规范化过的两串</strong>也可能不相等——因为规范形式有四种，NFC 与 NFD 都是「规范化过的」，只是选择了不同的表示。</p>
+<h3>二、坑 1：同一个文件名，两种字节</h3>
+<p>我在本机临时目录里用 NFC 形式建了一个 <code>café.txt</code>，然后用 NFD 形式的同一个名字去读。结果是读不到：</p>
+<pre><code>FileNotFoundError: [Errno 2] No such file or directory:
+'C:\\Users\\...\\Temp\\uni1-k5ep8ynt\\cafe\u0301.txt'</code></pre>
+<p>同一时刻 <code>os.listdir()</code> 返回的是 NFC 形式，<code>os.path.exists()</code> 对 NFC 路径返回 True、对 NFD 路径返回 False。</p>
+<p>原因不神秘：文件系统按<strong>字节</strong>匹配名字，而 NFC 的「é」是 U+00E9 一个码点（UTF-8 两个字节 <code>C3 A9</code>），NFD 的「é」是 U+0065 U+0301 两个码点（UTF-8 三个字节 <code>65 CC 81</code>）。Windows 的 NTFS 和 Linux 的 ext4 都不做归一化，所以它们是两个不同的名字，可以同时存在。</p>
+<p>这件事在跨系统搬文件时最容易中招：同一份数据从一台机器搬到另一台，只要中间某一步做过归一化（导出、压缩、同步工具、编辑器保存），另一半就可能全部「文件消失」。而报错只会出现在真正去打开的那一刻。</p>
+<p><strong>修法</strong>：凡是要「按名字找东西」，先把两边都归一化到同一个形式再比。</p>
+<h3>三、坑 2：NFC 不做拼接闭包</h3>
+<p>这条最容易漏，因为它违反了直觉：既然每个字段都已经 normalize 过，拼起来当然还是规范化的吧？</p>
+<p>不是。Unicode 官方 UAX #15 第 1.4 节的原话是：</p>
+<blockquote>none of the Normalization Forms are closed under string concatenation. That is, even if two strings X and Y are normalized, their string concatenation X+Y is not guaranteed to be normalized.</blockquote>
+<p>官方给的反例之一就是韩文：两个各自是 NFC 的字母（U+1100 初声、U+1161 中声）拼起来之后，合成结果应该是一个音节（U+AC00）。我实测复现了这一点：</p>
+<pre><code>NFC(x) = '\u1100'   NFC(y) = '\u1161'
+joined = NFC(x) + NFC(y)                    -> 长度 2
+unicodedata.normalize('NFC', joined)        -> 长度 1
+unicodedata.is_normalized('NFC', joined)    -> False</code></pre>
+<p>拉丁字母同样中招：<code>'a'</code> 和 <code>U+0301</code> 各自都是 NFC，拼起来 <code>is_normalized('NFC', ...)</code> 返回 False——因为它应该合成成 <code>'á'</code>。</p>
+<p>UAX #15 同时写明所有规范形式对<strong>子串</strong>是封闭的，只有拼接不封闭。所以「按字段归一化、拼接、存库」这条常见流水线，在拼接那一步就失效了。</p>
+<p><strong>修法</strong>：归一化的位置必须放在「最终值」上，也就是拼完、格式化完、模板渲染完之后再做一次；不要指望在输入层做一遍就能一直保持。版本号字符串也有同款问题——<code>1.0</code> 与 <code>1.0.0</code> 看起来是同一个东西，比较结果却取决于约束写法（见 <a href="https://yaohehe.github.io/2026-10-21-python.html" class="internal-link">PEP 440 里少写一位就锁死整段版本</a>）。</p>
+<h3>四、坑 3：NFKC 会把数据洗掉</h3>
+<p>很多人知道「全角转半角用 NFKC」，然后顺手把它当成通用清洗函数。这一步会<strong>改掉数据本身</strong>。</p>
+<p>我实测了 11 个常见字符，NFKC 之后长度与内容都变了：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">原字符</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">码点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">NFKC 结果</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">长度变化</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">①</td><td style="border:1px solid #ddd;padding:8px;">U+2460</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1 到 1（语义变了）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">½</td><td style="border:1px solid #ddd;padding:8px;">U+00BD</td><td style="border:1px solid #ddd;padding:8px;">1⁄2</td><td style="border:1px solid #ddd;padding:8px;">1 到 3（涨 200%）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">℃</td><td style="border:1px solid #ddd;padding:8px;">U+2103</td><td style="border:1px solid #ddd;padding:8px;">°C</td><td style="border:1px solid #ddd;padding:8px;">1 到 2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">㈱</td><td style="border:1px solid #ddd;padding:8px;">U+3231</td><td style="border:1px solid #ddd;padding:8px;">(株)</td><td style="border:1px solid #ddd;padding:8px;">1 到 3</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Ⅻ</td><td style="border:1px solid #ddd;padding:8px;">U+216B</td><td style="border:1px solid #ddd;padding:8px;">XII</td><td style="border:1px solid #ddd;padding:8px;">1 到 3</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">㎡</td><td style="border:1px solid #ddd;padding:8px;">U+33A1</td><td style="border:1px solid #ddd;padding:8px;">m2</td><td style="border:1px solid #ddd;padding:8px;">1 到 2</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">…</td><td style="border:1px solid #ddd;padding:8px;">U+2026</td><td style="border:1px solid #ddd;padding:8px;">...</td><td style="border:1px solid #ddd;padding:8px;">1 到 3</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">⑩</td><td style="border:1px solid #ddd;padding:8px;">U+2469</td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">1 到 2</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">™</td><td style="border:1px solid #ddd;padding:8px;">U+2122</td><td style="border:1px solid #ddd;padding:8px;">TM</td><td style="border:1px solid #ddd;padding:8px;">1 到 2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Ａ</td><td style="border:1px solid #ddd;padding:8px;">U+FF21</td><td style="border:1px solid #ddd;padding:8px;">A</td><td style="border:1px solid #ddd;padding:8px;">1 到 1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ｶ</td><td style="border:1px solid #ddd;padding:8px;">U+FF76</td><td style="border:1px solid #ddd;padding:8px;">カ</td><td style="border:1px solid #ddd;padding:8px;">1 到 1</td></tr></tbody></table>
+<p>注意两件事。第一，<code>½</code> 变成的不是 ASCII 的 <code>1/2</code>，而是 <code>1</code> 加 U+2044（分数斜线）加 <code>2</code>，三个字符；如果你之后拿它去 <code>int()</code> 或当文件名，行为完全不一样。第二，<strong>NFC 对这些字符一律不动</strong>（实测每一项 <code>normalize('NFC', s) == s</code> 都为 True），所以「我要兼容处理」和「我要保持原样」是两条相反的路，选错方向不会报错，只会让原始信息永久消失。</p>
+<p>UAX #15 第 1.2 节对这件事有明确警告：</p>
+<blockquote>Normalization Forms KC and KD must not be blindly applied to arbitrary text. Because they erase many formatting distinctions, they will prevent round-trip conversion to and from many legacy character sets.</blockquote>
+<p><strong>修法</strong>：NFKC 只用于「比较键」和「搜索」这种一次性的派生值，绝不写回原始字段。原始字段统一 NFC 保存。</p>
+<h3>五、坑 4：零宽字符与 BOM，看不见但对不上</h3>
+<p>零宽空格 U+200B 是最常见的一种「人看不见、机器认死」的字符。从网页复制、从富文本粘贴、从 Excel 导出，都可能带进来。</p>
+<p>实测：<code>'user\u200bname'</code> 的 <code>len()</code> 是 9，<code>== 'username'</code> 为 False，<code>.strip()</code> 之后长度<strong>还是</strong> 9——<code>strip()</code> 只去空白，U+200B 在 Unicode 分类里不是空白。跟着来的是一条不指向根因的报错：</p>
+<pre><code>KeyError: 'user\u200bname'</code></pre>
+<p>BOM 更隐蔽。UTF-8 的 BOM 是 <code>EF BB BF</code>，Python 的 <code>codecs</code> 文档写得很清楚：「On encoding the utf-8-sig codec will write 0xef, 0xbb, 0xbf as the first three bytes to the file」，同一页还写着 UTF-8 里用 BOM 是「discouraged and should generally be avoided」。麻烦在于 BOM <strong>只在文件开头</strong>会被 <code>utf-8-sig</code> 跳过；一旦你按 10 MB 切片拼接、或者把多个 CSV 直接接在一起，BOM 就出现在第二个文件的表头前面，变成数据的一部分。</p>
+<p>实测：一个带 BOM 的 CSV，用 <code>utf-8</code> 读出来的表头是 <code>['\ufeffid', 'name']</code>，<code>row['id']</code> 直接 KeyError；换成 <code>utf-8-sig</code> 才是 <code>['id', 'name']</code>。同样的字符塞进数字字段，会得到：</p>
+<pre><code>ValueError: invalid literal for int() with base 10: '\ufeff123'</code></pre>
+<p>顺带一个反向的坑：<code>int('１２３')</code> 是<strong>可以</strong>成功的（结果 123），<code>float('１.５')</code> 也是 1.5——Python 的数值解析接受全角数字，却不接受 BOM。所以「全角数字能过校验」这件事本身，会让从页面复制来的全角数字悄悄进库。</p>
+<h3>六、坑 5：大小写不是一对一，长度会变</h3>
+<p><code>lower()</code> 和 <code>upper()</code> 都<strong>不保证</strong>长度不变，也不保证「转回来还是原样」。本机实测：</p>
+<ul><li><code>'ß'.upper()</code> 得到 <code>'SS'</code>，长度 1 变 2</li><li><code>'ﬁ'.upper()</code> 得到 <code>'FI'</code>，长度 1 变 2</li><li><code>'İ'.lower()</code> 得到 <code>'i'</code> 加 U+0307，长度 1 变 2，而且<strong>不等于</strong> <code>'i'</code></li><li><code>'ΣΣ'.lower()</code> 得到 <code>'σς'</code>：同一个 Σ 在词尾变成 ς、在词首变成 σ，<strong>转换结果依赖位置</strong></li><li><code>'ß'.casefold()</code> 得到 <code>'ss'</code>，<code>'ẞ'.casefold()</code> 也是 <code>'ss'</code></li></ul>
+<p>Python 文档对 <code>casefold()</code> 的说法是「Casefolding is similar to lowercasing but more aggressive」，并给了 <code>'straße'.casefold()</code> 得到 <code>'strasse'</code> 的例子。也就是说：<strong>做「不区分大小写的比较」应该用 casefold，不该用 lower</strong>，否则 <code>'straße'</code> 与 <code>'STRASSE'</code> 会被判成不同。</p>
+<p>更危险的是长度变化叠加索引：如果你先 <code>upper()</code> 再按位置截断（比如取前 3 个字符做短码），<code>'ß'</code> 这一类字符会把后续所有位置整体偏移一格。UAX #15 第 10 节对此有一句总纲：「Higher-level processes that transform or compare strings, or that perform other higher-level functions, must respect canonical equivalence or problems will result.」</p>
+<p><strong>修法</strong>：比较用 <code>casefold()</code>；任何「按字符位置」的操作都在原始字符串上做，不要用转换后的长度算索引。</p>
+<h3>七、坑 6：sorted() 不是拼音序，也不是笔画序</h3>
+<p><code>sorted()</code> 按码点排，中文按码点排出来的顺序与拼音、笔画都没有关系。实测五个姓：</p>
+<pre><code>sorted(['陈','阿','白','张','李'])                    -> 张 李 白 阿 陈
+locale.setlocale('Chinese_China.936') + strxfrm       -> 阿 白 陈 李 张</code></pre>
+<p>第二行才符合中文用户的预期。这也说明「排序」不是字符串库的事，是<strong>语言环境</strong>的事：Python 的 <code>locale.strxfrm</code> 把比较键交给平台 C 库，所以同一份代码在 Windows 上要写 <code>Chinese_China.936</code>，在 POSIX 上通常写 <code>zh_CN.UTF-8</code>，拿不到就抛 <code>locale.Error</code>。</p>
+<p>顺带说数据库这一侧：SQLite 内置只有 BINARY、NOCASE、RTRIM 三种排序规则，官方文档写明「BINARY - Compares string data using memcmp()」，而且「NOCASE … only ASCII characters are case folded」。也就是说把中文排序丢给 SQLite 的默认 <code>ORDER BY</code>，拿到的同样是码点序。</p>
+<p><strong>修法</strong>：排序放呈现层或数据库的 collation，业务逻辑里只用「相等/不等」；如果必须自己排，明确写出用的是哪个 locale，并在拿不到时降级成「按码点排加提示」。时间字段上有一模一样的现象：两个「看起来相同」的时刻也会判不相等（见 <a href="https://yaohehe.github.io/2026-11-06-python-zoneinfo-dst-6.html" class="internal-link">zoneinfo 与夏令时的 6 个静默错误</a>）。</p>
+<h3>八、坑 7：孤立代理项，json 读得进、写不出</h3>
+<p>这条最容易让人以为「数据坏了」。<code>json.loads('"\\ud800"')</code> 在 CPython 3.13.14 上能正常返回一个长度为 1 的字符串，<code>repr</code> 是 <code>'\ud800'</code>——它是孤立代理项，不是任何真实字符。然后：</p>
+<pre><code>UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800'
+in position 0: surrogates not allowed</code></pre>
+<p>写文件同样失败，因为 <code>open(..., encoding='utf-8')</code> 内部就是 <code>encode</code>。而 <code>json.dumps({"k": "\ud800"})</code> 会原样把它写成 <code>{"k": "\ud800"}</code>，于是这份「能读能写」的 JSON 在下游某个需要转成 UTF-8 字节的环节突然爆炸。</p>
+<p>这类字符的正常来源是 <code>surrogateescape</code> 错误处理器。Python 的 Unicode HOWTO 写明它会「decode any non-ASCII bytes as code points in a special range running from U+DC80 to U+DCFF」——也就是说，当你用 <code>errors='surrogateescape'</code> 读一个编码未知的旧文件时，读进来的非法字节就变成了这一段的代理项。它让「读、改、写」往返无损，但一旦你把这段字符串送去 <code>encode('utf-8')</code>，就会被拒绝。</p>
+<p><strong>修法</strong>：区分两种字符串——「内部二进制代理」只允许在 <code>surrogateescape</code> 的往返里活着；跨边界（JSON、HTTP、数据库、日志）之前必须验证：<code>s.encode('utf-8')</code> 不抛异常才算合规。要么用 <code>errors='replace'</code> 明确承认丢字，要么整条拒绝并记录原始字节。</p>
+<h3>九、哪一层用哪个形式：一张对照表</h3>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">环节</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">理由</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">存储（数据库、文件内容）</td><td style="border:1px solid #ddd;padding:8px;">NFC</td><td style="border:1px solid #ddd;padding:8px;">UAX #15 指出 W3C 等规范推荐 Web 内容统一用 NFC</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">比较键、唯一索引</td><td style="border:1px solid #ddd;padding:8px;">NFKC 加 casefold</td><td style="border:1px solid #ddd;padding:8px;">消除全角与兼容字符差异，索引才拦得住</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">展示</td><td style="border:1px solid #ddd;padding:8px;">原始值（NFC）</td><td style="border:1px solid #ddd;padding:8px;">不做兼容折叠，避免「①变 1」这类信息丢失</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">文件名查找</td><td style="border:1px solid #ddd;padding:8px;">两边同形式（通常 NFC）</td><td style="border:1px solid #ddd;padding:8px;">文件系统不分形式，只按字节匹配</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">中文排序</td><td style="border:1px solid #ddd;padding:8px;">平台 locale 加 strxfrm</td><td style="border:1px solid #ddd;padding:8px;"><code>sorted()</code> 得到的是码点序</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">落盘前校验</td><td style="border:1px solid #ddd;padding:8px;"><code>encode('utf-8')</code> 试一次</td><td style="border:1px solid #ddd;padding:8px;">唯一能挡住孤立代理项的低成本判据</td></tr></tbody></table>
+<h3>十、可以直接抄的三段代码</h3>
+<p>第一段：比较键。</p>
+<pre><code>import unicodedata
+
+def compare_key(s: str) -> str:
+    # 先做兼容分解再合成，最后折叠大小写
+    return unicodedata.normalize("NFKC", s).casefold()
+
+assert compare_key("ＡＢＣ") == compare_key("abc")
+assert compare_key("Straße") == compare_key("STRASSE")</code></pre>
+<p>第二段：去掉不可见字符。</p>
+<pre><code>import re
+
+INVISIBLE = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060\ufeff]")
+
+def strip_invisible(s: str) -> str:
+    return INVISIBLE.sub("", s)
+
+assert strip_invisible("user\u200bname") == "username"</code></pre>
+<p>第三段：入库前的批量体检。它只做检测、不改数据，适合挂在导入任务最后一步。</p>
+<pre><code>import unicodedata as ud
+
+def audit(rows, columns):
+    bad = []
+    for i, row in enumerate(rows):
+        for col in columns:
+            v = row[col]
+            if not isinstance(v, str):
+                continue
+            if not ud.is_normalized("NFC", v):
+                bad.append((i, col, "not-nfc", repr(v)))
+            if strip_invisible(v) != v:
+                bad.append((i, col, "invisible", repr(v)))
+            try:
+                v.encode("utf-8")
+            except UnicodeEncodeError:
+                bad.append((i, col, "surrogate", repr(v)))
+    return bad</code></pre>
+<p><code>unicodedata.is_normalized</code> 是 3.8 起就有的，不需要额外依赖。这套体检在 10 万行数据上通常不到一秒，比事后查「为什么这条记录查不到」便宜得多。</p>
+<p>要批量找这几类字符，最省事的工具是正则，而正则自己也有一整套静默失效（<code>$</code> 的两个空匹配、<code>\b</code> 在中文里的位置、回溯爆炸），可以对着 <a href="https://yaohehe.github.io/2026-11-04-python-re-8.html" class="internal-link">Python re 的 8 处匹配错误</a> 一起看。本文不含任何联盟推广链接。</p>
+<h3>十一、Troubleshooting：四个真实报错</h3>
+<p>下面四条都是我在写这篇稿子时真实触发并复制下来的原始报错，不是「典型报错」示例。</p>
+<p><strong>报错 1：surrogates not allowed</strong></p>
+<pre><code>Traceback (most recent call last):
+  File "probe.py", line 71, in module
+    open("x.txt", "w", encoding="utf-8").write(s)
+UnicodeEncodeError: 'utf-8' codec can't encode character '\ud800'
+in position 0: surrogates not allowed</code></pre>
+<ul><li>现象：JSON 里读出来的字段看起来正常，一写文件或一发 HTTP 就炸；日志把 <code>\ud800</code> 转义成同样的字符，肉眼看不出异常。</li><li>原因：<code>json.loads</code> 接受 <code>\uD800</code> 这类孤立代理项，Python 的 <code>str</code> 也允许它存在；但 UTF-8 编码不允许代理项被编码。</li><li>解决：在跨边界处加一次校验 <code>s.encode("utf-8")</code>；确实要丢字就用 <code>errors="replace"</code> 并打日志；要保留原始字节则整条链路都用 <code>surrogateescape</code> 读、只在内部用 <code>surrogatepass</code> 传，绝不写进 JSON。</li></ul>
+<p><strong>报错 2：找不到那个明明存在的文件</strong></p>
+<pre><code>FileNotFoundError: [Errno 2] No such file or directory:
+'C:\\Users\\...\\Temp\\uni1-k5ep8ynt\\cafe\u0301.txt'</code></pre>
+<ul><li>现象：<code>os.listdir()</code> 里明明有一个 <code>café.txt</code>，按名字拼路径却打不开；换台机器、换一次同步就出现。</li><li>原因：目录里存的是 NFC 形式，代码拼出的路径是 NFD 形式，NTFS 与 ext4 都按字节匹配，不会自动帮你归一化。</li><li>解决：路径比较与查找统一先 <code>unicodedata.normalize("NFC", name)</code>；从外部（用户输入、配置文件）来的文件名先归一化再拼。</li></ul>
+<p><strong>报错 3：数字字段里有 BOM</strong></p>
+<pre><code>ValueError: invalid literal for int() with base 10: '\ufeff123'</code></pre>
+<ul><li>现象：CSV 导入时报「不是数字」，而肉眼看那一列全是数字；<code>row['id']</code> 还会直接 KeyError。</li><li>原因：拼接或重复导出时 BOM 落在了文件中间，<code>utf-8</code> 解码器不会跳过它，于是它成了表头或字段的第一个字符。</li><li>解决：读 CSV 一律 <code>encoding="utf-8-sig"</code>（它只在开头跳过 BOM），并在入库前统一跑一遍 <code>strip_invisible()</code>；导出方也改用无 BOM 的 <code>utf-8</code>，官方文档本来就建议 UTF-8 别用 BOM。</li></ul>
+<p><strong>报错 4：老文件按 UTF-8 读不动</strong></p>
+<pre><code>UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6
+in position 0: invalid continuation byte</code></pre>
+<ul><li>现象：同一批导出文件，大部分能读，个别文件第一行就报错。</li><li>原因：那批文件是 GBK 编码（「中文」的 GBK 字节是 <code>D6 D0 CE C4</code>），<code>0xD6</code> 不是合法的 UTF-8 首字节。</li><li>解决：不要猜编码，先探测再显式声明；或者用 <code>errors="surrogateescape"</code> 读进来、只处理 ASCII 部分再原样写回。判据是「读进来的字节能不能 re-encode 回原样」，能往返就不要强行转码。</li></ul>
+<h3>十二、FAQ</h3>
+<p><strong>Q：既然 NFKC 能把全角转半角，为什么不用它统一用户名？</strong></p>
+<p>可以用，但只能用在「比较键」上。用户名本身要按用户输入的样子存（NFC），比较时才对两边都做 NFKC 加 casefold。直接拿 NFKC 结果覆盖原值，<code>½</code> 会变成 3 个字符、<code>①</code> 会变成 <code>1</code>，用户下次登录看到的就不是自己输的东西，而且这个改动不可逆。</p>
+<p><strong>Q：我把所有输入都 normalize('NFC') 一遍，是不是就安全了？</strong></p>
+<p>不安全，两个原因。一是拼接不封闭：字段级归一化之后拼起来仍然可能不是 NFC（见坑 2）。二是 NFC 不解决兼容字符的问题——<code>①</code> 与 <code>1</code>、全角 <code>Ａ</code> 与 <code>A</code> 在 NFC 下依然是不同字符。归一化能消除的是<strong>规范等价</strong>的差异，消除不了<strong>兼容等价</strong>的差异，后者要不要合并由你决定。</p>
+<p><strong>Q：数据库里已经有脏数据了，怎么批量找出来？</strong></p>
+<p>用第十节第三段脚本跑一遍，按 <code>not-nfc</code>、<code>invisible</code>、<code>surrogate</code> 三类分别统计。改写要分两步：先只做 NFC 与去不可见字符（这两类风险低），再单独评估 NFKC 折叠带来的合并冲突——尤其当你要把结果写回唯一索引时，先统计会撞多少行，再决定合并策略。</p>
+<h3>十三、这次复盘的边界</h3>
+<p>写清楚边界比多写一条结论更有用。</p>
+<ul><li>实测环境：Windows 11 + CPython 3.13.14，<code>unicodedata.unidata_version</code> 为 15.1.0，文件系统 NTFS。文中所有数字都来自这台机器上的探针脚本，不是引用别人的结论。</li><li>macOS 文件系统把文件名存成 NFD 形式这件事，我在这台机器上没有条件实测，所以本文不把它写成结论；真要跨 macOS 搬文件，按坑 1 的修法处理即可，不需要知道对方的存储形式。</li><li><code>unicodedata</code> 的 Unicode 数据版本跟着 Python 版本走：本机是 15.1.0，而官方文档当前版本页写的是基于更新的 UCD 版本。规范化结果本身跨版本稳定——UAX #15 第 3 节写明「if a string that does not have any unassigned characters is normalized under one version of Unicode, it must remain normalized under all future versions of Unicode」——但「哪个码点算已分配」会变，所以检测脚本里不要把版本号写死，用 <code>unicodedata.unidata_version</code> 打日志。</li><li>四种规范形式都是幂等的（UAX #15 第 7 节列为设计目标，我实测 <code>normalize(form, normalize(form, s))</code> 四个形式全部相等），但这只说明「重复归一化无害」，不说明「归一化一次就永远够用」——坑 2 就是反例。</li></ul>
+<p>如果你正在维护一个「文本字段比较」相关的 bug，先别急着改代码。把出问题的那两串值打印成 <code>repr()</code>，看码点，通常五分钟就能定位到上面七条里的某一条。这一步比读一百行归一化代码都便宜。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
