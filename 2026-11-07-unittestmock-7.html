@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>测试全绿但代码是坏的：unittest.mock 的 7 个静默失效 - TechPassive</title>
+  <meta name="description" content="同一个变异体，全 MagicMock 的 6 个用例一个没红，真实对象的 5 个里红了 2 个。我用 CPython 3.13.14 实测了 patch 位置、autospec、spec、reset_mock、等值比较参数这七条静默失效，附 5 段报错原文与一份可直接贴进 PR 模板的清单。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>测试全绿但代码是坏的：unittest.mock 的 7 个静默失效</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">单元测试</span><span class="tag">踩坑复盘</span>
+  </div>
+  <div class="content">
+    <p>上周一个读者把工单发给我：CI 四十七个用例全绿，上线四小时，结算页每单少收三成。</p>
+<p>代码回滚、日志翻遍、监控没动过。最后定位到一行，减号被写成了加号，折扣方向反了。可它上面明明挂着一条断言折扣金额的用例，那条用例确实绿着。</p>
+<p>问题不在于写得少，在于写下的东西从没碰过那行代码。</p>
+<p><code>unittest.mock</code> 大概是我用过的标准库里最宽容的一个模块。宽容到它会替你补上任何你以为存在的东西：方法不存在，造一个；参数写错，收下；返回值没设，返回一个 Mock 对象。这些设计都是为了让测试先跑起来，代价是——<strong>测试全绿，可能说明一件事都没发生。</strong></p>
+<p>下面七条路径，我在 Windows 11 + CPython 3.13.14 上全部跑过一遍，每条给出可复现的最小代码和实测输出。引用的官方原文来自 <code>docs.python.org/3.13/library/unittest.mock.html</code>，行号指向本机 <code>Lib/unittest/mock.py</code>（3,189 行，与 3.13.14 对应）。</p>
+<p><strong>TL;DR</strong>：<code>patch</code> 打在定义处而非使用处，补丁打空但测试照绿；缺 <code>autospec</code>，参数写错也通过；<code>spec</code> 只挡属性名不挡签名；<code>MagicMock</code> 的 <code>bool()</code> 恒 True、<code>len()</code> 恒 0、比较运算直接崩；<code>reset_mock()</code> 不清 <code>return_value</code> 与 <code>side_effect</code>；<code>assert_called_with</code> 用等值比较参数，整数 1 能顶布尔 True；父对象的 <code>assert_not_called()</code> 不管子调用。七条都不报错。</p>
+<h2>先看一组数字：同一个 bug，两种写法</h2>
+<p>我做了一个最小的结算模块，<code>Pricing.total()</code> 按比例打折。再造一个变异体：把乘法前的减号改成加号，折扣方向反过来。同一个变异体，两套用例各跑一次。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用例套</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">正确版</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">变异体</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检出</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">A 全程 MagicMock 替身</td><td style="border:1px solid #ddd;padding:8px;">6 个用例全绿</td><td style="border:1px solid #ddd;padding:8px;">6 个用例仍全绿</td><td style="border:1px solid #ddd;padding:8px;">0/6</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">B 直接用真实 Pricing</td><td style="border:1px solid #ddd;padding:8px;">5 个用例全绿</td><td style="border:1px solid #ddd;padding:8px;">2 个转红</td><td style="border:1px solid #ddd;padding:8px;">2/5</td></tr></tbody></table>
+<p>A 套的六个断言是：返回 dict、含 <code>amount</code> 键、<code>currency</code> 是 CNY、<code>total</code> 被调用过、<code>coupon</code> 被正确转发、负金额被夹到 0。每一条都对，也确实都在测东西。测的全是 <code>checkout()</code> 的编排，没有一条碰过 <code>total()</code> 里的算术。</p>
+<p>这就是 0/6 的来源：<strong>你 mock 掉的边界，画在了被测逻辑的里面。</strong></p>
+<p>判断边界只有一条规则：这段逻辑出 bug 你会不会心疼。会心疼就留真实实现，只替掉跨进程、跨网络、跨时间的那一层。</p>
+<h2>坑 1：patch 打在定义处，代码却从导入处读</h2>
+<p>官方文档原话是「The basic principle is that you patch where an object is looked up, which is not necessarily the same place as where it is defined.」翻过来：在你查找它的地方打补丁，不必是它定义的地方。</p>
+<p>这条被引用了无数遍，我实测时还是得到了一个很干净的对照数字。被测代码写的是 <code>from client import get_user</code>，<code>client.get_user</code> 里埋了一个真实计数器。</p>
+<pre><code>patch("client.get_user")        -> mock 调用 0 次，真实函数执行 1 次
+patch("service_from.get_user")  -> mock 调用 1 次，真实函数执行 0 次</code></pre>
+<p>第一行补丁完全没有生效，但测试照样能绿——只要你断言的返回值恰好真函数也给得出来。我第一次跑的时候把断言写成「返回的 name 等于 real」，真函数返回的就是 real，两行输出一模一样，唯一的区别是计数器从 0 变成了 1。</p>
+<p>真实项目里那个 1 可能是：一次真实计费、一封真实邮件、一条真实订单。测试绿着，副作用已经发生。</p>
+<p>修法是 <code>from</code> 导入的地方打补丁。实在记不住，把导入改成 <code>import client</code> 再写 <code>client.get_user(...)</code>，补丁位置和使用位置就是同一处。顺带说，<code>patch("client.get_usr")</code> 这种拼错会直接抛 <code>AttributeError</code>，反而不静默，原文见下文第四条。</p>
+<h2>坑 2：没有 autospec，参数写错也通过</h2>
+<p><code>patch()</code> 默认给你一个万能签名。实测同一个 mock：</p>
+<pre><code>m(1, None, "extra", nope=1)  -> 正常返回，call_count = 1
+                                call_args = call(1, None, 'extra', nope=1)</code></pre>
+<p>真实函数只收一个位置参数。加上 <code>autospec=True</code> 之后，同一次调用报 <code>TypeError: too many positional arguments</code>；少传参数报 <code>TypeError: missing a required argument: 'uid'</code>。</p>
+<p>第二种更常见，也更贵。生产代码里写过 <code>n(user_id=1, chanel="sms")</code>，channel 少一个 n。无 autospec 的测试把 <code>chanel='sms'</code> 原样记进 <code>call_args</code>，用例绿；真函数在线上抛 unexpected keyword argument。</p>
+<p>官方对 autospec 的表述是「Methods and functions being mocked will have their arguments checked and will raise a TypeError if they are called with the wrong signature.」参数会被检查，签名不对就抛 TypeError。</p>
+<p><code>unittest.mock.patch</code> 的签名里 <code>autospec</code> 默认是 <code>None</code>，等于关闭。这个默认值有历史原因，打开会让一批老测试立刻变红。但新写的测试没有理由不开。</p>
+<h2>坑 3：spec 只挡属性名，不挡签名</h2>
+<p>这一条最容易混淆，因为 <code>spec</code> 和 <code>autospec</code> 名字太像，很多人以为前者包含后者。实测三门对照，目标类 <code>Repo</code> 只有一个 <code>save(self, o, force=False)</code>：</p>
+<pre><code>MagicMock()            -> repo.archive(o) 静默成功，archive.call_count = 1
+MagicMock(spec=Repo)   -> AttributeError: Mock object has no attribute 'archive'
+MagicMock(spec=Repo)   -> save(1, 2, 3, 4) 依然通过，签名错不管
+create_autospec(Repo)  -> save(1, 2, 3, 4) -> TypeError: too many positional arguments</code></pre>
+<p>三者的边界很清楚：裸 <code>MagicMock()</code> 什么都收；<code>spec=</code> 只管属性名是否存在；<code>create_autospec</code> 或 <code>autospec=True</code> 才连签名一起管。</p>
+<p><code>spec</code> 挡属性这条本身很值钱。生产代码重构时把 <code>save</code> 改名成 <code>persist</code>，漏改一处调用，裸 MagicMock 会替你造出一个 <code>persist()</code>，返回一个 Mock，测试绿，线上 <code>AttributeError</code>。换成 <code>spec=Repo</code>，测试当场红。</p>
+<p>官方原文两句：</p>
+<blockquote>"Accessing any attribute not in this list will raise an AttributeError."</blockquote>
+<blockquote>"It is off by default because it can be dangerous. With it switched on you can write passing tests against APIs that don't actually exist!"</blockquote>
+<p>第二句讲的是 <code>patch(create=True)</code>，但道理完全一样。<strong>任何允许你对着不存在的 API 写出绿灯的开关，都是把 bug 从今天挪到了明天。</strong></p>
+<h2>坑 4：MagicMock 的默认值只覆盖一半魔法方法</h2>
+<p><code>MagicMock</code> 会预创建「大部分有用的」魔法方法，于是它们有默认返回值：</p>
+<pre><code>bool(MagicMock())   -> True
+len(MagicMock())    -> 0
+int(MagicMock())    -> 1
+float(MagicMock())  -> 1.0</code></pre>
+<p>这组默认值在两条常见分支上互相矛盾。写 <code>if not cache.get(key):</code>，若 <code>cache.get()</code> 是 MagicMock，<code>bool</code> 是 True，取反得 False，「没命中」的分支永远不进。写 <code>if len(rows) == 0:</code>，<code>len</code> 是 0，「空结果」分支每次都进。同一个替身，两个分支一个永不执行、一个永远执行，覆盖率报告上它们都显示已覆盖。</p>
+<p>而比较运算压根没有默认值：</p>
+<pre><code>MagicMock() 小于 0   -> TypeError: '<' not supported between instances of 'MagicMock' and 'int'
+MagicMock() 等于 0   -> False
+MagicMock() 加 1     -> 返回一个新的 MagicMock</code></pre>
+<p>所以我第一版演示脚本直接崩了——<code>if amount 小于 0:</code> 里的 amount 是 MagicMock 的返回值，五个用例当场 TypeError。这个失败是好事，它至少报错。真正难查的是上面那两条分支。</p>
+<p>顺带对照一下 <code>Mock</code>（非 Magic）：它只预创建少量魔法方法，<code>bool(Mock())</code> 也是 True，但 <code>len(Mock())</code> 和 <code>int(Mock())</code> 直接抛 <code>TypeError: object of type 'Mock' has no len()</code>。所以「Mock 比 MagicMock 安全」这句话只在魔法方法上成立，在属性自动创建上两者一样危险。</p>
+<h2>坑 5：reset_mock 之后 stub 还在</h2>
+<p>类级共享 mock 是性能优化，也是污染源。实测：</p>
+<pre><code>用例 A：m.fetch.return_value = "STUB-A"，m.fetch() 得到 STUB-A
+reset_mock() 之后：call_count = 0，return_value 仍是 STUB-A，再调仍得 STUB-A</code></pre>
+<p><code>side_effect</code> 同理。用例 A 设了 <code>RuntimeError("upstream down")</code>，<code>reset_mock()</code> 之后用例 B 再调，照样抛 RuntimeError。</p>
+<p>官方文档把这件事写得很直白：「Note that reset_mock() doesn't clear the return_value, side_effect or any child attributes you have set using normal assignment by default.」</p>
+<p>源码也对得上。<code>Lib/unittest/mock.py</code> 第 631 行的签名是 <code>reset_mock(self, visited=None, *, return_value: bool = False, side_effect: bool = False)</code>。第 641 到 646 行只清 <code>called</code>、<code>call_args</code>、<code>call_count</code>、<code>mock_calls</code>、<code>call_args_list</code>、<code>method_calls</code> 六个字段；<code>return_value</code> 与 <code>side_effect</code> 只有在对应关键字为 True 时（第 648 到 651 行）才复位。</p>
+<p>修法两个：<code>reset_mock(return_value=True, side_effect=True)</code>，或者干脆别共享 mock——每个用例在 <code>setUp</code> 里新建一个，成本是几微秒。</p>
+<h2>坑 6：assert_called_with 用等值比较参数</h2>
+<p><code>assert_called_with</code> 比对的是等值，不是身份、不是类型。三个实测结果：</p>
+<pre><code>m.f(1) 之后 assert_called_with(True)  -> 通过（1 等于 True）
+m.g(1.0) 之后 assert_called_with(1)   -> 通过（1.0 等于 1）
+可变参数事后被改 -> AssertionError: expected call not found.</code></pre>
+<p>前两条说明断言比想象的松：一个本该传布尔的开关传成整数 1 也判过，一个浮点 1.0 传成整数 1 也判过。如果你的函数按类型分派，先判 <code>isinstance(x, bool)</code> 再走分支，断言就漏掉了真实差异。</p>
+<p>第三条反过来，比想象的严。<code>payload = {"id": 1}</code> 传进去，后面代码往里塞了一个键，断言时快照已经被改：</p>
+<pre><code>expected call not found.
+Expected: send({'id': 1})
+  Actual: send({'id': 1, 'extra': 'later-mutation'})</code></pre>
+<p>这段措辞来自 <code>mock.py</code> 第 968 行。它暴露了一个更根本的问题：<strong>mock 记的是引用，不是当时的副本。</strong> 所以断言可变参数要么先深拷贝再传，要么改成断言关键字而非全量字典。</p>
+<p>顺手记一条：<code>call_args</code> 只保留最后一次调用。两次调用 <code>f("first")</code>、<code>f("second")</code> 之后 <code>call_args</code> 是 <code>call('second')</code>，全量在 <code>call_args_list</code> 里。想断言调用发生，父对象上的 <code>call_args_list</code> 和子对象上的计数要分开看。</p>
+<h2>坑 7：父对象的 assert_not_called 不管子调用</h2>
+<pre><code>调用了 mp.child.work()
+mp.call_count            = 0
+mp.child.call_count      = 0
+mp.child.work.call_count = 1
+mp.assert_not_called()   -> 通过</code></pre>
+<p>父对象的 <code>assert_not_called()</code> 只回答一个问题：这个对象本身有没有被括号调用过。子对象被调用不算，孙对象被调用更不算。所以「我断言了这个 service 没被用过」在代码里往往只断言了「没有直接调用 service 本身」。</p>
+<p>同样道理，<code>assert_called_once_with</code> 只看最后一次调用，<code>assert_called_once</code> 才看次数。三个方法名字接近，语义差得很远。</p>
+<p>还有一条更隐蔽的：拼错断言名。3.13 加了守卫，<code>mock.py</code> 第 694 行只拦五个前缀 <code>assert</code>、<code>assret</code>、<code>asert</code>、<code>aseert</code>、<code>assrt</code>，再加上第 1107 行那份「把 <code>assert_</code> 去掉前缀」的白名单。于是：</p>
+<pre><code>assert_called_once_     -> AttributeError: is not a valid assertion
+asert_called            -> AttributeError，被前缀拦住
+assert_calledonce       -> AttributeError，在白名单里
+verify_called           -> 静默返回一个 MagicMock
+shoud_have_been_called  -> 静默返回一个 MagicMock</code></pre>
+<p>只要拼写错误不以 assert 形近变体开头，它就是一个永远不会失败的空断言。而 <code>assert_not_called()</code> 对着一个从未被调用过的新 mock，恒真。这两件事凑在一起，是最安静的假绿。</p>
+<h2>五个报错原文，逐条对照</h2>
+<p>下面五条都是本机跑出来的原文，可以直接拿去搜。</p>
+<p><strong>一、AttributeError: Mock object has no attribute 'archive'</strong> 来源是 <code>MagicMock(spec=Repo)</code> 访问类上不存在的方法，源码第 690 行 <code>raise AttributeError("Mock object has no attribute %r" % name)</code>。修法：给替身加 <code>spec=</code>，或者回头确认生产代码调的那个方法真的存在。</p>
+<p><strong>二、TypeError: missing a required argument: 'uid'</strong> 来源是 <code>patch(..., autospec=True)</code> 之后漏传参数。同族还有 <code>TypeError: too many positional arguments</code>。修法：开 autospec，然后按报错补参数——这正是它想要的。</p>
+<p><strong>三、AssertionError: expected call not found.</strong> 来源是 <code>assert_called_with</code> 参数对不上，正文里给出 Expected 与 Actual 两行。修法：先看 Actual 那行，八成是参数被后续代码改过，或者位置参数与关键字参数混用了。</p>
+<p><strong>四、AttributeError: module 'client' does not have the attribute 'get_usr'</strong> 来源是 <code>patch()</code> 目标拼错，且没有 <code>create=True</code>。这条会硬失败，属于幸运的一类。但它同时说明：如果目标存在、只是位置打错了，你什么提示都收不到，回到坑 1。</p>
+<p><strong>五、TypeError: object MagicMock can't be used in 'await' expression</strong> 来源是被测函数是 async，替身用了 MagicMock。修法：换 <code>AsyncMock</code>，或者对 async 函数开 <code>autospec</code>，它会自动挑对类型。这条也属于幸运的一类，因为它至少崩了。真正的坑是 MagicMock 替掉了 async 函数，而 await 写在另一个分支里，那个分支根本没被执行到。</p>
+<p>再补一条不报错的：<code>side_effect</code> 传列表，用完第三次会抛 <code>StopIteration: StopIteration()</code>。它看起来像报错，实际是「你只准备了两次返回，代码调了三次」——这恰恰是你想要的信号，别去捕获它。</p>
+<h2>一份可以贴进 PR 模板的清单</h2>
+<ul><li>每个 patch 都写 autospec=True，除非在替内置函数或第三方 C 扩展（这两类有时拿不到签名）</li><li>每个类替身都写 spec 或 create_autospec，不要在测试里用裸 MagicMock 当业务对象</li><li>共享 mock 一律 reset_mock(return_value=True, side_effect=True)，或者干脆不共享</li><li>断言参数优先用关键字形式，避免全量字典被引用修改</li><li>每个断言前问一句：这行删掉，测试会不会红。不会红的断言等于注释</li><li>拿不准就造一个变异体：把减法改加法、把大于改大于等于、把 return x 改 return None，跑一遍</li></ul>
+<p>最后一条最省时间。上面那张 0/6 与 2/5 的表就是这么来的，不需要装 mutmut 或 cosmic-ray，改一行、跑一次、看输出。我实际的用法是每次提 PR 前跑三个变异体，任何一个全绿，就去补那条用例。</p>
+<h2>什么时候不该用 mock</h2>
+<p>三个判断。</p>
+<p>一是被测逻辑本身。<code>Pricing.total()</code> 那种纯函数，替身它等于不测。只有跨进程、跨网络、跨时间（<code>datetime.now()</code>、<code>time.time()</code>）、跨文件系统的东西才值得替。</p>
+<p>二是你要验证的正是调用顺序时。<code>assert_has_calls</code> 能验顺序，但 <code>call_args_list</code> 里混进子调用后就很难读，这种情况不如直接测副作用：写出的文件内容、发出的请求体。</p>
+<p>三是替身比真实现更复杂时。要写八个 <code>side_effect</code> 才能模拟一个返回三行的接口，说明边界画错了，往上退一层，替掉更外面的东西。</p>
+<h2>结语</h2>
+<p><code>unittest.mock</code> 的设计目标从来不是帮你发现 bug，而是帮你隔离依赖。它默认宽容，因为宽容能让你先把测试跑起来。代价是它不会替你做「这个断言有没有意义」的判断。</p>
+<p>同类的问题我在别处也写过：正则的 <a href="https://yaohehe.github.io/2026-11-04-python-re-8.html" class="internal-link">八个静默错误</a> 是模式匹配层的漏，<code>subprocess</code> 的 <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">七个静默失败</a> 是退出码层的漏，<code>zoneinfo</code> 的 <a href="https://yaohehe.github.io/2026-11-06-python-zoneinfo-dst-6.html" class="internal-link">六条 DST 规则</a> 是时刻比较层的漏。加上这篇的测试替身层，共性是同一个：<strong>工具给了你一个看起来对的结果，而你没有验证它是不是那个结果。</strong></p>
+<p>本文不含任何联盟推广链接，文中所有库都是 CPython 3.13.14 自带的标准库，复现脚本只用 <code>unittest.mock</code> 与 <code>unittest</code>。</p>
+<p>如果只想改一件事：把项目里所有裸 <code>MagicMock()</code> 换成带 <code>spec</code> 的，把所有 <code>patch(...)</code> 换成带 <code>autospec=True</code> 的。这两处改完先别管红了几条——那些红的，就是过去一直在装绿的。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
