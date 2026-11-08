@@ -137,10 +137,10 @@ A 不发（只 B 发） OK  J被调用=0次 batches=[]                        ou
 <p>报错不是没有，只是集中在结构层。以下四条我都在 1.25.0 上复现过，报文原样贴出。</p>
 <p><strong>一，<code>TypeCompatibilityError</code>，在 <code>build()</code> 期抛，这是好消息。</strong> 源发 <code>int</code>、目标只收 <code>str</code> 时：</p>
 <pre><code>[TYPE_COMPATIBILITY] Type incompatibility between executors 'src' -> 'sink'.
-Source executor outputs types ["<class 'int'>"] but target executor can only handle types ["<class 'str'>"].</code></pre>
+Source executor outputs types ["&lt;class 'int'&gt;"] but target executor can only handle types ["&lt;class 'str'&gt;"].</code></pre>
 <p>但同一条异常在 fan-in 场景会给出<strong>自相矛盾的报文</strong>。fan-in 的目标节点 handler 必须声明成 <code>list[T]</code>（官方文档原话是「must be compatible with a list of the output types of the source executors」），如果你按普通节点的习惯写成 <code>str</code>，报错长这样：</p>
 <pre><code>[TYPE_COMPATIBILITY] Type incompatibility between executors 'A' -> 'J'.
-Source executor outputs types ["<class 'str'>"] but target executor can only handle types ["<class 'str'>"].</code></pre>
+Source executor outputs types ["&lt;class 'str'&gt;"] but target executor can only handle types ["&lt;class 'str'&gt;"].</code></pre>
 <p>源是 <code>str</code>、目标也是 <code>str</code>，还说「不兼容」。真实原因是校验器对 fan-in 组用的是「源类型的 list 能否被目标接受」，也就是目标必须能吃 <code>list[str]</code>。<strong>看到这条报文先别改数据类型，先看这个目标是不是 fan-in 的汇合点。</strong></p>
 <p><strong>二，<code>EdgeDuplicationError</code>。</strong> 同一条边加两次：</p>
 <pre><code>[EDGE_DUPLICATION] Duplicate edge detected: src->sink. Each edge in the workflow must be unique.</code></pre>
@@ -173,7 +173,7 @@ Source executor outputs types ["<class 'str'>"] but target executor can only han
 <h2>Troubleshooting：三条抄文档必踩的报错</h2>
 <p><strong>报错一，<code>TypeError: object NoneType can't be used in 'await' expression</code>。</strong> 类式 executor 的 handler 写成同步函数（不加 <code>async</code>）时，<code>@handler</code> 不会拦，<code>build()</code> 也不拦，直到运行期才炸。坑在于函数式 <code>@executor</code> 装饰器<strong>是</strong>支持同步函数的（文档写明同步函数会被放进线程池执行），所以「同步函数能不能用」这件事在这层有两种答案，取决于你用的是类式还是函数式节点。修法：类式 handler 一律 <code>async def</code>。</p>
 <p><strong>报错二，<code>TypeError: WorkflowBuilder expected designation entries to be Executor or SupportsAgentRun instances; got str.</code></strong> <code>output_from</code> 只吃 executor 实例，不吃 id 字符串。你以为可以像某些框架那样写 <code>output_from=["C"]</code>，实际要写 <code>output_from=[c]</code>。</p>
-<p><strong>报错三，<code>RuntimeError: Start executor 'a' cannot handle input of type 'str'. Expected input types: [<class 'int'>]</code>。</strong> <code>wf.run(...)</code> 的入参类型必须匹配起点 handler 的第一个位置参数。这个报错至少是明确的——比本文那六条失效好得多。</p>
+<p><strong>报错三，<code>RuntimeError: Start executor 'a' cannot handle input of type 'str'. Expected input types: [&lt;class 'int'&gt;]</code>。</strong> <code>wf.run(...)</code> 的入参类型必须匹配起点 handler 的第一个位置参数。这个报错至少是明确的——比本文那六条失效好得多。</p>
 <h2>本文的边界</h2>
 <ul><li>只测了 <strong>1.25.0</strong> 一个版本，没有做跨版本回归。版本会变，行为会变，遇到不一致时优先信你本机的 <code>hasattr</code> 与实跑输出。</li><li>只测了纯 Python executor（无模型调用）。<strong>Agent 节点、MCP 工具、streaming、子工作流、checkpoint 与恢复、<code>add_switch_case_edge_group</code> / <code>add_multi_selection_edge_group</code> 均未覆盖</strong>。</li><li>官方文档与本机包的差异只陈述可复现部分（<code>hasattr</code> 结果、报错原文），不推断文档对应哪个未发布分支。</li><li>版本与发布时间以 PyPI 记录为准，截至发稿 1.25.0 为最新。</li></ul>
 <p>顺带说一句：这一层和 LangGraph 的 superstep 模型很像，两者都按 superstep 推进、都在环上设迭代上限，但类型校验的严格程度相反——LangGraph 基本不管边上的类型，Agent Framework 管得很死，然后在「标注缺失」和「联合类型」两处漏掉。如果你之前读过我在 <a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式三口径</a> 里做的实测，可以把这篇当成同一套执行模型下的另一个实现对照。</p>
