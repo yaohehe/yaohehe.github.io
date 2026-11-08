@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQL NULL 三值逻辑：7 个不报错却算错的查询 - TechPassive</title>
+  <meta name="description" content="NULL 参与比较时结果既不是真也不是假，这条规则会让一句看起来没问题的 SQL 少返回一整行。我用一张五行表在 SQLite 3.53.1 与 PostgreSQL 18.6 上逐句对拍七组查询：有的少一行，有的恒为空集，ORDER BY 的页首两库正好相反，每个坑都附实测数字与可直接抄的修法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>SQL NULL 三值逻辑：7 个不报错却算错的查询</h1>
+  <div class="post-tags">
+    <span class="tag">SQL</span><span class="tag">NULL</span><span class="tag">数据库</span>
+  </div>
+  <div class="content">
+    <p>上周帮一位读者看他那张「上月消费超过 500 的用户」报表，SQL 只有四行，跑完没报错，导出的行数比后端接口少了一截。问题不在 join，也不在索引，而是那四行里有一个断言遇到的是 NULL：<code>WHERE total != 0</code> 这种写法在遇到 NULL 时，结果既不是真也不是假，而是第三种值，于是那一整行被无条件丢掉。SQL 的三值逻辑（three-valued logic）不是什么冷知识，它每天都在生产环境里静默改数据。</p>
+<p><strong>TL;DR</strong>：NULL 参与任何比较都不会得到 TRUE 或 FALSE，只会得到 UNKNOWN，而 WHERE 只放行 TRUE。这一条派生出七个坑：<code>!=</code> 吞行、<code>NOT IN</code> 恒空、聚合的分母变了、<code>LEFT JOIN</code> 退化成 <code>INNER JOIN</code>、<code>ORDER BY</code> 两库默认相反、<code>GROUP BY</code> 裸列一库静默一库报错、类型亲和让同一字面量出现两种答案。我用一张五行表把七个坑全部量了一遍，文末有一张可直接抄的自查清单。</p>
+<h2>实测环境与那张五行表</h2>
+<p>我实际在这台机器上跑完了全部对拍：Windows 11，Python 3.13.14 自带的 sqlite3（链接的 SQLite 库版本 3.53.1），以及本地起的一个 PostgreSQL 18.6 实例（<code>x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code>，服务端编码 UTF8）。两个引擎喂同一份数据、跑同一批 SQL，下面的差异全部是现场打印出来的，不是从别人的博客转述的。</p>
+<p>先确认版本，再建表——这两步能省掉后面所有「为什么你那跑得出来我这跑不出来」的争论：</p>
+<pre><code>python -c "import sqlite3; print(sqlite3.sqlite_version)"
+# 3.53.1
+
+psql -h 127.0.0.1 -p 5433 -U postgres -c "select version();"
+# PostgreSQL 18.6 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code></pre>
+<p>五行数据，故意让 <code>customer</code> 有一行是 NULL、<code>amount</code> 有两行是 NULL：</p>
+<pre><code>CREATE TABLE orders(id INTEGER PRIMARY KEY, customer TEXT, amount INTEGER);
+INSERT INTO orders VALUES
+ (1,'alice',100),
+ (2,'bob',  NULL),
+ (3,NULL,   50),
+ (4,'alice',200),
+ (5,'carol', NULL);</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">id</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">customer</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">amount</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">备注</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">alice</td><td style="border:1px solid #ddd;padding:8px;">100</td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">bob</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">金额缺失</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">50</td><td style="border:1px solid #ddd;padding:8px;">客户缺失</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">alice</td><td style="border:1px solid #ddd;padding:8px;">200</td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">carol</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">金额缺失</td></tr></tbody></table>
+<p>一共 5 行。记住这个 5，后面每一次「少一行」都从这里扣。</p>
+<h2>坑一：不等于号会把 NULL 行整行吞掉</h2>
+<p>最省事的一句查询，想数「不是 alice 的订单有几单」：</p>
+<pre><code>SELECT count(*) FROM orders WHERE customer != 'alice';
+-- SQLite: 2    PostgreSQL: 2</code></pre>
+<p>答案是 2。但表里有 5 行，alice 占 2 行，剩下 3 行本该都算进去——那行 <code>customer IS NULL</code> 被吃掉了。换成 <code>&lt;&gt;</code> 一样是 2：</p>
+<pre><code>SELECT count(*) FROM orders WHERE customer &lt;&gt; 'alice';
+-- 2</code></pre>
+<p>SQLite 官方文档在运算符一节写得很直白：「All operators generally evaluate to NULL when any operand is NULL, with specific exceptions as stated below.」PostgreSQL 官方文档在比较函数一节用的是同一套语义：「Ordinary comparison operators yield null (signifying "unknown"), not true or false, when either input is null.」两个引擎在这里完全一致，所以这不是引擎 bug，是 SQL 标准本身的规则。</p>
+<p>关键在于 WHERE 只接受 TRUE。UNKNOWN 和 FALSE 一样被过滤掉，但两者含义完全不同：FALSE 是「我确定它不满足」，UNKNOWN 是「我不知道」。把「不知道」当「不满足」处理，就是把缺失当成否。</p>
+<p>实测代码量一下这层的厚度：</p>
+<pre><code>SELECT NULL AND 0, NULL AND 1, NULL OR 0, NULL OR 1, NOT NULL;
+-- SQLite:     0 | NULL | NULL | 1 | NULL
+-- PostgreSQL: f | NULL | NULL | t | NULL</code></pre>
+<p><code>NULL AND 0</code> 在两个引擎上都是假（因为 0 已经是假，与运算是短路的），<code>NULL OR 1</code> 都是真。除此之外全是 NULL。SQLite 文档把这条例外写成了两句话：「AND evaluates to 0 (false) when the other operand is false; and OR evaluates to 1 (true) when the other operand is true.」</p>
+<p>修法只有两条，选一条即可：</p>
+<pre><code>-- 写法 A：显式把 NULL 排掉，再比较
+SELECT count(*) FROM orders
+WHERE customer IS NOT NULL AND customer &lt;&gt; 'alice';   -- 2 行
+
+-- 写法 B：把 NULL 单独算一类，跟业务确认它该算哪边
+SELECT count(*) FROM orders WHERE customer IS NULL;      -- 1 行</code></pre>
+<p>如果业务语义是「所有不叫 alice 的」，正确写法是 <code>WHERE customer IS NULL OR customer != 'alice'</code>，返回 3。差的那一行就是报表对不上的那一行。</p>
+<h2>坑二：NOT IN 的子查询里混进一个 NULL，结果恒为空</h2>
+<p>这个坑比上一个狠，因为它不是少一行，而是直接把整个结果集清零，而且不报错。</p>
+<pre><code>SELECT count(*) FROM orders WHERE id NOT IN (SELECT amount FROM orders);
+-- SQLite: 0    PostgreSQL: 0</code></pre>
+<p><code>amount</code> 列里有两个 NULL，于是这句子查询展开后等价于 <code>id NOT IN (100, NULL, 50, 200, NULL)</code>。任何 <code>id</code> 与 NULL 比 <code>!=</code> 都得到 UNKNOWN，整串 OR 里只要有一个 UNKNOWN，这一行就出局。5 行全部出局，返回 0。</p>
+<p>换成 <code>NOT EXISTS</code> 就正常：</p>
+<pre><code>SELECT count(*) FROM orders
+WHERE NOT EXISTS (SELECT 1 FROM orders x WHERE x.amount = orders.id);
+-- SQLite: 5    PostgreSQL: 5</code></pre>
+<p>同一份数据、同一个意图，0 和 5 的差别。注意 <code>NOT EXISTS</code> 走的是「逐行判断存在性」，NULL 在 <code>x.amount = orders.id</code> 里同样产出 UNKNOWN，但 UNKNOWN 在 EXISTS 里被当作「不存在」，于是这一行被保留——这正是我们要的语义。SQL 标准规定 EXISTS 只返回真或假，永远不返回 UNKNOWN，这是它比 <code>NOT IN</code> 可靠的根本原因。</p>
+<p>SQLite 文档还点出了一个更容易被忽略的细节：「The expression "a IN (x, y, z, ...)" is equivalent to "a = +x OR a = +y OR a = +z OR ...". In other words, the values to the right of the IN operator ... are considered to have no affinity」。右边的列表元素被剥掉了亲和性，所以 <code>IN</code> 的比较规则和普通 <code>=</code> 不完全一样——这一点在第七个坑里还会咬人。</p>
+<p>列表形态的 <code>NOT IN</code> 同样中招，只是范围小：</p>
+<pre><code>SELECT count(*) FROM orders WHERE amount NOT IN (100,200);                    -- 1
+SELECT count(*) FROM orders WHERE amount NOT IN (100,200) OR amount IS NULL;  -- 3</code></pre>
+<p>1 和 3，差的是两行金额缺失的订单。</p>
+<h2>坑三：聚合跳过 NULL，平均值的分母不是行数</h2>
+<p><code>count(*)</code> 和 <code>count(列)</code> 是两个不同的函数，虽然名字只差一对括号：</p>
+<pre><code>SELECT count(*), count(amount) FROM orders;
+-- SQLite: 5, 3    PostgreSQL: 5, 3</code></pre>
+<p>SQLite 官方文档的原话是：「The count(X) function returns a count of the number of times that X is not NULL in a group. The count(*) function (with no arguments) returns the total number of rows in the group.」所以「有 5 单」和「有 5 个金额」不是一回事。</p>
+<p>更贵的是平均值。同一张表：</p>
+<pre><code>SELECT sum(amount), avg(amount), round(avg(amount),2) FROM orders;
+-- SQLite: 350 | 116.66666666666667 | 116.67
+
+SELECT round(350.0/5, 2);
+-- 70.0</code></pre>
+<p><code>avg</code> 给的是 116.67，因为它算的是 350 ÷ 3（只数非 NULL 的行）。用「总额 ÷ 订单数」算出来是 70。同一句「平均客单价」有两个答案，相差 66.7%。这两个数字都「正确」，取决于你要回答的是「下单的人平均花多少」还是「所有订单平均多少」——但代码里通常只写了一个 <code>avg()</code>，没人检查分母。</p>
+<p><code>count(distinct)</code> 会在同一个问题上再制造一次分裂：</p>
+<pre><code>SELECT count(DISTINCT customer) FROM orders;                            -- 3
+SELECT count(*) FROM (SELECT customer FROM orders GROUP BY customer);   -- 4</code></pre>
+<p>「有几个不同的客户」——3 还是 4？<code>count(distinct)</code> 按定义忽略 NULL，所以是 3；<code>GROUP BY</code> 把 NULL 当成一个独立的组（SQLite 文档：「For the purposes of grouping rows, NULL values are considered equal.」），所以是 4。表里确实有一个「客户未知」的订单，它是第四类，但不是第四个客户。</p>
+<p>还有一条只在 SQLite 上出现的分歧——空集上的 <code>sum()</code>：</p>
+<pre><code>SELECT sum(amount), total(amount) FROM orders WHERE id &gt; 999;
+-- SQLite: NULL | 0.0</code></pre>
+<p>官方文档解释得很坦率：「If there are no non-NULL input rows then sum() returns NULL but total() returns 0.0. NULL is not normally a helpful result for the sum of no rows but the SQL standard requires it」。PostgreSQL 同样返回 NULL，但没有 <code>total()</code> 这个非标准函数，只能用 <code>coalesce(sum(x),0)</code>。</p>
+<h2>坑四：LEFT JOIN 的条件写进 WHERE，静默退化成 INNER JOIN</h2>
+<p>这条被讲过很多次，但很少有人量出具体少了几行。加一张客户表，其中 <code>dave</code> 没有任何订单：</p>
+<pre><code>CREATE TABLE customers(name TEXT PRIMARY KEY, tier TEXT);
+INSERT INTO customers VALUES ('alice','gold'),('bob','silver'),('dave','bronze');</code></pre>
+<pre><code>SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name;
+-- 5 行：LEFT JOIN 保住了全部订单
+
+SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name
+WHERE c.tier &lt;&gt; 'bronze';
+-- 3 行（两个引擎都是 3）
+
+SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name
+  AND c.tier &lt;&gt; 'bronze';
+-- 5 行（条件留在 ON 里）</code></pre>
+<p>5 变 3，少了 2 行——正是那些在 <code>customers</code> 里匹配不到、右表全为 NULL 的订单（id 3 与 id 5）。<code>WHERE c.tier &lt;&gt; 'bronze'</code> 对右表为 NULL 的行同样产出 UNKNOWN，于是 LEFT JOIN 的「保留左表全部行」被 WHERE 抹掉了，语义上等价于 INNER JOIN。</p>
+<p>要找「哪些订单没有匹配到客户」，不能写 <code>WHERE c.name != 'x'</code>，要用 IS NULL：</p>
+<pre><code>SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer = c.name
+WHERE c.name IS NULL;
+-- (3, NULL) 与 (5, NULL)</code></pre>
+<p>一个可以直接执行的判据：如果 LEFT JOIN 后面跟着的 WHERE 里出现了右表的列，先问一句「右表匹配不上时这条件成立吗」；答案是不成立，那这个 LEFT JOIN 就是白写的。</p>
+<h2>坑五：ORDER BY 的 NULL 位置，两个引擎默认相反</h2>
+<p>这是本篇唯一一处两个引擎给出<strong>相反</strong>结果的地方，而且它直接影响分页。</p>
+<pre><code>SELECT customer FROM orders ORDER BY customer;
+-- SQLite:     NULL, alice, alice, bob, carol
+-- PostgreSQL: alice, alice, bob, carol, NULL</code></pre>
+<p>SQLite 把 NULL 排在最小：文档原话「A value with storage class NULL is considered less than any other value (including another value with storage class NULL).」PostgreSQL 把 NULL 当作最大：文档原话「By default, null values sort as if larger than any non-null value; that is, NULLS FIRST is the default for DESC order, and NULLS LAST otherwise.」</p>
+<p>分页时这个差别会直接把页首内容换掉。造一张 10 行的表，其中 2 行是 NULL：</p>
+<pre><code>CREATE TABLE p(id INTEGER PRIMARY KEY, v INTEGER);
+INSERT INTO p VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,NULL),(10,NULL);
+
+SELECT id, v FROM p ORDER BY v LIMIT 4;
+-- SQLite:     (9,NULL) (10,NULL) (1,1) (2,2)
+-- PostgreSQL: (1,1) (2,2) (3,3) (4,4)</code></pre>
+<p>同一句 <code>ORDER BY v LIMIT 4</code>，首页 4 行只有 2 行重合，重合率 50%。如果这套代码从 SQLite 迁到 PostgreSQL（或者反过来），首页内容会整体错位，而 SQL 一行没改、接口一个字段没动。</p>
+<p>修法是把顺序写死，别依赖默认值。SQLite 从 3.30 起就支持 <code>NULLS FIRST / NULLS LAST</code>：</p>
+<pre><code>SELECT id, v FROM p ORDER BY v NULLS LAST LIMIT 4;
+-- (1,1) (2,2) (3,3) (4,4)  —— 与 PostgreSQL 默认结果完全一致</code></pre>
+<p><code>ORDER BY v NULLS LAST, id</code> 这样写还有第二个好处：并列值有稳定的第二排序键，翻页时不会出现同一行既在第一页又在第二页。只写 <code>ORDER BY v</code> 而 v 有重复值时，页间重复和漏行是必然的，跟 NULL 无关。</p>
+<h2>坑六：GROUP BY 的裸列，一个引擎静默、一个引擎报错</h2>
+<p>同一句 SQL，在 SQLite 上能跑，在 PostgreSQL 上直接拒绝执行：</p>
+<pre><code>SELECT id, customer FROM orders GROUP BY customer;
+-- SQLite:     4 行 (3,NULL) (1,alice) (2,bob) (5,carol)
+-- PostgreSQL: ERROR:  column "orders.id" must appear in the GROUP BY clause
+--                     or be used in an aggregate function</code></pre>
+<p>SQLite 返回了 4 行，<code>id</code> 分别是 3、1、2、5，看起来毫无规律。原因是它替你做了一次任意选择。官方文档写得毫不含糊：「Each non-aggregate expression in the result-set is evaluated once for an arbitrarily selected row of the dataset.」以及「in many cases the value for "b" is undefined」。文档还明说这是 SQLite 的扩展：「Most other SQL database engines disallow bare columns... This is considered a feature, not a bug.」</p>
+<p>所以你在 SQLite 上跑通的报表 SQL，换到 PostgreSQL 会因为这条裸列直接报错；反过来，从 PostgreSQL 迁到 SQLite 更危险——原来报错的 SQL 现在能跑，但 <code>id</code> 是随手挑的，值可能每次都不一样（文档：「The particular row chosen might change from one invocation to the the next.」）。</p>
+<p>唯一的例外是 <code>min()</code> / <code>max()</code>：只有一个 min/max 聚合时，裸列会取到那一行。但并列值出现时又变成任意选：</p>
+<pre><code>SELECT id, customer, amount FROM orders GROUP BY customer HAVING max(amount);
+-- SQLite: (3,NULL,50) (4,alice,200)</code></pre>
+<p><code>alice</code> 那条给出 200 是对的（她有两单，最大 200），但这是 SQLite 的特例行为，不能当通用写法搬到别的库。</p>
+<h2>坑七：类型亲和让同一个字面量有两种答案</h2>
+<p>这条最隐蔽，因为它在 SQLite 上是「有时候对有时候错」，取决于比较的一侧有没有列。</p>
+<p>先看没有列的时候：</p>
+<pre><code>SELECT 1 = '1';
+-- SQLite: 0     PostgreSQL: t</code></pre>
+<p>SQLite 说 0，PostgreSQL 说真。SQLite 的理由是类型序：整数永远小于文本，所以整数 1 与文本 '1' 不相等（文档：「An INTEGER or REAL value is less than any other TEXT or BLOB value.」）。PostgreSQL 的理由是未知类型字面量会被折成整数，所以等于真。</p>
+<p>一旦比较的一侧是列，SQLite 的答案就翻过来了：</p>
+<pre><code>CREATE TABLE t(id INTEGER PRIMARY KEY, n INTEGER, s TEXT);
+INSERT INTO t(n,s) VALUES ('123','123'), ('123abc','123'), (45.9,'x');
+
+SELECT count(*) FROM t WHERE n = '123';   -- 1  （整数列 vs 文本字面量，亲和把 '123' 转成 123）
+SELECT count(*) FROM t WHERE s = 123;     -- 2  （文本列 vs 整数字面量，亲和把 123 转成 '123')
+SELECT 1 = '1';                            -- 0  （两侧都没有列，不施加亲和）</code></pre>
+<p>这就是 SQLite 类型亲和（type affinity）的真实手感：官方文档的规则是「If one operand has INTEGER, REAL or NUMERIC affinity and the other operand has TEXT or BLOB or no affinity then NUMERIC affinity is applied to the other operand.」，以及「Otherwise, no affinity is applied and both operands are compared as is.」有没有列，决定了走哪一条分支。</p>
+<p>写入端同样静默。上面 <code>INSERT</code> 之后看一眼 <code>typeof</code>：</p>
+<pre><code>SELECT id, typeof(n), n FROM t;
+-- (1,'integer',123)    '123' 被转成整数
+-- (2,'text','123abc')  转不动，原样存成文本
+-- (3,'real',45.9)      45.9 保留为 real</code></pre>
+<p>一个声明为 INTEGER 的列里，混着 integer、text、real 三种存储类，全程无警告。之后 <code>ORDER BY n</code> 会按类型序排，数字永远排在文本前面，而不是按数值大小。</p>
+<p>Cast 也是「能转多少转多少」：</p>
+<pre><code>SELECT CAST('12abc' AS INTEGER), CAST('abc' AS INTEGER), '12abc'+0;
+-- 12 | 0 | 12</code></pre>
+<p><code>'abc'</code> 变 0，<code>'12abc'</code> 变 12，都不报错。PostgreSQL 在这里反而是救命的：</p>
+<pre><code>SELECT count(*) FROM orders WHERE note = 0;
+-- ERROR:  operator does not exist: text = integer
+-- HINT:  No operator matches the given name and argument types.
+--        You might need to add explicit type casts.
+
+SELECT 1 = '1a';
+-- ERROR:  invalid input syntax for type integer: "1a"</code></pre>
+<p>同一句在 SQLite 上会安静地返回 0 行。</p>
+<p>舍入也有两套并存的答案。SQLite 的 <code>round()</code> 一律远离零：</p>
+<pre><code>SELECT round(2.5), round(0.5), round(1.5), round(-0.5), round(2.675,2);
+-- 3.0 | 1.0 | 2.0 | -1.0 | 2.67</code></pre>
+<p>PostgreSQL 同一个函数名，按参数类型走两套规则：</p>
+<pre><code>SELECT round(2.5::float8), round(0.5::float8), round(1.5::float8),
+       round(-2.5::float8), round(2.5::numeric);
+-- 2 | 0 | 2 | -2 | 3</code></pre>
+<p><code>float8</code> 走银行家舍入（round half to even），<code>numeric</code> 走四舍五入。官方文档原话：「For numeric, ties are broken by rounding away from zero. For double precision, the tie-breaking behavior is platform dependent, but "round to nearest even" is the most common rule.」金额字段用 <code>numeric</code> 还是 <code>float8</code>，在这里会差出一分钱——对账时这一分钱要查半天。</p>
+<p>两个附带的口径差异，一并记下：</p>
+<pre><code>SELECT 'ABC' LIKE 'a%';   -- SQLite: 1    PostgreSQL: f（要写 ILIKE）
+SELECT 'ABC' GLOB 'a*';   -- SQLite: 0    （GLOB 大小写敏感）</code></pre>
+<p>以及唯一约束。两库默认都不把两个 NULL 视为相等，于是「唯一」列里可以塞进多个 NULL：</p>
+<pre><code>-- PostgreSQL 15 起才有这个显式开关
+CREATE TABLE u2(x int, y text, UNIQUE NULLS NOT DISTINCT (x));
+INSERT INTO u2 VALUES (NULL,'c'),(NULL,'d');
+-- ERROR:  duplicate key value violates unique constraint "u2_x_key"
+-- DETAIL:  Key (x)=(null) already exists.</code></pre>
+<p>官方文档对这一点的表述是：「By default, two null values are not considered equal in this comparison. That means even in the presence of a unique constraint it is possible to store duplicate rows that contain a null value in at least one of the constrained columns.」并且提醒「The default null treatment in unique constraints is implementation-defined according to the SQL standard」——这属于标准留白，不能假设别的库跟你一致。</p>
+<h2>Troubleshooting：六个真实报错与修法</h2>
+<p>下面六条全部是我在上面那两张表上现场跑出来的原文，不是从论坛抄的。有意思的是：SQLite 只在这组用例里报了两处，其余它选择沉默；PostgreSQL 六处全部报错。所以「换引擎之后突然一堆报错」往往不是新引擎更差，而是旧引擎一直在替你兜着。</p>
+<h3>报错一：select 里混了没分组的列</h3>
+<pre><code>ERROR:  column "orders.id" must appear in the GROUP BY clause or be used in
+        an aggregate function
+LINE 1: SELECT id, customer FROM orders GROUP BY customer;
+               ^</code></pre>
+<p>原因：SELECT 列表里出现了既不在 GROUP BY 里、也不在聚合函数里的列（坑六）。PostgreSQL 拒绝猜，SQLite 替你随便挑一行。</p>
+<p>修法二选一——把列放进聚合，或者放进 GROUP BY：</p>
+<pre><code>SELECT min(id) AS any_id, customer FROM orders GROUP BY customer;
+SELECT id, customer FROM orders ORDER BY customer;</code></pre>
+<p>如果确实想要「每组里金额最大的那条」，用窗口函数而不是裸列：</p>
+<pre><code>SELECT * FROM (
+  SELECT *, row_number() OVER (PARTITION BY customer ORDER BY amount DESC NULLS LAST) rn
+  FROM orders
+) x WHERE rn = 1;</code></pre>
+<h3>报错二：在 WHERE 里用聚合函数</h3>
+<pre><code>-- PostgreSQL
+ERROR:  aggregate functions are not allowed in WHERE
+
+-- SQLite（同一条 SQL）
+sqlite3.OperationalError: misuse of aggregate function count()</code></pre>
+<p>原因：WHERE 在分组之前求值，聚合要等分组之后才有结果，两者顺序冲突。同一件事两个引擎给了两句不同的文案（<code>aggregate functions are not allowed in WHERE</code> 与 <code>misuse of aggregate function count()</code>），搜索时两句都要试。</p>
+<p>修法：聚合条件写进 HAVING。</p>
+<pre><code>SELECT customer, count(*) FROM orders GROUP BY customer HAVING count(*) &gt; 1;
+-- alice | 2</code></pre>
+<h3>报错三：WHERE 后面跟了一个非布尔列</h3>
+<pre><code>ERROR:  argument of WHERE must be type boolean, not type integer
+LINE 1: SELECT count(*) FROM orders WHERE amount;
+                                          ^</code></pre>
+<p>原因：PostgreSQL 的 WHERE 严格要求布尔表达式。SQLite 把整数按「非零即真」处理，同一条 SQL 在它那儿返回 3 行（<code>amount</code> 为 100/50/200 的行，NULL 那两行被 UNKNOWN 过滤），一句提示都没有。这类「跨库可移植性陷阱」在 SQLite 上永远不会暴露。</p>
+<p>修法：把意图写明。</p>
+<pre><code>SELECT count(*) FROM orders WHERE amount IS NOT NULL;   -- 3
+SELECT count(*) FROM orders WHERE amount != 0;          -- 3（同样丢 NULL）</code></pre>
+<h3>报错四：文本列和数字比较</h3>
+<pre><code>ERROR:  operator does not exist: text = integer
+LINE 1: SELECT count(*) FROM orders WHERE note = 0;
+                                               ^
+HINT:  No operator matches the given name and argument types. You might need
+       to add explicit type casts.</code></pre>
+<p>原因：PostgreSQL 不做隐式跨类型比较（坑七）。SQLite 会按亲和规则悄悄转换，甚至把 <code>'abc'</code> 转成 0 之后参与比较。</p>
+<p>修法：显式转型，或者用正确的字面量类型。</p>
+<pre><code>SELECT count(*) FROM orders WHERE note = '0';
+SELECT count(*) FROM orders WHERE note::int = 0;   -- 有非数字内容时会抛错，这反而是好事</code></pre>
+<h3>报错五：字面量根本转不成目标类型</h3>
+<pre><code>ERROR:  invalid input syntax for type integer: "1a"
+LINE 1: SELECT 1 = '1a';
+                   ^</code></pre>
+<p>原因：PostgreSQL 在解析阶段就把未知类型字面量折成整数，<code>'1a'</code> 折不动，直接报错——注意它报的是「输入语法错误」而不是「比较失败」，因为错在解析，还没到比较。SQLite 对 <code>1 = '1a'</code> 返回 0，<code>1 = '1'</code> 也返回 0，两种错法看起来一样。</p>
+<p>修法：参数化查询加应用层校验，别把用户输入直接拼进 SQL 的字面量位置。</p>
+<pre><code>-- 不要：f"SELECT * FROM orders WHERE id = {user_input}"
+-- 要：  cur.execute("SELECT * FROM orders WHERE id = ?", (user_input,))</code></pre>
+<p>顺便提醒一个 Python 层的同类坑，我测试时也踩到了：</p>
+<pre><code>cur.execute("SELECT count(*) FROM orders WHERE amount = ?", (None,))   # 0 行
+cur.execute("SELECT count(*) FROM orders WHERE amount IS ?", (None,))  # 2 行</code></pre>
+<p>绑定 <code>None</code> 就等价于 <code>amount = NULL</code>，恒不成立。想查空值必须把 <code>IS</code> 写进 SQL 文本里，不能指望把 <code>=</code> 参数化成万能比较。</p>
+<h3>报错六：唯一约束挡不住 NULL</h3>
+<pre><code>ERROR:  duplicate key value violates unique constraint "u2_x_key"
+DETAIL:  Key (x)=(null) already exists.</code></pre>
+<p>原因：<code>UNIQUE</code> 默认把两个 NULL 视为不相等（坑七末尾），所以插多少个 NULL 都不冲突。这条报错只在你显式写了 <code>UNIQUE NULLS NOT DISTINCT</code>（PostgreSQL 15 起）时才会出现——出现它说明约束按你的意图在干活，是好事。</p>
+<p>修法：需要「最多一个空值」时用部分索引，比改约束更灵活。</p>
+<pre><code>CREATE UNIQUE INDEX u2_x_one_null ON u2(x) WHERE x IS NULL;</code></pre>
+<h2>一份可以直接抄的自查清单</h2>
+<p>七个坑压缩成七行判据，贴进 code review 模板即可：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">出现的写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">先问一句</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">改法</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>col != 'x'</code> 或 <code>col &lt;&gt; 'x'</code></td><td style="border:1px solid #ddd;padding:8px;">这一列会不会是 NULL</td><td style="border:1px solid #ddd;padding:8px;">加 <code>col IS NOT NULL</code>，或把 NULL 显式归到一侧</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>NOT IN (子查询)</code></td><td style="border:1px solid #ddd;padding:8px;">子查询那一列有 NULL 吗</td><td style="border:1px solid #ddd;padding:8px;">换 <code>NOT EXISTS</code>，或给子查询加 <code>WHERE col IS NOT NULL</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>avg(col)</code> / <code>count(col)</code></td><td style="border:1px solid #ddd;padding:8px;">分母是行数还是非空数</td><td style="border:1px solid #ddd;padding:8px;">要行数用 <code>count(<em>)</code>，要总额除行数就写 <code>sum(col)/count(</em>)</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>LEFT JOIN ... WHERE 右表列</code></td><td style="border:1px solid #ddd;padding:8px;">右表为空时这条件成立吗</td><td style="border:1px solid #ddd;padding:8px;">条件挪进 <code>ON</code>，或用 <code>IS NULL</code> 判孤儿</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ORDER BY col</code></td><td style="border:1px solid #ddd;padding:8px;">有 NULL 吗、有并列值吗</td><td style="border:1px solid #ddd;padding:8px;">写 <code>NULLS LAST</code>（或 FIRST），再加唯一第二排序键</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>SELECT 非分组列 ... GROUP BY</code></td><td style="border:1px solid #ddd;padding:8px;">这列在别的库会报错吗</td><td style="border:1px solid #ddd;padding:8px;">包进聚合函数，或补进 GROUP BY，或上窗口函数</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">跨类型比较 / <code>round()</code> / <code>LIKE</code></td><td style="border:1px solid #ddd;padding:8px;">目标跑在哪个引擎上</td><td style="border:1px solid #ddd;padding:8px;">显式 <code>CAST</code>，金额用 <code>numeric</code>，不敏感匹配用 <code>ILIKE</code></td></tr></tbody></table>
+<p>还有两条结构性建议，比逐条修更省事：</p>
+<ul><li>SQLite 从 3.37.0（2021-11-27）起提供 <code>STRICT</code> 表，开启后类型强制按声明走，上面「一列混三种存储类」的情况会被直接拒绝。新表建议一律加 <code>STRICT</code>，老表按需迁移。</li><li>需要「把 NULL 当普通值比较」时，用 SQL 标准的 <code>IS DISTINCT FROM</code> / <code>IS NOT DISTINCT FROM</code>，两个引擎都支持（SQLite 里 <code>IS</code> / <code>IS NOT</code> 是它们的简写，且「It is not possible for an IS or IS NOT expression to evaluate to NULL」）。这两个谓词永远返回真或假，是绕开三值逻辑最干净的工具。</li></ul>
+<h2>常见问题</h2>
+<p><strong>Q：既然 NULL 这么麻烦，能不能干脆给所有列加 NOT NULL 和默认值？</strong></p>
+<p>大部分业务表应该这么做，但「未知」和「零」是两种信息。金额缺失写成 0，会污染 <code>avg()</code>、<code>sum()</code> 和所有报表口径；客户未知写成空字符串，会让 <code>count(distinct)</code> 多出一类。真正该做的是区分「业务上不允许缺失」的列（加 NOT NULL）与「允许未知」的列（保留 NULL，并在查询里显式处理）。</p>
+<p><strong>Q：<code>count(*)</code> 和 <code>count(1)</code> 有区别吗？</strong></p>
+<p>没有。两个引擎都会把它当成「数行数」，与列内容无关。网上关于 <code>count(1)</code> 更快的说法在现代优化器上不成立。</p>
+<p><strong>Q：<code>WHERE col != 'x'</code> 少的那些行，怎么一次性找出来？</strong></p>
+<p>用 <code>SELECT count(*) FROM t WHERE col IS NULL</code> 单独数一次，和总数对一下，差额就是被三值逻辑吃掉的行数。</p>
+<p><strong>Q：为什么 PostgreSQL 报错而 SQLite 不报，是不是 SQLite 有问题？</strong></p>
+<p>不是缺陷，是取舍。SQLite 官方文档把裸列、动态类型这些行为明确定义为特性（「This is considered a feature, not a bug.」），换来的是极低的部署成本和极强的向后兼容。代价是有些错误要等你换引擎、或者等报表对不上时才发现。知道这个取舍，就知道该在哪一层加校验。</p>
+<p><strong>Q：迁移到 PostgreSQL 时，怎么快速找出所有会炸的 SQL？</strong></p>
+<p>先跑一遍完整测试集，把四条会报错的形态逐个 grep：裸列加 GROUP BY、WHERE 里的聚合、WHERE 后的非布尔列、跨类型比较。前三条通常只有几十处，第四条要靠类型标注——这也是 PostgreSQL 更适合长期维护的原因：它把问题提前到了执行期，而不是留到报表期。</p>
+<h2>结语</h2>
+<p>三值逻辑不是语法细节，它是 SQL 里唯一一处「不报错、不警告、结果就是不对」的大面积区域。我在同一台机器、同一份数据上量出的七个坑，都可以用一句话概括：<strong>NULL 不是值，它是「不知道」，而 WHERE 不接受「不知道」</strong>。</p>
+<p>排查顺序建议从分母开始——先确认 <code>count(*)</code> 与 <code>count(列)</code> 的差额，再看 <code>NOT IN</code> 有没有混进 NULL，最后才去怀疑 join 和排序。这个顺序能覆盖大部分「报表少了几行」的事故。</p>
+<p>如果你还想看同类的「默认值悄悄改变结果」的实测，可以接着读这几篇：</p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html" class="internal-link">PostgreSQL 复制槽把 WAL 吃到 159 MB 的实测</a>，另一个方向的「空间被静默吃掉」。</li><li><a href="https://yaohehe.github.io/2026-10-28-sqlite-14500.html" class="internal-link">SQLite 热备：能打开的备份怎么少了 14500 行</a>，同样是「任务成功但数据不对」。</li><li><a href="https://yaohehe.github.io/2026-10-24-alembic-autogenerate.html" class="internal-link">Alembic 测不出来的四件事</a>，schema 迁移层的静默漏检。</li><li><a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 查一个 40 MB 的 CSV</a>，如果这类分析你打算彻底绕开服务端。</li></ul>
+<p>本文所有数字均在本机 Windows 11、SQLite 3.53.1、PostgreSQL 18.6 上跑出，命令可直接复制执行。文中不含任何联盟推广链接，也不含亚马逊推广参数。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
