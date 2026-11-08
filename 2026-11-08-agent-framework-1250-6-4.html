@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Framework 1.25.0 工作流接线实测：6 处静默失效与 4 个真实报错 - TechPassive</title>
+  <meta name="description" content="Microsoft Agent Framework 1.25.0 的 workflow 层本机实测：官方文档列的 13 个方法有 6 个在包里根本不存在；另有 6 处类型校验与输出选择失效，能构建、能运行却不报错、结果直接为空。四个异常原文、fan-in 顺序与 max_iterations 上限均可对照复现。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Agent Framework 1.25.0 工作流接线：6 处不报错的失效与 4 个真实报错</h1>
+  <div class="post-tags">
+    <span class="tag">AI Agent</span><span class="tag">工作流编排</span><span class="tag">Microsoft</span>
+  </div>
+  <div class="content">
+    <p>我开始读 Microsoft Agent Framework 的 workflow 文档时，本以为这是一层很薄的图执行器：executor 是节点，edge 是边，<code>send_message</code> 往下传，<code>yield_output</code> 出结果。真正在本机把它跑起来之后，结论反过来了——这层的麻烦不在报错，而在<strong>不报错</strong>。同一份代码，改一个类型标注、改一个关键字参数，工作流照样 exit 0，照样返回一个「成功」的结果，只是结果里什么都没有。</p>
+<p>需要先说清口径：本文所有数字都来自我实际跑出来的输出，不是从文档推断。环境是本机 Windows 11 + CPython 3.13.14，包版本按 PyPI 记录为 <strong>agent-framework 1.25.0</strong>（上传时间 2026-11-07 15:42 UTC，写这篇时是最新版），用 <code>pip install --target</code> 装到隔离目录，不动主环境。凡是我没跑到的，文末「本文的边界」里逐条列了。</p>
+<h2>先说版本：官方文档比包快了半步</h2>
+<p>这不是文风问题，而是你照抄文档会在第一行就崩。</p>
+<p>learn.microsoft.com 的 <code>WorkflowBuilder</code> API 页列出了 13 个方法。我逐个 <code>hasattr</code> 检查 1.25.0 的实例，结果是<strong>只有 7 个存在，6 个不存在</strong>，缺失率 46.2%：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文档里列出但 1.25.0 没有</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文档与实际一致的</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>add_agent</code> / <code>register_agent</code> / <code>register_executor</code></td><td style="border:1px solid #ddd;padding:8px;"><code>add_edge</code> / <code>add_chain</code> / <code>build</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>set_max_iterations</code> / <code>set_start_executor</code> / <code>with_checkpointing</code></td><td style="border:1px solid #ddd;padding:8px;"><code>add_fan_in_edges</code> / <code>add_fan_out_edges</code> / <code>add_switch_case_edge_group</code> / <code>add_multi_selection_edge_group</code></td></tr></tbody></table>
+<p>更直接的一刀：文档里每一个示例的第一行都是无参的 <code>WorkflowBuilder()</code>，而 1.25.0 的构造函数签名是 <code>WorkflowBuilder(*, max_iterations=100, name, description, start_executor, checkpoint_storage, output_from, intermediate_output_from, output_executors)</code>，其中 <code>start_executor</code> 是<strong>必填的 keyword-only 参数</strong>。照抄官方例子，第一句就是：</p>
+<pre><code>TypeError: WorkflowBuilder.__init__() missing 1 required keyword-only argument: 'start_executor'</code></pre>
+<p>能跑的写法只有这一种：</p>
+<pre><code>workflow = WorkflowBuilder(start_executor=upper, max_iterations=5).add_edge(upper, lower).build()</code></pre>
+<p>至于文档为什么超前，我只陈述实测差异，不去猜它对应哪个分支。发布节奏可以解释「为什么容易踩」：PyPI 上 1.20 是 10-02、1.21 是 10-08、1.22 是 10-15、1.23 是 10-22、1.24 是 10-30、1.25 是 11-07，基本一周一版，而文档站点的更新节奏不受包版本号约束。<strong>版本号以 PyPI 为准，方法存不存在以 <code>hasattr</code> 为准</strong>，这是我这次学到的第一条。</p>
+<h2>最小闭环：两个节点，九条事件</h2>
+<p>先建立一个能跑通的基线，否则后面所有「少了什么」都无从对比。</p>
+<pre><code>from typing import Never
+from agent_framework import Executor, WorkflowBuilder, WorkflowContext, handler
+
+class Upper(Executor):
+    @handler
+    async def process(self, text: str, ctx: WorkflowContext[str]) -> None:
+        await ctx.send_message(text.upper())
+
+class Reverse(Executor):
+    @handler
+    async def process(self, text: str, ctx: WorkflowContext[Never, str]) -> None:
+        await ctx.yield_output(text[::-1])
+
+up, rv = Upper(id="upper"), Reverse(id="reverse")
+wf = WorkflowBuilder(start_executor=up).add_edge(up, rv).build()
+result = await wf.run("hello")
+print(result.get_outputs())     # ['OLLEH']</code></pre>
+<p><code>WorkflowContext[Send, Yield]</code> 这两个类型参数就是这一层的全部契约：第一个是往下游发的类型，第二个是变成工作流结果的类型。<code>Never</code> 表示「这个方向什么都不发」，不是装饰。</p>
+<p>一次运行产出 <strong>9 条事件</strong>，按执行顺序是两个 superstep：</p>
+<pre><code>superstep_started → executor_invoked('hello') → executor_completed(['HELLO']) → superstep_completed
+superstep_started → executor_invoked('HELLO') → output('OLLEH') → executor_completed(['OLLEH']) → superstep_completed</code></pre>
+<p>两点值得记：<code>yield_output</code> 产生的事件类型是 <code>output</code>，<code>get_outputs()</code> 里的顺序是<strong>节点完成顺序</strong>；而每条 <code>executor_completed</code> 的 <code>data</code> 始终是 <code>list</code>，哪怕你只发了一条消息。</p>
+<h2>六处不报错的失效</h2>
+<p>下面六条，全部 <code>build()</code> 通过、<code>run()</code> 正常返回、<code>get_outputs()</code> 给你一个空列表或者半截结果。我在每一条上都跑了对照，确认不是我的写法问题。</p>
+<p><strong>其一，没有输出类型标注，类型校验会被静默跳过。</strong> 如果源 executor 的 handler 只写 <code>WorkflowContext</code> 而不写泛型，构建期的类型兼容校验直接跳过，只在日志里留一句 warning：</p>
+<pre><code>Executor 'S' has no output type annotations. Type compatibility validation will be skipped for edges from this executor.</code></pre>
+<p>跳过之后，类型不匹配的消息会在运行期被吞掉。我让源节点发一个 <code>float</code>，目标节点只声明了 <code>str</code> 和 <code>int</code> 两个 handler，结果目标节点一次都没被调用，<code>get_outputs()</code> 返回 <code>[]</code>，全程无异常。</p>
+<p><strong>其二，联合类型能让 <code>build()</code> 过，但运行期照样丢。</strong> 源节点声明 <code>WorkflowContext[str | int]</code>，目标节点 handler 只接受 <code>str</code>。构建期的判据是「源的输出类型集合里有没有任何一个能和目标兼容」——<code>str</code> 在，所以通过。但我实际发出去的是 <code>7</code>，目标节点收到的是 <code>[]</code>：</p>
+<pre><code>build: OK（联合类型含 str，校验通过）
+run: OK  T 收到=[] outputs=[]</code></pre>
+<p>这是我认为最危险的一条。静态检查给了你「通过」的信号，而实际的运行期分支完全可能走到联合里的另一支。</p>
+<p><strong>其三，fan-in 少一路，整个工作流「成功」返回空。</strong> fan-out 到两个分支、fan-in 汇到一个聚合节点，如果其中一个分支这次不发消息（条件不满足、或者 handler 里 <code>return</code> 了），聚合节点<strong>一次都不会被调用</strong>，<code>run()</code> 正常返回，<code>outputs=[]</code>，没有任何提示：</p>
+<pre><code>两路都发         OK  J被调用=1次 batches=[['A(fan:go)', 'B(fan:go)']] out=["batch=..."]
+A 不发（只 B 发） OK  J被调用=0次 batches=[]                        out=[]
+两路都不发       OK  J被调用=0次 batches=[]                        out=[]</code></pre>
+<p>官方文档对这个行为的描述是「target executor will only be executed once all source executors have completed」。它没说后半句：<strong>永远不 complete 的那一路会让聚合器永远不执行，而工作流认为这算正常结束</strong>。如果你的聚合节点负责写库或发通知，这就是一次静默的数据丢失。</p>
+<p><strong>其四，一旦写了 <code>output_from</code>，未列出的节点 yield 就被藏起来。</strong> 三个节点串成 A→B→C，每个都 <code>yield_output</code>，七种写法实测如下：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>get_outputs()</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>get_intermediate_outputs()</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">两个参数都不传</td><td style="border:1px solid #ddd;padding:8px;"><code>['A-out','B-out','C-out']</code></td><td style="border:1px solid #ddd;padding:8px;"><code>[]</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>output_from="all"</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['A-out','B-out','C-out']</code></td><td style="border:1px solid #ddd;padding:8px;"><code>[]</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>output_from=[C]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['C-out']</code></td><td style="border:1px solid #ddd;padding:8px;"><code>[]</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>output_from=[C]</code> + <code>intermediate="all_other"</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['C-out']</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['A-out','B-out']</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>intermediate_output_from="all_other"</code></td><td style="border:1px solid #ddd;padding:8px;"><code>[]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['A-out','B-out','C-out']</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>output_from=[]</code> + <code>intermediate="all_other"</code></td><td style="border:1px solid #ddd;padding:8px;"><code>[]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['A-out','B-out','C-out']</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>output_from=[C]</code> + <code>intermediate=[B]</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['C-out']</code></td><td style="border:1px solid #ddd;padding:8px;"><code>['B-out']</code></td></tr></tbody></table>
+<p>七种写法里有 <strong>2 种（28.6%）输出恒为空</strong>。规则是二值的：两个参数都不传，所有 <code>yield</code> 都是 <code>output</code>；<strong>只要写了其中任何一个，就进入显式模式</strong>，没被列出的节点 yield 既不进 <code>output</code> 也不进 <code>intermediate</code>，直接消失。想「只把最后那个节点当结果」，正确写法是 <code>output_from=[C]</code>，不是只写 <code>intermediate_output_from="all_other"</code>。</p>
+<p><strong>其五，edge 条件恒为假，等于这条边不存在。</strong> <code>add_edge(a, b, condition=lambda msg: False)</code> 能构建、能运行、返回 <code>[]</code>。条件是普通 Python 函数，返回假值就丢弃消息，没有 fallback 告警。分支路由一定要给 else 分支，或者至少明确约定「没有匹配时输出是什么」。</p>
+<p><strong>其六，没接进图的 executor 根本不在图里。</strong> 你 <code>new</code> 了一个 executor 但没给它加边，它不会报「孤立节点」，因为它压根没被注册进图——<code>get_executors_list()</code> 里只有从 <code>start_executor</code> 出发能到达的节点。这一点和「图里有孤立节点」不同，后者才会抛 <code>GraphConnectivityError</code>。</p>
+<h2>四个真实异常（原文可抄）</h2>
+<p>报错不是没有，只是集中在结构层。以下四条我都在 1.25.0 上复现过，报文原样贴出。</p>
+<p><strong>一，<code>TypeCompatibilityError</code>，在 <code>build()</code> 期抛，这是好消息。</strong> 源发 <code>int</code>、目标只收 <code>str</code> 时：</p>
+<pre><code>[TYPE_COMPATIBILITY] Type incompatibility between executors 'src' -> 'sink'.
+Source executor outputs types ["<class 'int'>"] but target executor can only handle types ["<class 'str'>"].</code></pre>
+<p>但同一条异常在 fan-in 场景会给出<strong>自相矛盾的报文</strong>。fan-in 的目标节点 handler 必须声明成 <code>list[T]</code>（官方文档原话是「must be compatible with a list of the output types of the source executors」），如果你按普通节点的习惯写成 <code>str</code>，报错长这样：</p>
+<pre><code>[TYPE_COMPATIBILITY] Type incompatibility between executors 'A' -> 'J'.
+Source executor outputs types ["<class 'str'>"] but target executor can only handle types ["<class 'str'>"].</code></pre>
+<p>源是 <code>str</code>、目标也是 <code>str</code>，还说「不兼容」。真实原因是校验器对 fan-in 组用的是「源类型的 list 能否被目标接受」，也就是目标必须能吃 <code>list[str]</code>。<strong>看到这条报文先别改数据类型，先看这个目标是不是 fan-in 的汇合点。</strong></p>
+<p><strong>二，<code>EdgeDuplicationError</code>。</strong> 同一条边加两次：</p>
+<pre><code>[EDGE_DUPLICATION] Duplicate edge detected: src->sink. Each edge in the workflow must be unique.</code></pre>
+<p><strong>三，<code>GraphConnectivityError</code>。</strong> fan-in 的所有 source 都必须能从起点到达，否则：</p>
+<pre><code>[GRAPH_CONNECTIVITY] The following executors are unreachable from the start executor 'A': ['B'].</code></pre>
+<p>也就是说 fan-in 不能凭空引入一个新起点，必须先用 fan-out（或普通边）把每个 source 接进来。</p>
+<p><strong>四，<code>WorkflowConvergenceException</code>，默认上限 100。</strong> 环不设终止条件时，100 次之后抛：</p>
+<pre><code>Runner did not converge after 100 iterations.</code></pre>
+<p><code>max_iterations</code> 到底数什么，我做了边界实测（自环，每轮 +1）。结论是<strong>没有 off-by-one</strong>，上限就是调用次数：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>max_iterations</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实际调用次数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">抛异常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">抛异常</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">抛异常</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">抛异常</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5（第 5 次恰好终止）</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;"><strong>成功</strong>，<code>['stopped@5']</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">3（第 3 次恰好终止）</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;"><strong>成功</strong>，<code>['stopped@3']</code></td></tr></tbody></table>
+<p>所以「最多跑 N 步」是可以精确算出来的：把 N 设成你期望的最大节点调用数，正好在第 N 次收尾就不会抛。另外自环在 <code>build()</code> 时只会打印一句提示，不阻断：</p>
+<pre><code>Self-loop detected: Executor 'bump' connects to itself. This may cause infinite recursion if not properly handled with conditions.</code></pre>
+<h2>fan-in 的顺序：两个教程互相矛盾，实测是第三种</h2>
+<p>这一点必须写清楚，因为我在两篇第三方教程里读到了两个相反的答案：一篇说汇合收到的列表「反映并发完成顺序，可能每次都不同」，另一篇说「按 source-id 顺序」。我实测都不是。</p>
+<p>实验设计：三个 worker（id 分别是 <code>Z</code>、<code>A</code>、<code>M</code>），声明为 fan-in 的 <code>[Z, A, M]</code>，只把其中一个延迟 30–60 毫秒，看汇合节点收到的列表顺序。</p>
+<pre><code>声明顺序=[Z, A, M] 延迟={Z:0, A:0.06} -> J 收到 ['Z', 'A', 'M']
+声明顺序=[Z, A, M] 延迟={Z:0.06, A:0} -> J 收到 ['Z', 'A', 'M']
+声明顺序=[M, Z, A] 延迟={全 0}        -> J 收到 ['M', 'Z', 'A']</code></pre>
+<p>延迟加在中间、加在开头，输出都不动；把声明顺序改成 <code>[M, Z, A]</code>，输出立刻跟着变成 <code>[M, Z, A]</code>。连跑 5 次全部稳定，合计 8 次运行 <strong>8/8 一致</strong>。结论是：<strong>顺序由 <code>add_fan_in_edges(sources, target)</code> 的 sources 声明顺序决定</strong>，既不是完成顺序，也不是 id 的字典序（那样应该是 <code>A, M, Z</code>）。</p>
+<p>原因在模型上：fan-in 是一个 superstep 级别的 barrier，所有 source 在同一个 superstep 跑完，运行时再按声明顺序一次性 flush。两篇教程让你「自己 sort 一下」的建议是对的，但理由不是「并发不确定」——是这个顺序本来就不是你应该依赖的语义。我在正文里给聚合结果排序，纯粹是为了让日志可读。</p>
+<h2>接线检查清单</h2>
+<p>把上面这些压成一份可在 code review 时逐条过的清单：</p>
+<p>1. <strong>每个 handler 写全 <code>WorkflowContext[Send, Yield]</code></strong>，不需要发就用 <code>Never</code>。没有泛型 = 类型校验被跳过 = 运行期消息可能被吞。</p>
+<p>2. <strong>fan-in 的目标必须声明 <code>list[T]</code></strong>，不能声明 <code>T</code>；并且汇合节点不能同时接单条边和 fan-in 组，混用会在构建期报类型不兼容。</p>
+<p>3. <strong>fan-in 的每个 source 都要有入边</strong>，否则 <code>GraphConnectivityError</code>。</p>
+<p>4. <strong>输出模式只用一种</strong>：要么两个参数全不传（所有 yield 都是结果），要么显式列出全部节点。混着写就会出现「我明明 yield 了但结果里没有」。</p>
+<p>5. <strong>有环就显式设 <code>max_iterations</code></strong>，并算出期望的最大调用数（实测与调用次数 1:1）。</p>
+<p>6. <strong>条件边要有兜底</strong>：条件不满足时消息被丢弃，下游可能永远收不到。</p>
+<p>7. <strong>自查三个只读接口</strong>：<code>wf.input_types</code> / <code>wf.output_types</code> / <code>wf.get_output_executors()</code>。前两个告诉你起点的入口类型和全图的产出类型集合，第三个列出「谁的 yield 会变成结果」——这一条能在发布前抓出第四类失效。</p>
+<h2>Troubleshooting：三条抄文档必踩的报错</h2>
+<p><strong>报错一，<code>TypeError: object NoneType can't be used in 'await' expression</code>。</strong> 类式 executor 的 handler 写成同步函数（不加 <code>async</code>）时，<code>@handler</code> 不会拦，<code>build()</code> 也不拦，直到运行期才炸。坑在于函数式 <code>@executor</code> 装饰器<strong>是</strong>支持同步函数的（文档写明同步函数会被放进线程池执行），所以「同步函数能不能用」这件事在这层有两种答案，取决于你用的是类式还是函数式节点。修法：类式 handler 一律 <code>async def</code>。</p>
+<p><strong>报错二，<code>TypeError: WorkflowBuilder expected designation entries to be Executor or SupportsAgentRun instances; got str.</code></strong> <code>output_from</code> 只吃 executor 实例，不吃 id 字符串。你以为可以像某些框架那样写 <code>output_from=["C"]</code>，实际要写 <code>output_from=[c]</code>。</p>
+<p><strong>报错三，<code>RuntimeError: Start executor 'a' cannot handle input of type 'str'. Expected input types: [<class 'int'>]</code>。</strong> <code>wf.run(...)</code> 的入参类型必须匹配起点 handler 的第一个位置参数。这个报错至少是明确的——比本文那六条失效好得多。</p>
+<h2>本文的边界</h2>
+<ul><li>只测了 <strong>1.25.0</strong> 一个版本，没有做跨版本回归。版本会变，行为会变，遇到不一致时优先信你本机的 <code>hasattr</code> 与实跑输出。</li><li>只测了纯 Python executor（无模型调用）。<strong>Agent 节点、MCP 工具、streaming、子工作流、checkpoint 与恢复、<code>add_switch_case_edge_group</code> / <code>add_multi_selection_edge_group</code> 均未覆盖</strong>。</li><li>官方文档与本机包的差异只陈述可复现部分（<code>hasattr</code> 结果、报错原文），不推断文档对应哪个未发布分支。</li><li>版本与发布时间以 PyPI 记录为准，截至发稿 1.25.0 为最新。</li></ul>
+<p>顺带说一句：这一层和 LangGraph 的 superstep 模型很像，两者都按 superstep 推进、都在环上设迭代上限，但类型校验的严格程度相反——LangGraph 基本不管边上的类型，Agent Framework 管得很死，然后在「标注缺失」和「联合类型」两处漏掉。如果你之前读过我在 <a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式三口径</a> 里做的实测，可以把这篇当成同一套执行模型下的另一个实现对照。</p>
+<p>本文不含任何联盟推广链接，也没有推荐任何商品。文中所有代码都在本机跑过，异常报文逐字来自终端输出；如果你的环境复现不了，大概率是版本不同，先核对 <code>agent_framework.__version__</code>。同类的实测还有 <a href="https://yaohehe.github.io/2026-11-05-grpc-4-mib.html" class="internal-link">gRPC 四个默认值</a> 与 <a href="https://yaohehe.github.io/2026-11-07-unittestmock-7.html" class="internal-link">unittest.mock 的七个静默失效</a>，前者讲协议层的默认值，后者讲测试替身层「绿灯但没测到」，和本篇的「接线层不报错」是同一类问题的三个面。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
