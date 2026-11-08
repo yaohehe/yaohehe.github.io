@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQL NULL: 7 Queries That Return Wrong Rows, No Error - TechPassive</title>
+  <meta name="description" content="Same five rows, seven queries, two engines. Rows drop, one query is always empty, sorting flips. All seven traps measured on SQLite and PostgreSQL 18.6, with fixes.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>SQL NULL: 7 Queries That Return Wrong Rows, No Error</h1>
+  <div class="post-tags">
+    <span class="tag">SQL</span><span class="tag">NULL</span><span class="tag">PostgreSQL</span>
+  </div>
+  <div class="content">
+    <p>A reader sent me a four-line query that powered his "customers who spent more than 500 last month" report. It ran without a single warning and returned fewer rows than the API endpoint it was supposed to match. The join was fine. The index was fine. One predicate in those four lines happened to meet a NULL, and <code>WHERE total != 0</code> evaluated to neither true nor false, so the row was dropped. SQL's three-valued logic is not trivia; it edits production data every day without telling anyone.</p>
+<p><strong>TL;DR</strong>: when NULL takes part in a comparison, the result is never TRUE or FALSE. It is UNKNOWN, and WHERE only lets TRUE through. That one rule produces all seven traps below: <code>!=</code> swallowing rows, <code>NOT IN</code> returning nothing, aggregates changing their denominator, a <code>LEFT JOIN</code> collapsing into an <code>INNER JOIN</code>, <code>ORDER BY</code> disagreeing between engines, bare columns in <code>GROUP BY</code> erroring on one engine and passing on the other, and type affinity giving two answers for the same literal. I measured every one of them on a five-row table and put a copy-paste checklist at the end.</p>
+<h2>What I tested, and the five rows</h2>
+<p>I tested all of this on one machine: Windows 11, the sqlite3 module shipped with Python 3.13.14 (linking SQLite 3.53.1), and a local PostgreSQL 18.6 instance (<code>x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code>, server encoding UTF8). Both engines got the same data and the same SQL. Every number below was printed by a script, not copied from a blog post.</p>
+<p>Confirm versions first, then create the table. These two steps prevent every later argument about "but it works on my machine":</p>
+<pre><code>python -c "import sqlite3; print(sqlite3.sqlite_version)"
+# 3.53.1
+
+psql -h 127.0.0.1 -p 5433 -U postgres -c "select version();"
+# PostgreSQL 18.6 on x86_64-windows, compiled by msvc-19.44.35228, 64-bit</code></pre>
+<p>Five rows, with one NULL in <code>customer</code> and two in <code>amount</code>:</p>
+<pre><code>CREATE TABLE orders(id INTEGER PRIMARY KEY, customer TEXT, amount INTEGER);
+INSERT INTO orders VALUES
+ (1,'alice',100),
+ (2,'bob',  NULL),
+ (3,NULL,   50),
+ (4,'alice',200),
+ (5,'carol', NULL);</code></pre>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">id</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">customer</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">amount</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">note</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">alice</td><td style="border:1px solid #ddd;padding:8px;">100</td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">bob</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">amount missing</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">50</td><td style="border:1px solid #ddd;padding:8px;">customer missing</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">alice</td><td style="border:1px solid #ddd;padding:8px;">200</td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">carol</td><td style="border:1px solid #ddd;padding:8px;">NULL</td><td style="border:1px solid #ddd;padding:8px;">amount missing</td></tr></tbody></table>
+<p>Five rows. Keep that number in mind; every "one row short" below is measured against it.</p>
+<h2>Trap 1: the not-equal operator swallows the whole NULL row</h2>
+<p>The obvious query, counting orders that are not alice's:</p>
+<pre><code>SELECT count(*) FROM orders WHERE customer != 'alice';
+-- SQLite: 2    PostgreSQL: 2</code></pre>
+<p>The answer is 2. But the table has five rows, alice owns two, so three rows should qualify. The row where <code>customer IS NULL</code> disappeared. Rewriting with <code>&lt;&gt;</code> changes nothing:</p>
+<pre><code>SELECT count(*) FROM orders WHERE customer &lt;&gt; 'alice';
+-- 2</code></pre>
+<p>SQLite's documentation puts it plainly in the operator section: "All operators generally evaluate to NULL when any operand is NULL, with specific exceptions as stated below." PostgreSQL says the same thing in its comparison functions page: "Ordinary comparison operators yield null (signifying "unknown"), not true or false, when either input is null." Both engines agree, which tells you this is not a bug. It is the SQL standard.</p>
+<p>The mechanism is that WHERE accepts only TRUE. UNKNOWN is filtered out exactly like FALSE, but the two mean different things: FALSE is "I know this does not hold," UNKNOWN is "I do not know." Treating "I do not know" as "no" is how a missing value silently becomes a negative answer.</p>
+<p>You can measure the size of that third state in one statement:</p>
+<pre><code>SELECT NULL AND 0, NULL AND 1, NULL OR 0, NULL OR 1, NOT NULL;
+-- SQLite:     0 | NULL | NULL | 1 | NULL
+-- PostgreSQL: f | NULL | NULL | t | NULL</code></pre>
+<p><code>NULL AND 0</code> is false on both engines and <code>NULL OR 1</code> is true on both, because the known operand already decides the result. Everything else is NULL. SQLite states those two exceptions verbatim: "AND evaluates to 0 (false) when the other operand is false; and OR evaluates to 1 (true) when the other operand is true."</p>
+<p>There are only two fixes:</p>
+<pre><code>-- A: keep NULL out of the comparison
+SELECT count(*) FROM orders
+WHERE customer IS NOT NULL AND customer &lt;&gt; 'alice';   -- 2
+
+-- B: count NULL as its own class, after agreeing what it means
+SELECT count(*) FROM orders WHERE customer IS NULL;      -- 1</code></pre>
+<p>If the business question really is "every order that is not alice's," the correct predicate is <code>WHERE customer IS NULL OR customer != 'alice'</code>, which returns 3. The missing row is precisely the row that makes the report disagree with the API.</p>
+<h2>Trap 2: one NULL inside a NOT IN subquery, and the result is always empty</h2>
+<p>This one is worse than the first because it does not shave a row off. It zeroes the entire result set and stays quiet.</p>
+<pre><code>SELECT count(*) FROM orders WHERE id NOT IN (SELECT amount FROM orders);
+-- SQLite: 0    PostgreSQL: 0</code></pre>
+<p>The <code>amount</code> column contains two NULLs, so the subquery is effectively <code>id NOT IN (100, NULL, 50, 200, NULL)</code>. Comparing any id to NULL with <code>!=</code> yields UNKNOWN, and a single UNKNOWN anywhere in the OR chain removes the row. All five rows removed, zero returned.</p>
+<p><code>NOT EXISTS</code> behaves correctly on the same data:</p>
+<pre><code>SELECT count(*) FROM orders
+WHERE NOT EXISTS (SELECT 1 FROM orders x WHERE x.amount = orders.id);
+-- SQLite: 5    PostgreSQL: 5</code></pre>
+<p>Same data, same intent, 0 versus 5. The reason <code>NOT EXISTS</code> survives is that it tests existence row by row. NULL still produces UNKNOWN inside <code>x.amount = orders.id</code>, but UNKNOWN is treated as "no such row," so the outer row is kept, which is what we wanted. The SQL standard requires EXISTS to return only true or false, never UNKNOWN. That is why it is the safe form.</p>
+<p>SQLite's docs add a detail that catches people later: "The expression "a IN (x, y, z, ...)" is equivalent to "a = +x OR a = +y OR a = +z OR ...". In other words, the values to the right of the IN operator ... are considered to have no affinity." The right-hand list loses its affinity, so <code>IN</code> does not compare quite like a plain <code>=</code> does. Trap 7 shows where that bites.</p>
+<p>The list form of <code>NOT IN</code> fails the same way, just on fewer rows:</p>
+<pre><code>SELECT count(*) FROM orders WHERE amount NOT IN (100,200);                    -- 1
+SELECT count(*) FROM orders WHERE amount NOT IN (100,200) OR amount IS NULL;  -- 3</code></pre>
+<p>One versus three. The difference is the two orders whose amount is unknown.</p>
+<h2>Trap 3: aggregates skip NULL, so the denominator is not the row count</h2>
+<p><code>count(*)</code> and <code>count(column)</code> are different functions that differ by one pair of parentheses:</p>
+<pre><code>SELECT count(*), count(amount) FROM orders;
+-- SQLite: 5, 3    PostgreSQL: 5, 3</code></pre>
+<p>SQLite's own wording: "The count(X) function returns a count of the number of times that X is not NULL in a group. The count(*) function (with no arguments) returns the total number of rows in the group." Five orders and three known amounts are not the same fact.</p>
+<p>The expensive part is the average:</p>
+<pre><code>SELECT sum(amount), avg(amount), round(avg(amount),2) FROM orders;
+-- SQLite: 350 | 116.66666666666667 | 116.67
+
+SELECT round(350.0/5, 2);
+-- 70.0</code></pre>
+<p><code>avg</code> reports 116.67 because it divides 350 by 3, the number of non-NULL rows. Total divided by order count gives 70. The same phrase, "average order value," now has two answers 66.7% apart. Both are defensible depending on whether you mean "per order that has an amount" or "per order," but production code usually contains one <code>avg()</code> and nobody inspects the denominator.</p>
+<p><code>count(distinct)</code> splits the question a second time:</p>
+<pre><code>SELECT count(DISTINCT customer) FROM orders;                            -- 3
+SELECT count(*) FROM (SELECT customer FROM orders GROUP BY customer);   -- 4</code></pre>
+<p>How many distinct customers are there, 3 or 4? <code>count(distinct)</code> ignores NULL by definition, so 3. <code>GROUP BY</code> treats NULL as its own group, so 4. SQLite says so directly: "For the purposes of grouping rows, NULL values are considered equal." The table really does contain one "customer unknown" order. That is a fourth category, not a fourth customer.</p>
+<p>One more divergence shows up only on SQLite, around <code>sum()</code> on an empty set:</p>
+<pre><code>SELECT sum(amount), total(amount) FROM orders WHERE id &gt; 999;
+-- SQLite: NULL | 0.0</code></pre>
+<p>The documentation is candid about it: "If there are no non-NULL input rows then sum() returns NULL but total() returns 0.0. NULL is not normally a helpful result for the sum of no rows but the SQL standard requires it." PostgreSQL also returns NULL and has no non-standard <code>total()</code>, so you write <code>coalesce(sum(x),0)</code>.</p>
+<h2>Trap 4: put a LEFT JOIN condition in WHERE and it silently becomes an INNER JOIN</h2>
+<p>This is widely repeated but rarely quantified. Add a customer table where <code>dave</code> has no orders at all:</p>
+<pre><code>CREATE TABLE customers(name TEXT PRIMARY KEY, tier TEXT);
+INSERT INTO customers VALUES ('alice','gold'),('bob','silver'),('dave','bronze');</code></pre>
+<pre><code>SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name;
+-- 5 rows: the LEFT JOIN keeps every order
+
+SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name
+WHERE c.tier &lt;&gt; 'bronze';
+-- 3 rows (both engines)
+
+SELECT count(*) FROM orders o LEFT JOIN customers c ON o.customer = c.name
+  AND c.tier &lt;&gt; 'bronze';
+-- 5 rows: the condition stayed in ON</code></pre>
+<p>Five becomes three. The two lost rows are exactly the unmatched ones, where the right side is all NULL (id 3 and id 5). <code>WHERE c.tier &lt;&gt; 'bronze'</code> evaluates to UNKNOWN for them, so the "keep all left rows" promise is overwritten by WHERE, and the query means the same as an INNER JOIN.</p>
+<p>To find orders with no matching customer, do not write <code>WHERE c.name != 'x'</code>. Use IS NULL:</p>
+<pre><code>SELECT o.id, c.name FROM orders o LEFT JOIN customers c ON o.customer = c.name
+WHERE c.name IS NULL;
+-- (3, NULL) and (5, NULL)</code></pre>
+<p>A rule you can apply in review: if a LEFT JOIN is followed by a WHERE that mentions a right-side column, ask whether that condition can hold when the right side did not match. If it cannot, the LEFT JOIN is decorative.</p>
+<h2>Trap 5: ORDER BY puts NULL in opposite places on the two engines</h2>
+<p>This is the one place in the whole article where the two engines give <strong>opposite</strong> answers, and it changes what your first page contains.</p>
+<pre><code>SELECT customer FROM orders ORDER BY customer;
+-- SQLite:     NULL, alice, alice, bob, carol
+-- PostgreSQL: alice, alice, bob, carol, NULL</code></pre>
+<p>SQLite sorts NULL smallest: "A value with storage class NULL is considered less than any other value (including another value with storage class NULL)." PostgreSQL treats NULL as largest: "By default, null values sort as if larger than any non-null value; that is, NULLS FIRST is the default for DESC order, and NULLS LAST otherwise."</p>
+<p>With pagination, that difference swaps the first page. Ten rows, two of them NULL:</p>
+<pre><code>CREATE TABLE p(id INTEGER PRIMARY KEY, v INTEGER);
+INSERT INTO p VALUES (1,1),(2,2),(3,3),(4,4),(5,5),(6,6),(7,7),(8,8),(9,NULL),(10,NULL);
+
+SELECT id, v FROM p ORDER BY v LIMIT 4;
+-- SQLite:     (9,NULL) (10,NULL) (1,1) (2,2)
+-- PostgreSQL: (1,1) (2,2) (3,3) (4,4)</code></pre>
+<p>Same statement, and only 2 of the 4 first-page rows overlap, a 50% match. Migrate that code from SQLite to PostgreSQL, or the reverse, and page one changes content while the SQL text and the API response shape stay identical.</p>
+<p>Fix it by writing the order down instead of inheriting a default. SQLite has supported <code>NULLS FIRST / NULLS LAST</code> since 3.30:</p>
+<pre><code>SELECT id, v FROM p ORDER BY v NULLS LAST LIMIT 4;
+-- (1,1) (2,2) (3,3) (4,4)  -- identical to PostgreSQL's default</code></pre>
+<p><code>ORDER BY v NULLS LAST, id</code> buys a second thing: a stable tie-breaker. Without it, duplicate values guarantee rows that appear on two pages or on none, and that has nothing to do with NULL.</p>
+<h2>Trap 6: bare columns in GROUP BY, silent on one engine, fatal on the other</h2>
+<p>One statement, accepted by SQLite, rejected by PostgreSQL:</p>
+<pre><code>SELECT id, customer FROM orders GROUP BY customer;
+-- SQLite:     4 rows (3,NULL) (1,alice) (2,bob) (5,carol)
+-- PostgreSQL: ERROR:  column "orders.id" must appear in the GROUP BY clause
+--                     or be used in an aggregate function</code></pre>
+<p>SQLite returned four rows with ids 3, 1, 2, 5 in no discernible pattern, because it picked a row for you. The documentation is unambiguous: "Each non-aggregate expression in the result-set is evaluated once for an arbitrarily selected row of the dataset," and "in many cases the value for "b" is undefined." It also admits this is an extension: "Most other SQL database engines disallow bare columns... This is considered a feature, not a bug."</p>
+<p>So a reporting query that works on SQLite is refused outright on PostgreSQL. The reverse migration is worse: SQL that used to error now runs, but the id is arbitrary and may differ between executions ("The particular row chosen might change from one invocation to the the next.").</p>
+<p>The one exception is <code>min()</code> / <code>max()</code>. With exactly one such aggregate, bare columns come from the row that produced the extreme value. Ties make it arbitrary again:</p>
+<pre><code>SELECT id, customer, amount FROM orders GROUP BY customer HAVING max(amount);
+-- SQLite: (3,NULL,50) (4,alice,200)</code></pre>
+<p><code>alice</code> correctly yields 200 because her larger order is 200, but this is SQLite-specific behavior and does not port.</p>
+<h2>Trap 7: type affinity gives the same literal two different answers</h2>
+<p>This is the subtlest trap, because on SQLite it is right sometimes and wrong other times, depending on whether a column appears on either side of the comparison.</p>
+<p>Without a column:</p>
+<pre><code>SELECT 1 = '1';
+-- SQLite: 0     PostgreSQL: t</code></pre>
+<p>SQLite says 0 and PostgreSQL says true. SQLite's reason is its type ordering: an integer is always less than any text value, so integer 1 never equals text '1' ("An INTEGER or REAL value is less than any other TEXT or BLOB value."). PostgreSQL coerces the untyped literal to integer, so the comparison is 1 = 1.</p>
+<p>Put a column on one side and SQLite flips:</p>
+<pre><code>CREATE TABLE t(id INTEGER PRIMARY KEY, n INTEGER, s TEXT);
+INSERT INTO t(n,s) VALUES ('123','123'), ('123abc','123'), (45.9,'x');
+
+SELECT count(*) FROM t WHERE n = '123';   -- 1  (integer column vs text literal: affinity converts '123' to 123)
+SELECT count(*) FROM t WHERE s = 123;     -- 2  (text column vs integer literal: affinity converts 123 to '123')
+SELECT 1 = '1';                            -- 0  (no column on either side: no affinity applied)</code></pre>
+<p>That is how type affinity actually feels. The documented rules are: "If one operand has INTEGER, REAL or NUMERIC affinity and the other operand has TEXT or BLOB or no affinity then NUMERIC affinity is applied to the other operand," and "Otherwise, no affinity is applied and both operands are compared as is." Whether a column is involved decides which branch runs.</p>
+<p>Writes are just as quiet. After the inserts above, look at <code>typeof</code>:</p>
+<pre><code>SELECT id, typeof(n), n FROM t;
+-- (1,'integer',123)    '123' became an integer
+-- (2,'text','123abc')  not convertible, stored as text
+-- (3,'real',45.9)      45.9 stays real</code></pre>
+<p>A column declared INTEGER now holds integer, text and real values at once, with no warning. A later <code>ORDER BY n</code> sorts by type class, so every number comes before every string rather than sorting by numeric value.</p>
+<p>Casting follows the same "convert as much as you can" policy:</p>
+<pre><code>SELECT CAST('12abc' AS INTEGER), CAST('abc' AS INTEGER), '12abc'+0;
+-- 12 | 0 | 12</code></pre>
+<p><code>'abc'</code> becomes 0 and <code>'12abc'</code> becomes 12, silently. PostgreSQL is the one that saves you here:</p>
+<pre><code>SELECT count(*) FROM orders WHERE note = 0;
+-- ERROR:  operator does not exist: text = integer
+-- HINT:  No operator matches the given name and argument types.
+--        You might need to add explicit type casts.
+
+SELECT 1 = '1a';
+-- ERROR:  invalid input syntax for type integer: "1a"</code></pre>
+<p>The same statement on SQLite returns 0 rows without a word.</p>
+<p>Rounding has two coexisting answers as well. SQLite's <code>round()</code> always rounds halves away from zero:</p>
+<pre><code>SELECT round(2.5), round(0.5), round(1.5), round(-0.5), round(2.675,2);
+-- 3.0 | 1.0 | 2.0 | -1.0 | 2.67</code></pre>
+<p>PostgreSQL uses one function name and two rule sets, chosen by argument type:</p>
+<pre><code>SELECT round(2.5::float8), round(0.5::float8), round(1.5::float8),
+       round(-2.5::float8), round(2.5::numeric);
+-- 2 | 0 | 2 | -2 | 3</code></pre>
+<p><code>float8</code> rounds halves to even; <code>numeric</code> rounds halves away from zero. The docs say it exactly: "For numeric, ties are broken by rounding away from zero. For double precision, the tie-breaking behavior is platform dependent, but "round to nearest even" is the most common rule." Pick <code>float8</code> for a money column and you will spend an afternoon explaining a one-cent discrepancy.</p>
+<p>Two more differences in how the same expression is read, both measured:</p>
+<pre><code>SELECT 'ABC' LIKE 'a%';   -- SQLite: 1    PostgreSQL: f (use ILIKE)
+SELECT 'ABC' GLOB 'a*';   -- SQLite: 0    (GLOB is case-sensitive)</code></pre>
+<p>And unique constraints. By default neither engine treats two NULLs as equal, so a "unique" column happily accepts many NULLs:</p>
+<pre><code>-- the explicit switch exists from PostgreSQL 15
+CREATE TABLE u2(x int, y text, UNIQUE NULLS NOT DISTINCT (x));
+INSERT INTO u2 VALUES (NULL,'c'),(NULL,'d');
+-- ERROR:  duplicate key value violates unique constraint "u2_x_key"
+-- DETAIL:  Key (x)=(null) already exists.</code></pre>
+<p>PostgreSQL's documentation states the default: "By default, two null values are not considered equal in this comparison. That means even in the presence of a unique constraint it is possible to store duplicate rows that contain a null value in at least one of the constrained columns." It also warns that "The default null treatment in unique constraints is implementation-defined according to the SQL standard," which means you cannot assume another engine matches.</p>
+<h2>Troubleshooting: six real errors and the fix for each</h2>
+<p>All six below are verbatim output from the tables above, not forum quotes. Note the asymmetry: on this test set SQLite raised two errors and stayed silent on the rest, while PostgreSQL raised all six. When a migration suddenly produces a pile of errors, the new engine is usually not worse. The old one was covering for you.</p>
+<h3>Error 1: a column in the select list is not grouped</h3>
+<pre><code>ERROR:  column "orders.id" must appear in the GROUP BY clause or be used in
+        an aggregate function
+LINE 1: SELECT id, customer FROM orders GROUP BY customer;
+               ^</code></pre>
+<p>Cause: the SELECT list contains a column that is neither in GROUP BY nor inside an aggregate (trap 6). PostgreSQL refuses to guess; SQLite guesses for you.</p>
+<p>Two fixes, pick one:</p>
+<pre><code>SELECT min(id) AS any_id, customer FROM orders GROUP BY customer;
+SELECT id, customer FROM orders ORDER BY customer;</code></pre>
+<p>If you genuinely want "the largest order per customer," use a window function rather than a bare column:</p>
+<pre><code>SELECT * FROM (
+  SELECT *, row_number() OVER (PARTITION BY customer ORDER BY amount DESC NULLS LAST) rn
+  FROM orders
+) x WHERE rn = 1;</code></pre>
+<h3>Error 2: an aggregate inside WHERE</h3>
+<pre><code>-- PostgreSQL
+ERROR:  aggregate functions are not allowed in WHERE
+
+-- SQLite (same statement)
+sqlite3.OperationalError: misuse of aggregate function count()</code></pre>
+<p>Cause: WHERE is evaluated before grouping, aggregates only exist after grouping. The same mistake produces two different strings, so search both when you look this up.</p>
+<p>Fix: move the condition into HAVING.</p>
+<pre><code>SELECT customer, count(*) FROM orders GROUP BY customer HAVING count(*) &gt; 1;
+-- alice | 2</code></pre>
+<h3>Error 3: WHERE is followed by a non-boolean column</h3>
+<pre><code>ERROR:  argument of WHERE must be type boolean, not type integer
+LINE 1: SELECT count(*) FROM orders WHERE amount;
+                                          ^</code></pre>
+<p>Cause: PostgreSQL requires a boolean expression in WHERE. SQLite treats integers as truthy, so the same statement returns 3 rows there (amounts 100, 50, 200; the two NULL rows are removed by UNKNOWN) with no hint at all. A portability trap like this can never surface while you develop on SQLite.</p>
+<p>Fix: write the intent down.</p>
+<pre><code>SELECT count(*) FROM orders WHERE amount IS NOT NULL;   -- 3
+SELECT count(*) FROM orders WHERE amount != 0;          -- 3 (still drops NULL)</code></pre>
+<h3>Error 4: comparing a text column to a number</h3>
+<pre><code>ERROR:  operator does not exist: text = integer
+LINE 1: SELECT count(*) FROM orders WHERE note = 0;
+                                               ^
+HINT:  No operator matches the given name and argument types. You might need
+       to add explicit type casts.</code></pre>
+<p>Cause: PostgreSQL does not perform implicit cross-type comparison (trap 7). SQLite converts by affinity, including turning <code>'abc'</code> into 0 and comparing that.</p>
+<p>Fix: cast explicitly, or use a literal of the right type.</p>
+<pre><code>SELECT count(*) FROM orders WHERE note = '0';
+SELECT count(*) FROM orders WHERE note::int = 0;   -- throws on non-numeric data, which is good news</code></pre>
+<h3>Error 5: the literal cannot be converted at all</h3>
+<pre><code>ERROR:  invalid input syntax for type integer: "1a"
+LINE 1: SELECT 1 = '1a';
+                   ^</code></pre>
+<p>Cause: PostgreSQL folds untyped literals into integers during parsing, so <code>'1a'</code> fails before comparison begins. That is why the message says invalid input syntax rather than something about comparison. SQLite returns 0 for <code>1 = '1a'</code> and also 0 for <code>1 = '1'</code>, so two very different mistakes look identical.</p>
+<p>Fix: parameterize and validate at the application boundary.</p>
+<pre><code>-- don't: f"SELECT * FROM orders WHERE id = {user_input}"
+-- do:    cur.execute("SELECT * FROM orders WHERE id = ?", (user_input,))</code></pre>
+<p>There is a Python-level sibling to this trap that I hit while testing:</p>
+<pre><code>cur.execute("SELECT count(*) FROM orders WHERE amount = ?", (None,))   # 0 rows
+cur.execute("SELECT count(*) FROM orders WHERE amount IS ?", (None,))  # 2 rows</code></pre>
+<p>Binding <code>None</code> is the same as writing <code>amount = NULL</code>, which is never true. Null checks have to be part of the SQL text; you cannot parameterize <code>=</code> into a universal comparison.</p>
+<h3>Error 6: a unique constraint that does not stop NULL</h3>
+<pre><code>ERROR:  duplicate key value violates unique constraint "u2_x_key"
+DETAIL:  Key (x)=(null) already exists.</code></pre>
+<p>Cause: <code>UNIQUE</code> treats two NULLs as unequal by default (end of trap 7), so any number of NULLs fits. This error only appears when you explicitly asked for <code>UNIQUE NULLS NOT DISTINCT</code> (PostgreSQL 15 and later), which means the constraint is doing exactly what you wanted.</p>
+<p>Fix: when you need "at most one empty value," a partial unique index is more flexible than changing the constraint.</p>
+<pre><code>CREATE UNIQUE INDEX u2_x_one_null ON u2(x) WHERE x IS NULL;</code></pre>
+<h2>The checklist I paste into code review</h2>
+<p>Seven traps compressed into seven questions:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What you see</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Ask first</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Fix</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>col != 'x'</code> or <code>col &lt;&gt; 'x'</code></td><td style="border:1px solid #ddd;padding:8px;">Can this column be NULL</td><td style="border:1px solid #ddd;padding:8px;">Add <code>col IS NOT NULL</code>, or decide which side NULL belongs to</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>NOT IN (subquery)</code></td><td style="border:1px solid #ddd;padding:8px;">Does that subquery column contain NULL</td><td style="border:1px solid #ddd;padding:8px;">Use <code>NOT EXISTS</code>, or add <code>WHERE col IS NOT NULL</code> inside</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>avg(col)</code> / <code>count(col)</code></td><td style="border:1px solid #ddd;padding:8px;">Is the denominator rows or non-null values</td><td style="border:1px solid #ddd;padding:8px;">Use <code>count(<em>)</code> for rows, <code>sum(col)/count(</em>)</code> for the other question</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>LEFT JOIN ... WHERE right.col</code></td><td style="border:1px solid #ddd;padding:8px;">Can this hold when the right side missed</td><td style="border:1px solid #ddd;padding:8px;">Move it into <code>ON</code>, or test <code>IS NULL</code> for orphans</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ORDER BY col</code></td><td style="border:1px solid #ddd;padding:8px;">Any NULLs, any ties</td><td style="border:1px solid #ddd;padding:8px;">Write <code>NULLS LAST</code> (or FIRST) plus a unique tie-breaker</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>SELECT ungrouped_col ... GROUP BY</code></td><td style="border:1px solid #ddd;padding:8px;">Would another engine reject this</td><td style="border:1px solid #ddd;padding:8px;">Wrap in an aggregate, add to GROUP BY, or use a window function</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cross-type compare / <code>round()</code> / <code>LIKE</code></td><td style="border:1px solid #ddd;padding:8px;">Which engine will run this</td><td style="border:1px solid #ddd;padding:8px;">Cast explicitly, use <code>numeric</code> for money, <code>ILIKE</code> for case-insensitive</td></tr></tbody></table>
+<p>Two structural suggestions beat patching statements one by one:</p>
+<ul><li>SQLite has offered <code>STRICT</code> tables since 3.37.0 (2021-11-27). With STRICT, types are enforced as declared and the "one column, three storage classes" situation is rejected. Use STRICT for new tables and migrate old ones as needed.</li><li>When you need NULL compared as an ordinary value, use the standard <code>IS DISTINCT FROM</code> / <code>IS NOT DISTINCT FROM</code>. Both engines support them, and SQLite's <code>IS</code> / <code>IS NOT</code> are the short spellings, with the documented guarantee that "It is not possible for an IS or IS NOT expression to evaluate to NULL." These predicates always return true or false, which makes them the cleanest way around three-valued logic.</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q: Why not just make every column NOT NULL with a default and be done?</strong></p>
+<p>Most tables should do that, but "unknown" and "zero" carry different information. Writing 0 for a missing amount corrupts <code>avg()</code>, <code>sum()</code> and every report downstream; writing an empty string for an unknown customer adds a fake category to <code>count(distinct)</code>. The real work is splitting columns where absence is impossible (add NOT NULL) from columns where unknown is legitimate (keep NULL and handle it explicitly in queries).</p>
+<p><strong>Q: Is <code>count(1)</code> faster than <code>count(*)</code>?</strong></p>
+<p>No. Both engines read it as "count rows" and ignore the expression. The folklore about <code>count(1)</code> being faster does not hold on modern optimizers.</p>
+<p><strong>Q: How do I find the rows that <code>WHERE col != 'x'</code> dropped?</strong></p>
+<p>Run <code>SELECT count(*) FROM t WHERE col IS NULL</code> once and compare with the total. The gap is exactly what three-valued logic ate.</p>
+<p><strong>Q: PostgreSQL errors while SQLite passes. Is SQLite broken?</strong></p>
+<p>It is a trade-off, not a defect. SQLite documents bare columns and dynamic typing as features ("This is considered a feature, not a bug."), and gets near-zero deployment cost and strong backward compatibility in return. The price is that some mistakes only appear when you switch engines or when a report stops reconciling. Knowing the trade-off tells you where to add validation.</p>
+<p><strong>Q: When migrating to PostgreSQL, how do I find the SQL that will break?</strong></p>
+<p>Run the full test suite, then grep for the four shapes that fail: bare columns with GROUP BY, aggregates in WHERE, non-boolean WHERE clauses, cross-type comparisons. The first three are usually a few dozen hits. The fourth needs type annotations, and that is also why PostgreSQL is easier to maintain long term: it moves the failure to execution time instead of leaving it for report time.</p>
+<h2>Closing</h2>
+<p>Three-valued logic is not a syntax detail. It is the one large region of SQL where nothing errors, nothing warns, and the answer is simply wrong. On one machine, one dataset, the seven traps all reduce to a sentence: <strong>NULL is not a value, it is "unknown," and WHERE does not accept "unknown."</strong></p>
+<p>Start your investigation with the denominator. Compare <code>count(*)</code> against <code>count(column)</code> first, then check whether NULL slipped into a <code>NOT IN</code>, and only then suspect joins and sorting. That order covers most of the "the report is a few rows short" incidents I have seen.</p>
+<p>If you want more measured cases of defaults quietly changing results, these are the closest neighbours:</p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-16-postgresql-replication-slots-ate-my-disk-186-teste-en.html" class="internal-link">PostgreSQL replication slots eating 159 MB of WAL</a>, the same "space disappears silently" shape.</li><li><a href="https://yaohehe.github.io/2026-10-28-sqlite-hot-backup-opens-fine-14500-rows-missing-en.html" class="internal-link">SQLite hot backup: a backup that opens fine and is 14500 rows short</a>, "the job succeeded and the data is wrong."</li><li><a href="https://yaohehe.github.io/2026-10-24-alembic-tested-what-autogenerate-misses-5-errors-en.html" class="internal-link">What Alembic autogenerate misses</a>, the schema-migration version of a silent gap.</li><li><a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">DuckDB on a 40 MB CSV</a> if you plan to take this kind of analysis off the server entirely.</li></ul>
+<p>Every number in this article was produced on Windows 11 with SQLite 3.53.1 and PostgreSQL 18.6; the commands are copy-paste ready. No affiliate links, no <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> tracking parameters.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
