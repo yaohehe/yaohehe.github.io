@@ -771,6 +771,67 @@ def generate_sitemap(articles, today):
     return '\n'.join(lines) + '\n'
 
 
+def merge_sitemap(existing, articles, today):
+    """以仓库现有 sitemap 为基准增量合并，绝不缩水（2026-11-10）。
+
+    旧逻辑每次构建从零重建简版 sitemap，会把 gen-sitemap-full.py 推的全量版
+    降级成 loc+lastmod，且本地镜像不完整时存在漏页风险。
+    这里改为：保留现有全部 <url> 块（含 changefreq/priority）→ 补入扫描到但
+    图中缺失的文章 → 首页 <lastmod> 刷新为构建日 → 写回。
+    existing 为空或非法时回退到 generate_sitemap()。
+    """
+    import re as _re
+    if not existing or '<urlset' not in existing or '</urlset>' not in existing:
+        return generate_sitemap(articles, today)
+    blocks = _re.findall(r'<url>.*?</url>', existing, _re.S)
+    blocks = [b.strip() for b in blocks if b.strip()]
+    if not blocks:
+        return generate_sitemap(articles, today)
+
+    seen = set()
+    for b in blocks:
+        m = _re.search(r'<loc>(.*?)</loc>', b, _re.S)
+        if m:
+            seen.add(m.group(1).strip())
+
+    home = 'https://yaohehe.github.io/'
+    out = []
+    for b in blocks:
+        m = _re.search(r'<loc>(.*?)</loc>', b, _re.S)
+        if m and m.group(1).strip() == home:
+            if '<lastmod>' in b:
+                b = _re.sub(r'<lastmod>.*?</lastmod>',
+                            '<lastmod>' + today + '</lastmod>', b, count=1)
+            else:
+                b = b.replace('</url>', '    <lastmod>' + today + '</lastmod>\n  </url>')
+        out.append(b)
+
+    def add(url, lastmod):
+        # 首尾行不带缩进：blocks 每轮都会 .strip()，保证输出幂等
+        out.append('<url>\n'
+                   '    <loc>' + url + '</loc>\n'
+                   '    <lastmod>' + lastmod + '</lastmod>\n'
+                   '</url>')
+        seen.add(url)
+
+    added = 0
+    for date, filename, title in articles:
+        url = f'https://yaohehe.github.io/{os.path.basename(filename)}'
+        if url not in seen:
+            add(url, date)
+            added += 1
+    for static_page in ('about.html', 'privacy-policy.html'):
+        url = f'https://yaohehe.github.io/{static_page}'
+        if url not in seen and os.path.exists(os.path.join(BLOG_DIR, static_page)):
+            add(url, today)
+            added += 1
+
+    print(f'  sitemap 合并：保留 {len(blocks)} 条，补入 {added} 条，共 {len(out)} 条')
+    head = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n')
+    return head + '\n'.join(out) + '\n</urlset>\n'
+
+
 def main():
     today = datetime.now().strftime('%Y-%m-%d')
 
@@ -844,25 +905,27 @@ def main():
         f.write(index_en)
     print(f"✅ index-en.html 已更新（{len(en_articles)} 篇）")
 
-    # 生成 sitemap.xml
-    # 2026-10-30：加防缩水断言。Bing 报「站点地图缺少重要页面」的机制之一，
-    # 是某次生成的 sitemap 条目数骤减后覆盖了线上地图（本地镜像不完整时尤其危险）。
-    sitemap = generate_sitemap(all_articles, today)
+    # 生成 sitemap.xml（2026-11-10 改为「合并式」）
+    # 旧逻辑每次构建从零重建简版，覆盖 gen-sitemap-full.py 推的全量版
+    # （丢 changefreq/priority、与仓库源字节不一致、首页 lastmod 时区差 1 天）。
+    # 现在以仓库现有 sitemap 为基准保留全量条目，只补漏 + 刷新首页 lastmod。
     sitemap_path = os.path.join(BLOG_DIR, 'sitemap.xml')
-    old_count = 0
+    existing = ''
     if os.path.exists(sitemap_path):
         try:
             with open(sitemap_path, encoding='utf-8') as f:
-                old_count = f.read().count('<loc>')
+                existing = f.read()
         except Exception:
-            old_count = 0
-    new_count = sitemap.count('<loc>')
-    if new_count < old_count:
-        print(f"⚠️ 新 sitemap 条目 {new_count} < 现有 {old_count}，拒绝覆盖（防地图缩水）")
+            existing = ''
+    before_n = existing.count('<loc>')
+    sitemap = merge_sitemap(existing, all_articles, today)
+    after_n = sitemap.count('<loc>')
+    if after_n < before_n:
+        print(f"⚠️ 合并后 {after_n} < 原有 {before_n}，拒绝覆盖（防地图缩水）")
     else:
-        with open(sitemap_path, 'w', encoding='utf-8') as f:
+        with open(sitemap_path, 'w', encoding='utf-8', newline='\n') as f:
             f.write(sitemap)
-        print(f"✅ sitemap.xml 已更新（{len(all_articles)} 篇文章 + 固定页，共 {new_count} 条）")
+        print(f"✅ sitemap.xml 已合并刷新（{after_n} 条，首页 lastmod={today}）")
 
 
     print(f"📅 更新日期：{today}")
