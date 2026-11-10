@@ -73,7 +73,7 @@ def inject(fn, b, eol):
     return head + eol.join(x.encode('utf-8') for x in lines) + eol + b'</head>' + rest
 
 
-def clean_sitemap(path, noindex):
+def clean_sitemap(path, noindex, present=None):
     if not os.path.exists(path):
         return 0
     with open(path, 'r', encoding='utf-8') as f:
@@ -86,6 +86,9 @@ def clean_sitemap(path, noindex):
         m = re.search(r'<loc>(.*?)</loc>', blk)
         fn = m.group(1).rstrip('/').split('/')[-1] if m else ''
         if fn in noindex:
+            removed += 1
+        elif present is not None and fn.endswith('.html') and fn not in present:
+            # 悬空 loc：页面已从仓库删除但地图条目还在（会产出 404 抓取）
             removed += 1
         else:
             kept.append(blk)
@@ -121,8 +124,9 @@ def main(root='.'):
         with open(p, 'wb') as f:
             f.write(new)
         added += 1
-    r1 = clean_sitemap(os.path.join(root, 'sitemap.xml'), noindex)
-    r2 = clean_sitemap(os.path.join(root, 'sitemap-en.xml'), noindex)
+    present = {os.path.basename(p) for p in paths}
+    r1 = clean_sitemap(os.path.join(root, 'sitemap.xml'), noindex, present)
+    r2 = clean_sitemap(os.path.join(root, 'sitemap-en.xml'), noindex, present)
     print('P1-SEO: noindex=%d injected=%d sitemap_removed=%d/%d'
           % (len(noindex), added, r1, r2))
 
