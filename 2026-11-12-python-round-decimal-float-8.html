@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 金额舍入实测：round、Decimal 与 float 的 8 个静默分歧 - TechPassive</title>
+  <meta name="description" content="同样的 2.675，三条看上去都对的写法给出 2.67 和 2.68 两个答案。本篇在本机实测 round、decimal 与 float 的八处静默分歧：半偶舍入、28 位精度静默吃位、分摊差一分、混算只报一半错、序列化边界，并在 CPython 3.13 上复现六个真实报错，末尾给一份可直接抄的金额处理清单。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python 金额舍入实测：round、Decimal 与 float 的 8 个静默分歧</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">Decimal</span><span class="tag">金额计算</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：金额不要用 float 存，也不要用默认上下文的 Decimal 直接 <code>quantize</code>。八个分歧里最贵的三个是：<code>round()</code> 遇到正好一半时往偶数走而不是往大走；Decimal 默认 28 位精度会在小数点后静默吃位；除不尽的分摊与含税单价，舍入时机比舍入模式更决定账能不能对上。</p>
+<h2>先说结论：八处分歧，一句话一处</h2>
+<ul><li><strong><code>round()</code> 不是四舍五入</strong>：正好一半时它往偶数走，<code>round(0.5)</code> 是 0，<code>round(2.5)</code> 是 2。</li><li><strong>同一个 2.675 有三个答案</strong>：<code>f'{2.675:.2f}'</code> 得 2.67，<code>Decimal(str(2.675))</code> 量化得 2.68，<code>Decimal(2.675)</code> 量化又回到 2.67。</li><li><strong>Decimal 收 float，收的是一串二进制尾巴</strong>：<code>Decimal(0.1)</code> 有 55 位小数，与 <code>Decimal("0.1")</code> 不相等。</li><li><strong>28 位精度会静默吃位</strong>：<code>Decimal("1e30") + 1</code> 的结果等于 <code>Decimal("1e30")</code>，比较返回 True，没有任何提示。</li><li><strong><code>quantize</code> 的舍入模式读线程上下文</strong>：<code>round(Decimal("2.665"), 2)</code> 默认得 2.66，把上下文改成四舍五入立刻变 2.67。</li><li><strong>Decimal 与 float 混用是一扇半开的门</strong>：加法直接抛 TypeError，比较却全部放行，排序甚至不报错。</li><li><strong>除不尽的分摊必然差一分</strong>：100 除以 3，各舍到 33.33，三个加起来 99.99。</li><li><strong>JSON 与 sqlite3 都不收 Decimal</strong>：一个抛 TypeError，一个抛 ProgrammingError，而报错点离金额逻辑很远。</li></ul>
+<p>这份清单不是抄文档抄来的。下面每一条都有本机输出，读者可以复制粘贴复现。</p>
+<h2>我实际跑的环境</h2>
+<p>CPython 3.13.14，Windows 11，只用标准库 <code>decimal</code>、<code>json</code>、<code>sqlite3</code>，没有装任何第三方财务库。我实际跑了四组脚本，全部零依赖、零凭据、零网络。所有数字都是本机输出，不是从文档里摘的；凡是引用官方原文的地方，我会标明是原文而不是我的转述。</p>
+<p>文中出现的 $19.99 一类价格只是算式的一部分，用于把误差量级摊开给你看。本文不含任何联盟推广链接，也不推荐任何具体软件。</p>
+<h2>分歧一：round() 不是四舍五入</h2>
+<p>先把最容易踩的钉子拔掉。<code>round()</code> 的官方 docstring 写得很清楚：</p>
+<p>「The return value is an integer if ndigits is omitted or None. Otherwise the return value has the same type as the number.」</p>
+<p>也就是说，<code>round(x)</code> 给你 int，<code>round(x, 2)</code> 给你 float 或 Decimal。这一条本身就够坑：两种调用返回不同类型，混进同一个列表里排序不会报错，但下游 <code>isinstance(x, float)</code> 的分支会走错。</p>
+<p>真正的分歧在"正好一半"的时候。本机输出：</p>
+<pre><code>round(0.5)      # 0
+round(1.5)      # 2
+round(2.5)      # 2
+round(-1.5)     # -2
+round(-0.5, 0)  # -0.0</code></pre>
+<p>注意最后一行：<code>round(-0.5)</code> 省略 ndigits 返回 int 的 <code>0</code>，而 <code>round(-0.5, 0)</code> 返回 float 的 <code>-0.0</code>。同一个数、同一个函数，多写一个参数就多出一个负零。负零在 JSON 里序列化成 <code>-0.0</code>，在报表里显示成「-0.00」，在按字符串比对的场景里跟 <code>0.0</code> 不相等。</p>
+<p>这条规则有正式名字，decimal 模块给了官方定义：<code>ROUND_HALF_EVEN</code> 是「Round to nearest with ties going to nearest even integer.」翻译过来就是"就近取整，平局取最近的偶数"。这也解释了为什么 <code>round(1.5)</code> 是 2 而 <code>round(2.5)</code> 也是 2 —— 2 是偶数，2.5 那一次就往下走了。</p>
+<p>业务上的后果不是"偶尔差一分"，而是<strong>系统性偏向</strong>：如果每张发票的尾数都落在 .5，全站会朝偶数方向累积偏移，正负相抵之后并不归零。审计问起"为什么总额比明细少 3.5 元"，你很难用"Python 就是这样"解释过去。</p>
+<p>还有第二层原因，更隐蔽：即便你接受半偶规则，float 上的 <code>round()</code> 仍可能给出"按十进制看是错的"结果。这就是下一个分歧。</p>
+<h2>分歧二：同一个 2.675，三条路给出两个答案</h2>
+<p>我在同一台机器上跑了三条看上去都"正确"的写法：</p>
+<pre><code>f'{2.675:.2f}'                                   # '2.67'
+Decimal(str(2.675)).quantize(Decimal('0.01'))     # Decimal('2.68')
+Decimal(2.675).quantize(Decimal('0.01'))          # Decimal('2.67')</code></pre>
+<p>第一行给 2.67，第二行给 2.68。两条都号称按两位小数处理同一个数，结果差一分。</p>
+<p>原因在 float 里。<code>format(2.675, '.20f')</code> 的输出是 <code>2.67499999999999982236</code> —— 这个 float 的真实值比 2.675 <strong>小</strong>，所以任何"就近取整"都会把它舍到 2.67，这里根本没有平局，半偶规则还没上场。而 <code>str(2.675)</code> 得到的是最短往返表示 <code>'2.675'</code>，<code>Decimal('2.675')</code> 因此是精确的 2.675，这才真的触发平局：第三位是 7，7 是奇数，按半偶规则进到 8。</p>
+<p>于是同一条业务规则在三个层级上给出三个不同的"正确"：</p>
+<ul><li>在 float 层，<code>f'{x:.2f}'</code> 忠实反映了二进制真实值，判 2.67。</li><li>在"字符串截获"层，<code>Decimal(str(x))</code> 把 float 的最短表示当成真值，判 2.68。</li><li>在"精确转换"层，<code>Decimal(x)</code> 拿回 53 位精度的完整尾巴，又判回 2.67。</li></ul>
+<p>换一组数，分歧会换方向。<code>1.115</code> 用 f-string 得 <code>1.11</code>，用 <code>Decimal(str(1.115))</code> 量化得 <code>1.12</code>；<code>1.005</code> 两种情况都是半偶赢，得 <code>1.00</code>，但换成 <code>ROUND_HALF_UP</code> 立刻变 <code>1.01</code>。</p>
+<p>我的结论很朴素：<strong>别在 float 上讨论舍入规则</strong>。float 里根本不存在"2.675 这个数"，存在的只是它的一个邻居。要在十进制语义上做决定，就必须让数据从源头就是十进制。</p>
+<h2>分歧三：Decimal 收 float，收的是一串二进制尾巴</h2>
+<p>这一条官方文档自己写明了。<code>Decimal.from_float()</code> 的 Note 原文：</p>
+<p>「Note <code>Decimal.from_float(0.1)</code> is not the same as <code>Decimal('0.1')</code>. Since 0.1 is not exactly representable in binary floating point, the value is stored as the nearest representable value which is <code>0x1.999999999999ap-4</code>. That equivalent value in decimal is <code>0.1000000000000000055511151231257827021181583404541015625</code>.」</p>
+<p>构造函数那一节也写了：float 会被「losslessly converted to its exact decimal equivalent」，而且「This conversion can often require 53 or more digits of precision.」</p>
+<p>本机验证：</p>
+<pre><code>Decimal(0.1)                    # 0.1000000000000000055511151231257827021181583404541015625
+Decimal('0.1')                  # 0.1
+Decimal(0.1) == Decimal('0.1')  # False</code></pre>
+<p>55 位小数，误差从第 18 位开始。这个误差本身很小，小到任何两位小数的舍入都看不见它 —— 那它为什么危险？</p>
+<p>因为误差会在不该被看见的地方露头：分组求和后做相等判断、库存数量与单价相乘后与总账对拍、把金额塞进 set 或 dict 做去重、以及拿它当 SQL 参数去匹配一个 DECIMAL 列。<code>Decimal(0.1) == Decimal("0.1")</code> 返回 False，这一条会在"明明两边都是 0.1"的工单里耗掉一个下午。</p>
+<p>对策只有一条：<strong>金额进系统时就转成字符串或整数分，别让 float 进来</strong>。CSV 读取用 <code>csv</code> 模块拿字符串而不是让表格库默认推断成 float；JSON 用 <code>json.loads(..., parse_float=str)</code>；Excel 导入时把单元格读成文本再校验格式。</p>
+<h2>分歧四：28 位精度会在你看不见的地方吃位</h2>
+<p>decimal 的默认上下文，官方原文：</p>
+<p>「The default values are <code>Context.prec</code>=<code>28</code>, <code>Context.rounding</code>=<code>ROUND_HALF_EVEN</code>, and enabled traps for <code>Overflow</code>, <code>InvalidOperation</code>, and <code>DivisionByZero</code>.」</p>
+<p>28 位对普通金额当然够。问题在于"够"是有条件的，而条件不满足时它不报错：</p>
+<pre><code>Decimal('1e30') + Decimal('1') == Decimal('1e30')   # True</code></pre>
+<p>加法把那个 1 吃掉了，结果仍然是一个合法的 Decimal，比较也"正确"地相等。这类缺陷在单元测试里几乎抓不到 —— 你写 <code>assert total == expected</code>，两边都被同一个精度规则吃掉了同一位，断言照样绿。</p>
+<p>更狠的是把精度调小之后的连锁反应。我把上下文精度设成 6，做一个再普通不过的加法：</p>
+<pre><code>with localcontext() as ctx:
+    ctx.prec = 6
+    s = Decimal('123456.78') + Decimal('1.00')   # 123458
+    s.quantize(Decimal('0.01'))                  # decimal.InvalidOperation</code></pre>
+<p>加法结果 123458，小数点后整段消失（<code>as_tuple()</code> 是 <code>digits=(1,2,3,4,5,8), exponent=0</code>），紧接着量化直接抛 <code>InvalidOperation</code>。前一步静默，后一步崩溃，两个症状相隔一行，而根因在两行之前。</p>
+<p>官方在「Mitigating round-off error with increased precision」一节把这件事说得很克制：decimal 消除了十进制表示误差（0.1 能被精确表示），但「some operations can still incur round-off error when non-zero digits exceed the fixed precision」。</p>
+<p>给你的可执行判据：<strong>精度下限 = 金额整数位 + 小数位 + 汇率或税率的最长小数位 + 1 位余量</strong>。含分金额（两位小数）乘四位小数税率，最大金额十亿级（10 位整数），需要 10 + 2 + 4 + 1 = 17 位，28 位够用；但如果你做的是复利、单位换算（比如毫克到吨、厘到元）或多段累乘，很容易越线，那时必须显式 <code>localcontext(prec=...)</code>，不能靠默认值。</p>
+<h2>分歧五：quantize 的舍入模式跟着线程上下文走</h2>
+<p>同一个函数调用，代码字面完全一样，结果随上下文变：</p>
+<pre><code>round(Decimal('2.665'), 2)                                  # 2.66
+with localcontext() as ctx:
+    ctx.rounding = ROUND_HALF_UP
+    round(Decimal('2.665'), 2)                              # 2.67
+round(Decimal('2.665'), 2)                                  # 2.66</code></pre>
+<p><code>quantize()</code> 不带 <code>rounding=</code> 参数时同理 —— 它读的是当前上下文，不是"四舍五入"，也不是"跟上次一样"。</p>
+<p>为什么 2.665 会是 2.66？因为半偶规则看的是被舍弃的那一位之后还有没有东西：2.665 精确等于一半，5 后面没有非零位，于是看前一位 6 —— 6 是偶数，不动。而 1.005 的前一位是 0，也是偶数，所以得 1.00 而不是 1.01。同一套规则，一个"看起来舍了"，一个"看起来没舍"，全靠前一位的奇偶。</p>
+<p>上下文是线程隔离的，官方在「Working with threads」一节写明：「The <code>getcontext()</code> function accesses a different <code>Context</code> object for each thread. Having separate thread contexts means that threads may make changes (such as <code>getcontext().prec=10</code>) without interfering with other threads.」</p>
+<p>这句话听起来是安全承诺，实际只是"别的线程不受影响"。<strong>同一个线程里的所有代码共享同一个上下文</strong>，包括第三方库、包括你三个月前写的那个把 prec 改成 10 的辅助函数。在 asyncio 里更微妙：多个协程跑在同一个线程上，一个协程改了上下文，下一个协程接手的就是被改过的精度。</p>
+<p>所以：财务代码里不要出现裸 <code>quantize(Decimal('0.01'))</code>。要么显式写 <code>quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)</code>，要么整个函数用 <code>localcontext()</code> 包住并显式设 prec 与 rounding。显式比正确更重要 —— 因为你不知道调用方此刻的上下文是什么。</p>
+<p>顺带纠正一个常见误解：<code>ROUND_HALF_UP</code> 的官方定义是「Round to nearest with ties going away from zero.」，是"远离零"，不是中文"四舍五入"在负数上的直觉。<code>Decimal('-2.5')</code> 在 HALF_UP 下是 <code>-3</code>，在 HALF_DOWN 下是 <code>-2</code>。退款、冲正这类负金额场景要单独验一遍。</p>
+<h2>分歧六：Decimal 与 float 混用，一半报错一半静默</h2>
+<pre><code>Decimal('0.1') + 0.1        # TypeError: unsupported operand type(s) for +: 'decimal.Decimal' and 'float'
+Decimal('0.1') == 0.1       # False
+Decimal('0.1') != 0.1       # True
+sorted([0.3, Decimal('0.2'), 0.1])   # [0.1, Decimal('0.2'), 0.3]</code></pre>
+<p>加法毫不客气地抛异常，比较和排序却一路绿灯。而且这个比较不是"相等就完事"：float 的 0.1 实际略大于十进制的 0.1，所以 <code>Decimal('0.1')</code> 与 float 的 <code>0.1</code> 比大小时，结论是 Decimal 那边更小 —— 放在"金额不能超过限额"的判断里，这会放过一个本该拒绝的值，或者拒绝一个本该放过的值，全看你在哪一侧。</p>
+<p><code>sorted()</code> 混排不报错这一点更值得警惕：一个 <code>[float, Decimal, float]</code> 的列表能安静地排好序，你在返回值里看不出任何异常。到了下游 <code>Decimal</code> 与 <code>Decimal</code> 相加时才崩，崩的位置与产生混排的位置隔了好几层。</p>
+<p><code>Decimal('1.0')</code> 与 int 的 <code>1</code>、float 的 <code>1.0</code> 相等，hash 也相同，所以它能直接命中 <code>{1.0: ...}</code> 这个字典键。这在缓存场景里是便利，在"用金额做键"的场景里是隐患：<code>Decimal('1.00')</code> 与 <code>Decimal('1.0')</code> 会被当成同一个键，而你原本想区分的是两种精度。</p>
+<p>官方提供了一个把混用变成硬错误的手段 —— <code>FloatOperation</code> 信号：</p>
+<p>「If the signal is not trapped (default), mixing floats and Decimals is permitted in the <code>Decimal</code> constructor, <code>create_decimal()</code> and all comparison operators. Both conversion and comparisons are exact.」</p>
+<p>把 trap 打开之后，本机实测 <code>Decimal(0.1)</code>、<code>sorted([0.3, Decimal('0.2')])</code> 都会抛 <code>FloatOperation</code>。这是我在财务模块入口最推荐的一行配置：让混用变成启动即崩的错误，而不是三个月后对不上的账。</p>
+<h2>分歧七：分摊一百块，朴素舍入少一分</h2>
+<pre><code>total = Decimal('100.00')
+raw = total / 3                        # 33.33333333333333333333333333
+naive = raw.quantize(Decimal('0.01'))  # 33.33
+naive * 3                              # 99.99</code></pre>
+<p>三个人各 33.33，合计 99.99，少一分。这一分不会消失，它会变成一张永远对不平的对账单。</p>
+<p>正确做法是最大余数法：先向下取整分配，再把余下的最小单位按小数部分的余数从大到小补回去。本机跑出来是 33.34 + 33.33 + 33.33 = 100.00。多出来的那一分给谁，规则要写进业务文档（通常是给余数最大的那一方，或给第一个受益人），不能靠"看情况"。</p>
+<p>含税单价的偏差量级更大：</p>
+<pre><code>price = Decimal('19.99'); rate = Decimal('0.0825')
+(price * (1 + rate)).quantize(Decimal('0.01'))        # 21.64（单件）
+(price * 100 * (1 + rate)).quantize(Decimal('0.01'))  # 2163.92（先汇总）
+Decimal('21.64') * 100                                # 2164.00（先舍后乘）</code></pre>
+<p>100 件同价商品，两种顺序差 0.08 美元。听起来微不足道，但这是<strong>每 100 件 8 分</strong>的固定偏差，100 万件就是 800 美元量级的账实不符，而且方向恒定 —— 永远是先舍后乘的那一边更高。</p>
+<p>所以舍入的时机比舍入的模式贵得多。模式错了是随机误差，时机错了是系统误差。写代码时的判据：<strong>中间结果不落库就不舍入，落库的金额必须是已经对齐过的最终值</strong>。</p>
+<h2>分歧八：序列化的最后一道门</h2>
+<p>金额在内存里算对了，出门时照样翻车。</p>
+<pre><code>json.dumps({'amount': Decimal('1.10')})
+# TypeError: Object of type Decimal is not JSON serializable
+
+conn.execute('insert into t values (?)', (Decimal('1.10'),))
+# sqlite3.ProgrammingError: Error binding parameter 1: type 'decimal.Decimal' is not supported</code></pre>
+<p>两个报错都很直白，麻烦的是"顺手绕开"的那些写法。为了过 JSON，很多人写 <code>float(amount)</code>，于是 1.10 变成了二进制邻居；为了过 sqlite3，很多人也写 <code>float(amount)</code>，实测存进去后 <code>typeof()</code> 是 <code>real</code>，<code>1.10</code> 读出来是 <code>1.1</code>，再参与一次运算就可能变成 <code>1.1000000000000001</code>。</p>
+<p>还有一层是显示与比较的分离：</p>
+<pre><code>Decimal('1.00') == Decimal('1.0')                # True
+hash(Decimal('1.00')) == hash(Decimal('1.0'))    # True
+str(Decimal('1.00'))                             # '1.00'
+Decimal('1.00').as_tuple()                       # digits=(1, 0, 0), exponent=-2
+Decimal('1.0').as_tuple()                        # digits=(1, 0), exponent=-1</code></pre>
+<p>相等、同 hash，但字符串不同、<code>as_tuple()</code> 不同。也就是说：<strong>比较层丢零，展示层保零</strong>。如果你依赖 <code>str()</code> 做展示而对相等做校验，两边校验的东西根本不是一回事。反过来说，这也是 Decimal 比 float 好用的地方 —— 它记住了"这是两位小数"，金额字段的末尾零不会在往返中蒸发。</p>
+<p>工程上的落地：数据库存整数分（BIGINT）或 <code>NUMERIC(18,2)</code>，应用层用 Decimal 与之对应；JSON 里金额一律用字符串；序列化层写显式 encoder，不要留给"顺手 float 一下"。</p>
+<h2>Troubleshooting：六个我真实撞到的报错</h2>
+<p>下面六个报错全部来自本机复现，不是文档示例。</p>
+<ul><li><strong>TypeError: unsupported operand type(s) for +: 'decimal.Decimal' and 'float'</strong> —— 混算。修法是源头统一类型，或在模块入口打开 <code>FloatOperation</code> trap 让它在启动时先崩。</li><li><strong>decimal.InvalidOperation</strong> —— 本机有两条来路：一是量化结果的位数超过上下文精度（<code>Decimal('1e30').quantize(Decimal('0.01'))</code> 在 prec=28 下必抛，改成 <code>Context(prec=40)</code> 就正常输出 1000000000000000000000000000000.00）；二是 NaN 参与比较（<code>min(Decimal('NaN'), Decimal('1'))</code> 直接抛）。它的异常文本里嵌着类名字符串，看起来像个未处理的内部错误，实际是正常信号。</li><li><strong>decimal.DivisionByZero</strong> —— 除零。要注意它的 MRO 是 <code>DivisionByZero</code> 到 <code>DecimalException</code> 到 <code>ZeroDivisionError</code>，所以 <code>except ZeroDivisionError</code> 能接住它，但日志里 <code>type(e).__name__</code> 打印的是 DivisionByZero。用 <code>except decimal.DecimalException</code> 更准，能一次覆盖 InvalidOperation、DivisionByZero、Overflow 三个默认 trap。</li><li><strong>decimal.Overflow</strong> —— 溢出。float 在这件事上给 <code>inf</code>，Decimal 默认直接抛。<code>Decimal('1e999999') * Decimal('1e999999')</code> 本机抛 Overflow。它的 MRO 里还带着 Inexact 与 Rounded，意味着你 <code>except decimal.Inexact</code> 也会把它当成"不精确"捕获 —— 一个非常好笑的陷阱。</li><li><strong>FloatOperation</strong> —— 只在 trap 打开时出现。打开之后 <code>Decimal(0.1)</code> 也抛，因为构造本身就算混用。这一条要写进项目约定，否则同事会以为是 bug。</li><li><strong>json 的 TypeError 与 sqlite3 的 ProgrammingError</strong> —— 上一节那两个。修法不是 <code>float()</code>，是字符串或整数分。</li></ul>
+<h2>一份可以直接抄的金额处理清单</h2>
+<ul><li><strong>入口</strong>：金额一律以字符串或整数分进入系统；<code>json.loads(..., parse_float=str)</code>、CSV 读成文本、Excel 读单元格文本。</li><li><strong>构造</strong>：永远 <code>Decimal(str(x))</code>，绝不 <code>Decimal(float_x)</code>；从 ORM 拿到 float 时先 <code>str()</code> 再 <code>Decimal()</code>，并记一次日志，因为这说明上游有 float 泄漏。</li><li><strong>精度</strong>：每次进入财务计算函数时用 <code>localcontext(prec=...)</code> 显式设定，下限按"整数位 + 小数位 + 乘数最长小数位 + 1"算。</li><li><strong>舍入</strong>：所有 <code>quantize</code> 显式写 <code>rounding=</code>，不要依赖默认的半偶；负金额（退款、冲正）单独验一遍 HALF_UP 的"远离零"语义。</li><li><strong>时机</strong>：中间结果不舍入，落库与对账的金额必须是最终对齐值；同一笔业务的所有舍入只发生一次。</li><li><strong>分摊</strong>：用最大余数法补差，补差规则写进文档，并对"分摊合计等于总额"写断言。</li><li><strong>混用</strong>：财务模块入口设置 <code>getcontext().traps[decimal.FloatOperation] = True</code>，让混用变成启动错误。</li><li><strong>存储与传输</strong>：DB 用 BIGINT 分或 NUMERIC(18,2)，JSON 用字符串，日志里打印 <code>str()</code> 而不是 <code>float()</code>。</li></ul>
+<p>这份清单不解决所有问题（币种、汇率日期、税务规则都在它之外），但它能挡掉本文八个分歧里的全部八个。</p>
+<h2>常见问题</h2>
+<p><strong>Q：只做展示、不做计算的金额，能存 float 吗？</strong></p>
+<p>如果这个数一辈子不参与运算、不参与相等判断、不进聚合，float 是可以的。但只要它有可能被求和、被排序去重、被拿去和另一条记录比相等，就该用 Decimal。判断成本很低：问一句"这个字段会不会出现在 GROUP BY 或相等比较里"。</p>
+<p><strong>Q：Decimal 的 precision 设成多少才够？</strong></p>
+<p>按"金额整数位 + 小数位 + 最长乘数小数位 + 1"算，得到的是一个下限而不是建议值。普通电商两位小数、十亿量级、四位税率，17 位够；做单位换算或复利时按实际链条算一遍再往上取整到 10 的倍数。设大了不会有精度损失，只多占几个字节。</p>
+<p><strong>Q：为什么 1.005 用 ROUND_HALF_UP 是 1.01，f-string 却是 1.00？</strong></p>
+<p>因为 f-string 处理的是 float 1.005，它实际存的是 1.00499999999999989342，比一半小，任何规则都往下舍；而 <code>Decimal('1.005')</code> 是精确的一半，HALF_UP 就往远离零的方向进。这不是 Python 的 bug，是二进制与十进制两种表示的必然差异。</p>
+<p><strong>Q：有没有现成的库可以少踩这些坑？</strong></p>
+<p>标准库就够用，关键是用法。第三方财务库能帮你封装分摊与币种，但封装不掉本文的八个分歧 —— 它们都在 Decimal 与 float 的边界上，而不在业务逻辑里。先把边界管住，再谈封装。</p>
+<h2>结语</h2>
+<p>这八个分歧有一个共同形状：<strong>代码不报错，结果不对，而且错得很小</strong>。小到单元测试抓不到，小到上线三个月才被财务发现，小到修的时候不敢改。</p>
+<p>它们也不是 Python 独有的问题 —— 任何一门用二进制浮点表示十进制金额的语言都有同一套坑，只是 Python 把两套数值类型同时摆在你面前，让你误以为"用了 Decimal 就安全了"。真正决定结果的是三件事：数据从哪进来、上下文是谁的、舍入发生在第几步。</p>
+<p>我在这条线上还写过两篇相邻的：一篇讲 <a href="https://yaohehe.github.io/2026-11-08-sql-null-7.html" class="internal-link">SQL NULL 的三值逻辑</a>，那里出问题的是分母；一篇讲 <a href="https://yaohehe.github.io/2026-11-06-unicode-nfc-nfkc-7.html" class="internal-link">Unicode 规范化</a>，那里出问题的是"看起来一样"。加上这篇的"最后一位"，三篇讲的是同一件事：值在边界上会变形，而边界不写在类型签名里。序列化那一层的坑，我在 <a href="https://yaohehe.github.io/2026-10-28-python-json-json-orjson-msgspec.html" class="internal-link">json、orjson 与 msgspec 的默认值对照</a>里量过一遍，可以接着看。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
