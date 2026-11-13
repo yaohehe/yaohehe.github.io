@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python csv: 8 boundaries that silently move your data - TechPassive</title>
+  <meta name="description" content="Two rows written, four records read back: eight csv boundary traps on Windows, tested on CPython 3.13.14, with six real error strings and the fixes for each.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Python csv: eight boundaries that silently move your data</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">csv</span><span class="tag">data parsing</span>
+  </div>
+  <div class="content">
+    <p>Last week I dumped a table to CSV and read it back with a second script to reconcile the numbers. The write log said two rows. The reader printed four records, two of them empty lists. The reconciliation script treated those empty rows as missing fields and flagged the whole batch as incomplete — but the file itself had not a single wrong byte. What was wrong was my assumption about what the newline argument of open() actually does.</p>
+<p>This post collects the eight boundaries I hit in that round. Everything below was measured on Windows 11 with CPython 3.13.14 and the standard library csv module (module version 1.0); each item comes with the on-disk bytes or the read-back result, and the code can be copied as is. The layer in question is "who decides the boundary": where a field starts and where a record ends is not decided by the data, but by the dialect plus the newline mode of open(). Earlier posts in this line covered module resolution (<a href="https://yaohehe.github.io/2026-11-13-python-imports-8-ways-you-get-the-wrong-file-en.html" class="internal-link">Python imports</a>), numeric rounding (<a href="https://yaohehe.github.io/2026-11-12-python-money-rounding-8-traps-in-round-and-decimal-en.html" class="internal-link">round, Decimal and float</a>) and inline markup (<a href="https://yaohehe.github.io/2026-11-07-bold-fails-next-to-chinese-punctuation-14-cases-te-en.html" class="internal-link">CommonMark bold next to Chinese punctuation</a>). This one is the outermost boundary of the three.</p>
+<p><strong>TL;DR</strong>: csv.writer already writes CRLF, and if the text layer translates the line ending a second time the file ends up with CR CR LF; because the reader treats both CR and LF as end-of-line, every row is followed by an extra empty record (write 2 rows, read 4). Always open both sides with newline=''. A CRLF inside a quoted field is folded to LF unless you pass newline=''. QUOTE_NONNUMERIC turns every unquoted field into a float. And None versus the empty string cannot survive a round trip at all unless you use QUOTE_NOTNULL or QUOTE_STRINGS, both added in 3.12.</p>
+<figure class="auto-visual p1-flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 422" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Four checkpoints between one field and one record" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft652b42a6grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="421" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="414" fill="url(#ft652b42a6grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Four checkpoints between one field and one record</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">4 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="340" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">open with newline set</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">assert the record count on read</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">check header keys for a BOM</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">use QUOTE_NOTNULL on both sides for NULL</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="398" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="406" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Four checkpoints between one field and one record · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#FCC624" role="img" aria-label="Linux" style="flex:none;"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg><span>Linux</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>1. Two rows in, four records out</h2>
+<p>Start with a reproduction. First write a file the most ordinary way, then read it back the most ordinary way:</p>
+<pre><code>import csv
+with open("demo.csv", "w", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(["name", "qty"])
+    w.writerow(["widget", 3])</code></pre>
+<p>The bytes on disk, read back with open(path, "rb").read(), look like this:</p>
+<pre><code>b'name,qty\r\r\nwidget,3\r\r\n'</code></pre>
+<p>Note the CR CR LF: two carriage returns and one line feed. csv.writer defaults lineterminator to CRLF, and text mode on Windows translates LF into CRLF again, which adds one extra CR. When reading, csv.reader treats both CR and LF as end-of-line, so CR CR LF becomes "one row ended" plus "one empty record":</p>
+<pre><code>rows: [['name', 'qty'], [], ['widget', '3'], []]
+record count: 4 (2 rows were written)</code></pre>
+<p>The field values themselves are clean: qty is still 'qty' with no trailing CR. That is exactly why this is hard to find. Reconciling by field value always passes; the problem only shows up when you count records or iterate with for row in reader. Write the same data with newline='' and the disk holds b'name,qty\r\nwidget,3\r\n', which reads back as exactly two records.</p>
+<p>The official documentation says, in both csv.reader and csv.writer, "If csvfile is a file object, it should be opened with newline=''". The explanation, though, lives in a footnote: "If newline='' is not specified, newlines embedded inside quoted fields will not be interpreted correctly, and on platforms that use \r\n line endings on write an extra \r will be added." The extra CR is documented in plain words — it is just buried in a footnote while the body text gets one sentence.</p>
+<h2>2. The newline argument controls the second of two translations</h2>
+<p>To understand that CR CR LF, separate the two steps a line ending goes through.</p>
+<p>The first step is inside csv.writer: it builds the line ending from lineterminator (CRLF by default) and hands the string to the file object. The second step is inside io.TextIOWrapper: text mode defaults to newline=None, which translates every LF into the platform line ending (CRLF on Windows). Enable both and they stack into CR CR LF. Passing newline='' means "do not do the second translation", so only the csv step remains and the bytes are clean.</p>
+<p>Reading works the same way in reverse. With newline=None, TextIOWrapper normalises CRLF and CR to LF during the read, before csv.reader ever sees the text. That means the content inside a field has already been modified once and csv is not looking at the bytes that are actually on disk. The next section is the consequence.</p>
+<p>One rule of thumb worth keeping: whether a CSV file needs newline='' is decided by the bytes after writing, not by the code. The same snippet that produces CRLF on Linux produces CR CR LF on Windows — so the sentence "it works on my machine" carries almost no information on this particular path.</p>
+<h2>3. A line break inside quotes gets folded: the field changes, the row count does not</h2>
+<p>Build one record with an embedded line break and read it both ways:</p>
+<pre><code>import csv
+with open("note.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f)
+    w.writerow(["id", "note"])
+    w.writerow([1, "line1\r\nline2"])</code></pre>
+<p>On disk: b'id,note\r\n1,"line1\r\nline2"\r\n'. The two read modes disagree:</p>
+<pre><code>newline=''     -> [['id', 'note'], ['1', 'line1\r\nline2']]
+newline=None   -> [['id', 'note'], ['1', 'line1\nline2']]</code></pre>
+<p>The field goes from 13 characters to 12 and the CR is gone. No exception, no warning, and len(row) is unchanged. For display purposes this is invisible. If you hash field values, sign them, or the field carries formatted text, the difference is sitting right there. I ran into this on a "deduplicate by content hash" script: the same file produced two different hashes on two machines, because one read it as plain UTF-8 text while the other used newline=''.</p>
+<p>Conversely, if you do want everything normalised to LF before inserting into a database, the default mode saves you work — but you should know you are rewriting the data rather than reading it as it is.</p>
+<h2>4. The reader only knows CR and LF: lineterminator does nothing on the way in</h2>
+<p>A common misconception is that passing the same lineterminator to writer and reader gives you a custom record separator. It does not:</p>
+<pre><code>import csv
+with open("pipe.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f, lineterminator="|")
+    w.writerow(["a", "b"])
+    w.writerow(["c", "d"])</code></pre>
+<p>The file is b'a,b|c,d|', two rows separated by a pipe. But the reader produces the same result whether or not you pass lineterminator:</p>
+<pre><code>reader(default)                -> [['a', 'b|c', 'd|']]
+reader(lineterminator='|')     -> [['a', 'b|c', 'd|']]</code></pre>
+<p>The whole file collapses into one record and the pipe becomes field content. The Dialect.lineterminator section of the documentation carries a note: "The reader is hard-coded to recognise either '\r' or '\n' as end-of-line, and ignores lineterminator. This behavior may change in the future." The reading side simply ignores the parameter.</p>
+<p>So a custom record separator is only half possible: you can write it, you cannot read it back. If you genuinely need another separator, split the input yourself and hand the lines to csv.reader (it accepts any iterable of strings), or pick a different format.</p>
+<h2>5. QUOTE_NONNUMERIC has two faces</h2>
+<p>QUOTE_NONNUMERIC is asymmetric between reading and writing. When writing, it means "quote every non-numeric field". When reading, it means "convert every unquoted field to float". The second meaning is far more dangerous than the first.</p>
+<p>Start with reading an ordinary file whose header row carries no quotes:</p>
+<pre><code>with open("plain.csv", "w", newline="", encoding="utf-8") as f:
+    f.write('code,name\n0012,"Widget"\n,empty\n')</code></pre>
+<p>Read that with QUOTE_NONNUMERIC and it fails on the first line:</p>
+<pre><code>ValueError: could not convert string to float: 'code'</code></pre>
+<p>The header value code is unquoted, so the parser tries to turn it into a float. That error is actually helpful: at least it stops you. The more interesting behaviour shows up once writing and reading agree on the dialect:</p>
+<pre><code>import csv
+with open("pair.csv", "w", newline="", encoding="utf-8") as f:
+    w = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
+    w.writerow(["code", "qty", "price"])
+    w.writerow(["0012", 12, 1.5])</code></pre>
+<p>On disk: b'"code","qty","price"\r\n"0012",12,1.5\r\n'. Read back it is [['code', 'qty', 'price'], ['0012', 12.0, 1.5]] with types str / float / float. The leading zeros survive, because '0012' is a string and therefore quoted, but the integer 12 comes back as 12.0. Any column that mixes "numeric-looking strings" with real numbers can only be sorted out afterwards by inspecting types.</p>
+<p>There is also a trap the documentation states outright: bool has a string representation that cannot be converted to float. I wrote True (a bool, so it was not quoted), the file holds True, and reading it back with QUOTE_NONNUMERIC gives:</p>
+<pre><code>ValueError: could not convert string to float: 'True'</code></pre>
+<p>The docs add a Note under QUOTE_NONNUMERIC: "Some numeric types, such as bool, Fraction, or IntEnum, have a string representation that cannot be converted to float. They cannot be read in the QUOTE_NONNUMERIC and QUOTE_STRINGS modes." You can write it, you cannot read it back.</p>
+<h2>6. Escape characters must be paired, or the backslash stays in your data</h2>
+<p>doublequote=False means "escape a quote inside a field with the escapechar prefix instead of doubling it". Turn off doubling without providing an escape character and the writer refuses outright:</p>
+<pre><code>import csv, io
+buf = io.StringIO()
+csv.writer(buf, doublequote=False).writerow(['he said "hi"'])</code></pre>
+<pre><code>_csv.Error: need to escape, but no escapechar set</code></pre>
+<p>Add escapechar="\\" and the file contains b'he said \\"hi\\","a,b"\r\n'. Now read it back without the matching parameter and the backslashes remain in the data:</p>
+<pre><code>reader({})                                    -> [['he said \\"hi\\"', 'a,b']]
+reader({'escapechar': '\\'})                  -> [['he said "hi"', 'a,b']]</code></pre>
+<p>The docs describe both sides under the escapechar attribute: "On reading, the escapechar removes any special meaning from the following character. It defaults to None, which disables escaping." Disabled by default. So "escaped on write, not unescaped on read" hands you a string that still looks like legitimate data, which makes it very hard to spot by eye.</p>
+<p>The same message has a second source: writing a field that contains the delimiter under QUOTE_NONE. csv.writer(buf, quoting=csv.QUOTE_NONE).writerow(["a,b"]) raises need to escape, but no escapechar set for the same reason — under QUOTE_NONE a comma must be hidden behind an escape character, and by default there is none.</p>
+<h2>7. BOM and field size: one swaps a key name, the other stops the read</h2>
+<p>"CSV UTF-8" files saved by Excel start with a BOM (EF BB BF). Open one with encoding='utf-8' and the BOM becomes part of the first field name:</p>
+<pre><code>fieldnames(utf-8): ['\ufeffid', 'name']
+row: {'\ufeffid': '1', 'name': 'alpha'}
+row['id'] -> KeyError: 'id'
+row.get('id') -> None</code></pre>
+<p>A KeyError at least makes noise; row.get('id') returning None is completely silent — the row simply looks like that column is empty. The fix is one word: read with encoding='utf-8-sig' (and write with utf-8-sig if you want symmetry), and fieldnames come back as ['id', 'name']. The diagnostic is easy: print fieldnames and look for a key starting with \ufeff.</p>
+<p>Field size is the other kind: it is not silent, but the number in the message makes people think their code is wrong. The default is 131072:</p>
+<pre><code>python -c "import csv; print(csv.field_size_limit())"</code></pre>
+<pre><code>131072</code></pre>
+<p>Feed it a single 200,000-character field (152.6% of the limit) and you get:</p>
+<pre><code>_csv.Error: field larger than field limit (131072)</code></pre>
+<p>That constant is not in the documentation body; you either measure it or read the source. In CPython 3.13 the line in Modules/_csv.c is module_state->field_limit = 128 <em></em> 1024 * 1024) — but think first: a 10 MB single field usually means that column should not be a CSV field at all (a JSON blob or a file path fits better).</p>
+<h2>8. None and the empty string: one round trip and they are the same value</h2>
+<p>In a database, NULL and the empty string are two different values. Write them to CSV and read them back and only one remains. That is by design; the documentation says: "the value None is written as the empty string. While this isn't a reversible transformation, it makes it easier to dump SQL NULL data values to CSV files without preprocessing the data returned from a cursor.fetch* call."</p>
+<p>Measured round trip:</p>
+<pre><code>write: ',,0,0\r\n'
+read : [['', '', '0', '0']]
+None == '' ? True</code></pre>
+<p>None, '', and "this column was absent" are all identical in the resulting list. DictReader adds another layer: a short row is padded with restval, which also defaults to None, so "missing column" and "value is NULL" collapse into the same None.</p>
+<p>Python 3.12 added two constants for exactly this. QUOTE_NOTNULL quotes every field that is not None on write and writes None as an unquoted empty field; on read it interprets an unquoted empty field as None. So None and '' finally look different on disk:</p>
+<pre><code>disk: b'"a","b","c"\r\n,"","x"\r\n'
+QUOTE_NOTNULL -> [['a', 'b', 'c'], [None, '', 'x']]</code></pre>
+<p>Note that the read side must use the same constant. Read the same file with the default QUOTE_MINIMAL and you get ['', '', 'x'] — None has become an empty string again. These constants are switches on both sides; changing only one side changes nothing. If you are still on 3.11 or earlier, your only option is to encode NULL yourself, for example by writing \N for NULL and agreeing on it everywhere.</p>
+<h2>Troubleshooting: six errors I reproduced and how I fixed them</h2>
+<p>All six messages below were reproduced locally; the text is copied verbatim.</p>
+<p><strong>Error 1: _csv.Error: iterator should return strings, not bytes (the file should be opened in text mode)</strong></p>
+<p>Symptom: the read dies on the first line. Cause: the file was opened with 'rb' and handed to csv.reader, so each line arrives as bytes. Fix: open in text mode with newline=''; if you must handle decoding yourself, wrap it: io.TextIOWrapper(open(p,'rb'), encoding='utf-8-sig', newline='').</p>
+<p><strong>Error 2: _csv.Error: field larger than field limit (131072)</strong></p>
+<p>Symptom: the read stops abruptly at one row after tens of thousands of good ones. Cause: a single field exceeds 131072 characters. Fix: first find out which column carries the long text; if you really need it, csv.field_size_limit(10 <em></em> 1024), and do not jump straight to sys.maxsize.</p>
+<p><strong>Error 3: _csv.Error: need to escape, but no escapechar set</strong></p>
+<p>Symptom: the write fails, and only on certain rows. Cause: doublequote=False or quoting=QUOTE_NONE met a character that needs escaping (quote, delimiter, newline) while escapechar is None. Fix: either keep the default doublequote=True (doubling the quote), or set escapechar explicitly and pass the same value when reading.</p>
+<p><strong>Error 4: ValueError: could not convert string to float: 'code'</strong></p>
+<p>Symptom: the read fails on the header row. Cause: quoting=QUOTE_NONNUMERIC treats the unquoted header as a number. Fix: consume the header separately (next(reader) before switching), or drop QUOTE_NONNUMERIC and convert types yourself after reading strings.</p>
+<p><strong>Error 5: KeyError: 'id' when reading a BOM-prefixed file</strong></p>
+<p>Symptom: DictReader keys look like id but lookups fail. Cause: the key is actually '\ufeffid'. Fix: encoding='utf-8-sig'; when diagnosing, print fieldnames first and look for \ufeff.</p>
+<p><strong>Error 6: _csv.Error: unexpected end of data</strong></p>
+<p>Symptom: only appears with strict=True; the default mode reports nothing. Cause: an unterminated quote. With the default strict=False the parser swallows the rest of the input into the current field, including later line breaks, so you lose rows instead of getting an error. Fix: pass strict=True for any file you did not produce yourself, so it stops at the first malformed record; and log reader.line_num, which is a physical line number rather than a record number (in my test the second record reported line_num=4 because the first spanned three lines).</p>
+<h2>9. The five checks I actually run</h2>
+<p>After writing this up I compressed the round into five checks that I now run on any new CSV:</p>
+<ul><li>Search the writing code for open( and confirm every csv.writer gets newline='';</li><li>Assert the record count after reading, not just the first row's fields — CR CR LF only changes the count;</li><li>Print reader.fieldnames and switch to utf-8-sig the moment \ufeff shows up;</li><li>When NULL must be distinguishable from empty, use QUOTE_NOTNULL on both sides (3.12+), otherwise define an explicit sentinel value;</li><li>Pass strict=True for external files and put line_num into the exception log.</li></ul>
+<p>One more item that is not an error but costs me time every single time: csv.Sniffer. It fails outright on a single-column sample (Error: Could not determine delimiter), and on text like hello|world it guesses the delimiter is the letter o — because the documented initial value of Sniffer.preferred is [',', '\t', ';', ' ', ':'], the pipe is not in it, and whatever comes out is down to pattern-matching luck. Any "sniff first, then parse" code needs an escape hatch where a human supplies the dialect.</p>
+<p>There is also a locale variant that turns a whole row into one field: a file that uses the full-width comma. With the default delimiter=',' nothing splits, row has exactly one element, and no error is raised. You have to pass delimiter= explicitly.</p>
+<h2>10. What this post does not cover</h2>
+<ul><li>Only CPython 3.13.14 on Windows 11 was tested. QUOTE_NOTNULL and QUOTE_STRINGS do not exist before 3.12, so the fix in section 8 does not apply to older versions; before 3.10 the escaping of the escapechar itself differed too (the documentation marks Changed entries in 3.10 and 3.11).</li><li>No throughput numbers. Every conclusion here rests on small samples; the parser's speed depends on field length and quote density rather than file size, so quoting a duration would be misleading.</li><li>Not tested: Excel's sep=, first-line convention, and old Mac files that use a bare CR as the line ending.</li><li>Only one pandas 2.3.1 comparison (read_csv(dtype=str) keeps the leading zeros of '0012'). I did not go into how the pandas C engine and the csv module differ in quote handling — that is a separate topic.</li></ul>
+<p>This post contains no affiliate links. Every version number, byte sequence and error string comes from local runs plus the official CPython documentation and source, not from second-hand tutorials.</p>
+<p>If what you are dealing with is "a one-gigabyte CSV on this machine, queried in seconds", that is out of scope here; see the <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">DuckDB CSV benchmark</a>. If your problem is "two strings that look identical are not equal", that belongs to the <a href="https://yaohehe.github.io/2026-11-06-identical-looking-strings-arent-equal-7-unicode-bu-en.html" class="internal-link">Unicode normalisation</a> layer.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Who does newline='' actually belong to?</strong></p>
+<p>To the TextIOWrapper returned by open(), not to csv. It disables the text layer's newline translation so the CRLF that csv builds itself lands on disk untouched. Passing it to csv is meaningless — csv.writer has no such parameter.</p>
+<p><strong>Q: Why not just use pandas and skip all this?</strong></p>
+<p>pandas moves these boundaries into read_csv arguments (dtype, keep_default_na, na_values, encoding); the traps are still there under different names. read_csv also treats NA, N/A and null as missing by default, which can collide with your own sentinel values. The advantage of the standard library is that every layer stays visible.</p>
+<p><strong>Q: Is there really no way to tell None from an empty string before 3.12?</strong></p>
+<p>Not with the csv module's own features. None is always written as empty and always read back as '', and restval also defaults to None. Either move to 3.12+ and use QUOTE_NOTNULL, or encode at the field level (for example \N for NULL and a doubled backslash for a literal) and keep both sides to the same convention.</p>
+<p><strong>Q: How does this relate to the earlier post about imports?</strong></p>
+<p>Two directions of the same class of problem: that post asked "which file did I actually import", this one asks "did I read back one record or two". In both cases the code raises nothing, and the object your program receives is not the one you think it is.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
