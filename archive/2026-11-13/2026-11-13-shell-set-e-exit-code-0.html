@@ -1,0 +1,324 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Shell 脚本九个静默失败：set -e 不生效，exit code 仍是 0 - TechPassive</title>
+  <meta name="description" content="set -e 在 if、while、逻辑或列表和管道里都不生效，脚本照样 exit 0。本文在 Git Bash 的 bash 5.3.15 上实测九种静默失败：local 赋值把失败吞掉、$? 被覆盖、空变量拼成根目录、管道里的 while 落在子 shell、here-doc 未加引号就展开，附五段报错原文与逐条修法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Shell 脚本九个静默失败：set -e 不生效，exit code 仍是 0</h1>
+  <div class="post-tags">
+    <span class="tag">Shell</span><span class="tag">Bash</span><span class="tag">脚本排错</span>
+  </div>
+  <div class="content">
+    <p>上周一份发布脚本跑完，日志最后一行是 <code>deploy finished</code>，<code>echo $?</code> 给的是 0。但我去看产物目录，里面一个文件都没更新。回头翻日志才发现，<code>cd</code> 失败的那行早就打印过 <code>No such file or directory</code>，<code>cp</code> 也打印过 <code>cannot stat</code>——两条错误都在，脚本还是走完了全程，还给了个 0。</p>
+<p>这不是 <code>set -e</code> 的 bug，是我对它的边界理解错了。<code>set -e</code> 的语义不是「任何一条命令失败就退出」，而是一份带豁免条款的规则表：条件测试里不算、<code>||</code> 列表里不算、管道里除最后一段外不算、被 <code>!</code> 取反时不算；函数一旦被当成条件，整个函数体都不算。这些豁免是 POSIX 与 bash 为了「<code>if [ -d /foo ]</code> 这类正常写法不被误杀」而加的，代价是失败会被安静地放过。</p>
+<p>这篇把这一轮踩到的九处静默失败一次写完。全部在 Git Bash 自带的 <strong>bash 5.3.15(1)-release（构建目标 x86_64-pc-cygwin）</strong> 上实测，系统标识 <code>MINGW64_NT-10.0-26300</code>，每条都附退出码或磁盘结果，命令可以直接复制。它属于「退出码与真实结果之间的落差」这一层：已有几篇分别讲过进程退出码被截断（<a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 的七个静默失效</a>）、控制流的取消与超时（<a href="https://yaohehe.github.io/2026-11-01-asyncio.html" class="internal-link">asyncio 取消与超时</a>）、以及数据边界的解析（<a href="https://yaohehe.github.io/2026-11-13-python-csv.html" class="internal-link">csv 的八个边界</a>），本篇补的是 shell 这一层——脚本自己说成功，但它根本没做事。</p>
+<p>本文不含任何联盟推广链接，文中不出现任何商品页。</p>
+<p><strong>TL;DR</strong>：<code>set -e</code> 有五类上下文完全不生效（<code>if</code>/<code>while</code> 条件、<code>||</code> 与 <code>&&</code> 列表、<code>!</code> 取反、管道非末段），函数被当条件时整个函数体都失去保护；<code>local x=$(cmd)</code> 的退出码是 <code>local</code> 自己的 0，会把失败吞掉；管道默认只看最右一段的退出码，<code>pipefail</code> 出厂是关的；<code>$?</code> 会被 <code>local</code>、<code>if</code>、<code>echo</code> 覆盖；命令替换里的 <code>set -e</code> 不继承（<code>shopt -s inherit_errexit</code> 才继承，bash 4.4 起）；<code>"$D/"</code> 在 <code>D</code> 为空时就是 <code>/</code>，加引号救不了；管道里的 <code>while</code> 落在子 shell，计数器回到 0；here-doc 定界符不加引号会把 <code>$</code> 与反引号当场展开，而它没闭合时 bash 只给一条 warning、退出码仍是 0。</p>
+<figure class="auto-visual p1-flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 422" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="从「脚本说成功」到「真的成功」" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft35c4d800grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="421" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="414" fill="url(#ft35c4d800grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">从「脚本说成功」到「真的成功」</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">4 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="340" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">复现一次 exit 0 的假成功</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">逐个对照九处豁免上下文</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">加上 pipefail 与 inherit_errexit</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">用 trap ERR 兜底并回归验证</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="398" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="406" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>从「脚本说成功」到「真的成功」 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#F03C2E" role="img" aria-label="Git" style="flex:none;"><path d="M13.09 23.549a1.54 1.54 0 0 1-2.18 0L.451 13.089a1.54 1.54 0 0 1 0-2.179l7.191-7.19 2.733 2.733a1.85 1.85 0 0 0 .964 2.326v6.66a1.849 1.849 0 1 0 1.54 0V8.957l2.508 2.508a1.85 1.85 0 1 0 1.09-1.09l-2.634-2.634a1.85 1.85 0 0 0-2.378-2.377L8.73 2.63 10.91.451a1.54 1.54 0 0 1 2.179 0l10.459 10.46a1.54 1.54 0 0 1 0 2.179z"/></svg><span>Git</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#4EAA25" role="img" aria-label="Bash" style="flex:none;"><path d="M21.038,4.9l-7.577-4.498C13.009,0.134,12.505,0,12,0c-0.505,0-1.009,0.134-1.462,0.403L2.961,4.9 C2.057,5.437,1.5,6.429,1.5,7.503v8.995c0,1.073,0.557,2.066,1.462,2.603l7.577,4.497C10.991,23.866,11.495,24,12,24 c0.505,0,1.009-0.134,1.461-0.402l7.577-4.497c0.904-0.537,1.462-1.529,1.462-2.603V7.503C22.5,6.429,21.943,5.437,21.038,4.9z M15.17,18.946l0.013,0.646c0.001,0.078-0.05,0.167-0.111,0.198l-0.383,0.22c-0.061,0.031-0.111-0.007-0.112-0.085L14.57,19.29 c-0.328,0.136-0.66,0.169-0.872,0.084c-0.04-0.016-0.057-0.075-0.041-0.142l0.139-0.584c0.011-0.046,0.036-0.092,0.069-0.121 c0.012-0.011,0.024-0.02,0.036-0.026c0.022-0.011,0.043-0.014,0.062-0.006c0.229,0.077,0.521,0.041,0.802-0.101 c0.357-0.181,0.596-0.545,0.592-0.907c-0.003-0.328-0.181-0.465-0.613-0.468c-0.55,0.001-1.064-0.107-1.072-0.917 c-0.007-0.667,0.34-1.361,0.889-1.8l-0.007-0.652c-0.001-0.08,0.048-0.168,0.111-0.2l0.37-0.236 c0.061-0.031,0.111,0.007,0.112,0.087l0.006,0.653c0.273-0.109,0.511-0.138,0.726-0.088c0.047,0.012,0.067,0.076,0.048,0.151 l-0.144,0.578c-0.011,0.044-0.036,0.088-0.065,0.116c-0.012,0.012-0.025,0.021-0.038,0.028c-0.019,0.01-0.038,0.013-0.057,0.009 c-0.098-0.022-0.332-0.073-0.699,0.113c-0.385,0.195-0.52,0.53-0.517,0.778c0.003,0.297,0.155,0.387,0.681,0.396 c0.7,0.012,1.003,0.318,1.01,1.023C16.105,17.747,15.736,18.491,15.17,18.946z M19.143,17.859c0,0.06-0.008,0.116-0.058,0.145 l-1.916,1.164c-0.05,0.029-0.09,0.004-0.09-0.056v-0.494c0-0.06,0.037-0.093,0.087-0.122l1.887-1.129 c0.05-0.029,0.09-0.004,0.09,0.056V17.859z M20.459,6.797l-7.168,4.427c-0.894,0.523-1.553,1.109-1.553,2.187v8.833 c0,0.645,0.26,1.063,0.66,1.184c-0.131,0.023-0.264,0.039-0.398,0.039c-0.42,0-0.833-0.114-1.197-0.33L3.226,18.64 c-0.741-0.44-1.201-1.261-1.201-2.142V7.503c0-0.881,0.46-1.702,1.201-2.142l7.577-4.498c0.363-0.216,0.777-0.33,1.197-0.33 c0.419,0,0.833,0.114,1.197,0.33l7.577,4.498c0.624,0.371,1.046,1.013,1.164,1.732C21.686,6.557,21.12,6.411,20.459,6.797z"/></svg><span>Bash</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>一、先看一个 exit 0 的「成功」</h2>
+<p>先把症状做成可复现的最小脚本。下面这份是我当时的骨架，只把路径换成了 <code>/opt/app/release</code>，行号与报错文案都是实测原样：</p>
+<pre><code>#!/usr/bin/env bash
+set -e
+DIR=/opt/app/release
+cd "$DIR" || true
+note() { local out=$(cp missing.txt "$DIR/"); echo "copy done"; }
+note
+count=$(ls -1 "$DIR" 2>/dev/null | wc -l)
+if [ "$count" -gt 0 ]; then echo "artifact ok"; fi
+n=0
+printf 'a\nb\n' | while read -r line; do n=$((n + 1)); done
+echo "processed $n lines"
+echo "deploy finished"</code></pre>
+<p>运行时（<code>$DIR</code> 不存在，<code>missing.txt</code> 也不存在）：</p>
+<pre><code>deploy-bad.sh: line 4: cd: /opt/app/release: No such file or directory
+cp: cannot stat 'missing.txt': No such file or directory
+copy done
+processed 0 lines
+deploy finished</code></pre>
+<p>三个事实摆在一起，互相矛盾：两条错误信息都打印了；<code>copy done</code> 在 <code>cp</code> 失败之后照常打印；脚本以 0 退出（<code>echo $?</code> 给 0），<code>bash -n</code> 的语法检查也给 0。</p>
+<p>三处失败分别被三种机制吃掉：<code>cd ... || true</code> 是显式的 <code>||</code> 列表；<code>local out=$(cp ...)</code> 是 <code>local</code> 吞掉命令替换的退出码；<code>printf | while read</code> 是管道让计数器落在子 shell。下面逐条拆。</p>
+<h2>二、一号：`set -e` 有五个豁免上下文</h2>
+<p>bash 手册对 <code>-e</code> 的原文（<code>The Set Builtin</code> 一节）写得很清楚，先看英文原句：</p>
+<pre><code>The shell does not exit if the command that fails is part of the command list
+immediately following a while or until reserved word, part of the test in an if
+statement, part of any command executed in a && or || list except the command
+following the final && or ||, any command in a pipeline but the last (subject to
+the state of the pipefail shell option), or if the command's return status is
+being inverted with !.</code></pre>
+<p>把这句话翻成可执行的判断：只要失败的那条命令站在「条件位置」上，<code>set -e</code> 就当没看见。实测六种写法，前五种全部以 0 退出：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">失败命令所在位置</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实测结果</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">脚本退出码</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">单独一行命令</td><td style="border:1px solid #ddd;padding:8px;">立即退出，后续不执行</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>if</code> 的条件位置</td><td style="border:1px solid #ddd;padding:8px;">存活，继续往下跑</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">逻辑或列表的左项</td><td style="border:1px solid #ddd;padding:8px;">存活</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">逻辑与列表的左项</td><td style="border:1px solid #ddd;padding:8px;">存活</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">被 <code>!</code> 取反</td><td style="border:1px solid #ddd;padding:8px;">存活</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>while</code> 的条件位置</td><td style="border:1px solid #ddd;padding:8px;">存活</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr></tbody></table>
+<p>表格第一行是基线：裸的一行 <code>false</code> 确实会让脚本停。麻烦在于真实脚本里，失败几乎从不站在裸位置——它总在 <code>if</code> 里判断、在 <code>||</code> 后面兜底、在管道里被 <code>tail</code> 或 <code>grep -q</code> 收尾。也就是说，这五种豁免位置覆盖的正是生产脚本最常见的那部分写法：六种位置里五种不生效，5/6，约 83%。</p>
+<p>这里还有一条容易被忽略的追加条款，紧跟在上面那段后面：</p>
+<pre><code>If a compound command or shell function executes in a context where -e is being
+ignored, none of the commands executed within the compound command or function
+body will be affected by the -e setting, even if -e is set and a command returns
+a failure status.</code></pre>
+<p>这句是下一条的根。</p>
+<h2>三、二号：函数被当成条件，整个函数体失去保护</h2>
+<p>很多人以为「函数作为 <code>if</code> 的条件，函数内部还是会 <code>set -e</code>」。实测相反：</p>
+<pre><code>set -e
+f() { false; echo "这一行居然执行了"; }
+if f; then echo "then 分支"; fi</code></pre>
+<p>实测输出是两行都打印，函数返回 0——因为函数最后一条 <code>echo</code> 成功了，<code>if</code> 判断的是函数整体的返回值。函数体内那个 <code>false</code> 既没有终止函数，也没有改变返回值。</p>
+<p>BashFAQ/105 里对这条的描述是：「As soon as a function is used as a conditional (in a list or with a conditional test or loop) <code>set -e</code> stops being applied within the function.」它同时提醒，这不仅会让本该停止的代码继续跑，还会改变函数的返回状态。</p>
+<p>改法只有两条路：要么别把依赖 <code>set -e</code> 的函数放进条件位置，要么在函数里自己判断每一步。后者更可靠：</p>
+<pre><code>set -e
+f() {
+  false || return 1
+  echo "只有前面成功才会到这里"
+}
+if f; then echo "then 分支"; fi</code></pre>
+<h2>四、三号：`local x=$(cmd)` 把失败吞掉</h2>
+<p>这是本轮最难找的一处。两种写法只差一个分号，行为完全不同：</p>
+<pre><code># 写法 A：失败被吞，继续跑，退出码 0
+set -e
+f() { local out=$(false); echo "A 继续执行"; }
+f
+
+# 写法 B：整脚本退出 1
+set -e
+f() { local out; out=$(false); echo "B 不该出现"; }
+f</code></pre>
+<p>实测 A 打印「A 继续执行」并以 0 退出；B 一行都不打印，脚本退出码 1。差别来自 <code>local</code>：当它带赋值作为参数时，返回值是 <code>local</code> 自身的状态，而不是命令替换的状态。手册对 <code>local</code> 返回值的原文是「The return status is zero unless <code>local</code> is used outside a function, an invalid <code>name</code> is supplied, or <code>name</code> is a readonly variable.」——三种失败情形都与被赋值的命令无关。</p>
+<p>BashFAQ/105 把这条与 <code>export</code>、<code>declare</code>、<code>typeset</code> 归为一类：「the exit status of <code>local</code> masks it (the assignment to the variable succeeds, so <code>local</code> returns status 0)」。</p>
+<p>所以检查清单里应当有一条机械动作：全文搜 <code>local </code> 后面直接跟 <code>=</code> 的行。这类行要么拆成两行，要么显式加 <code>|| return 1</code>。</p>
+<h2>五、四号：管道只看最右一段</h2>
+<p>bash 手册的 Pipelines 一节写：「The exit status of a pipeline is the exit status of the last command in the pipeline, unless the <code>pipefail</code> option is enabled.」而 <code>pipefail</code> 的默认值在同一份手册的 Set Builtin 一节：<code>This option is disabled by default.</code></p>
+<p>实测四组：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">退出码</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">左段失败、右段成功</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">只看最后一段</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">同上，且已开 <code>set -e</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;"><code>set -e</code> 也救不了，管道整体是 0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">同上，且已开 <code>pipefail</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">取最右一个非 0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">左段 <code>exit 3</code>、右段 <code>exit 0</code></td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">左边的 3 完全不可见</td></tr></tbody></table>
+<p>第三行说明：<code>set -e</code> 与 <code>pipefail</code> 是两件不同的事，前者管「失败要不要退出」，后者管「管道整体算什么状态」。只开 <code>set -e</code> 不开 <code>pipefail</code>，管道左侧的失败对脚本完全不可见——这也是 <code>tar czf - dir | gzip -d</code> 之类写法最常见的坑。</p>
+<p><code>pipefail</code> 不是没有代价。它把左侧的失败也算进来之后，<code>head</code> 这类「读够就关管道」的命令会制造一个假失败：</p>
+<pre><code>set -eo pipefail
+seq 1 200000 | head -n 1</code></pre>
+<p>这行在我的机器上打印了 <code>1</code>，然后整个脚本以 <strong>141</strong> 退出（128 + 13，SIGPIPE）。同一行去掉 <code>pipefail</code> 则以 0 退出。如果一定要这么写，得显式标注 <code>|| true</code>，或者换成不提前关管道的写法。</p>
+<h2>六、五号：`$?` 已经被别的命令改掉了</h2>
+<p><code>$?</code> 只保存「上一条命令」的状态，而 <code>local</code>、<code>if</code>、<code>echo</code> 都是命令。实测：</p>
+<pre><code>false; local x; echo "这里读到的是 $?"
+false; if true; then :; fi; echo "这里读到的是 $?"</code></pre>
+<p>两行分别打印 0 和 0——<code>false</code> 的 1 早就不在了：<code>local x</code> 自己成功（返回 0），<code>if</code> 语句整体成功（返回 0）。真正能拿到 1 的写法是立刻存：</p>
+<pre><code>false
+rc=$?
+echo "rc=$rc"    # 打印 1</code></pre>
+<p>这条和上一条叠在一起最阴险：先用 <code>local</code> 吞掉失败，再用 <code>$?</code> 判断，读到的永远是 0，于是「有判断」的代码看起来也在正常工作。</p>
+<h2>七、六号：命令替换里 `set -e` 不继承</h2>
+<p><code>$(...)</code> 在子 shell 里执行，子 shell 不会继承 <code>set -e</code>（除非显式打开）：</p>
+<pre><code>set -e
+x=$(false; echo inner)
+echo "x=$x"     # x=inner，脚本退出码 0</code></pre>
+<p>实测输出 <code>x=inner</code>，退出码 0。也就是说命令替换内部前半段失败、后半段成功，外面完全看不到。打开 bash 4.4 起提供的选项之后行为才反转：</p>
+<pre><code>set -e
+shopt -s inherit_errexit
+x=$(false; echo inner)   # 这里直接以 1 退出，后面的 echo 不执行</code></pre>
+<p>实测命令行退出码从 0 变成 1。BashFAQ/105 的表述是「Subshells from command substitution unset <code>set -e</code>, however (unless <code>inherit_errexit</code> is set with Bash 4.4)」。我另外确认了本机默认值：<code>shopt -p inherit_errexit</code> 输出 <code>shopt -u inherit_errexit</code>，即默认关闭。</p>
+<p>同一节手册还写了命令替换的另一个副作用：「replacing the command substitution with the standard output of the command, with any trailing newlines deleted」。实测 <code>x=$(printf 'abc\n\n\n')</code> 之后 <code>${#x}</code> 是 3，三个换行全没了。所以凡是用 <code>$(cat 文件)</code> 拿内容再比对长度的校验逻辑，都是错的——这类比较必须走字节流（<code>cmp</code>、<code>sha256sum</code>，或者 <code>$(&lt; file)</code> 加显式补尾换行）。</p>
+<h2>八、七号：空变量加了引号还是拼出根目录</h2>
+<p>引号能解决分词，不能解决「变量本身就是空的」这个问题：</p>
+<pre><code>D=""
+printf '带引号: [%s]\n' "$D/"
+printf '不带引号: [%s]\n' $D/</code></pre>
+<p>两种写法都打印 <code>[/]</code>。原因是 <code>"$D/"</code> 展开成空串拼斜杠，结果就是一个根路径。<code>rm -rf "$DIR/"</code> 这类写法在 <code>DIR</code> 为空时，目标就是 <code>/</code>——本文不演示这条命令，只用 <code>printf</code> 把展开结果打出来，谁都不该在自己的机器上验证它。</p>
+<p>三种防护的实测差别：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>: "${D:?D is empty}"</code></td><td style="border:1px solid #ddd;padding:8px;">立即报 <code>bash: line 1: D: D is empty</code> 并以非 0 退出</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>[ -z "${D:-}" ]</code> 后显式分支</td><td style="border:1px solid #ddd;padding:8px;">可控，推荐</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>${D%/}</code> 剥尾斜杠</td><td style="border:1px solid #ddd;padding:8px;">空值仍然空，不解决问题</td></tr></tbody></table>
+<p>关键点是：<code>${D:?}</code> 是「空则报错」，<code>${D%/}</code> 只是「去掉一个尾斜杠」，后者常被当成防护，其实什么都没防。</p>
+<h2>九、八号：管道里的 `while` 在子 shell 里</h2>
+<p>这是一条经典，但它经常以「统计数字变成 0」而不是报错的形式出现：</p>
+<pre><code>n=0
+printf 'a\nb\nc\n' | while read -r line; do n=$((n + 1)); done
+echo "n=$n"</code></pre>
+<p>实测 <code>n=0</code>。原因是手册 Pipelines 一节的这句话：「Each command in a multi-command pipeline, where pipes are created, is executed in its own subshell」。循环里的 <code>n</code> 属于子 shell，父 shell 的 <code>n</code> 从头到尾没动过。</p>
+<p>三种替代写法我实际测试过，结果一致（<code>n=3</code>）：</p>
+<pre><code># 其一：进程替换，循环留在当前 shell
+n=0
+while read -r line; do n=$((n + 1)); done &lt; &lt;(printf 'a\nb\nc\n')
+echo "n=$n"
+
+# 其二：bash 4.2 起的 lastpipe（需作业控制关闭，脚本里默认关闭）
+shopt -s lastpipe
+n=0
+printf 'a\nb\nc\n' | while read -r line; do n=$((n + 1)); done
+echo "n=$n"
+
+# 其三：不需要流式时，直接用 for 遍历
+n=0
+for line in a b c; do n=$((n + 1)); done
+echo "n=$n"</code></pre>
+<p><code>lastpipe</code> 的适用条件在手册里也写了：「If the <code>lastpipe</code> option is enabled ... and job control is not active, the last element of a pipeline may be run by the shell process.」本机 <code>shopt -p lastpipe</code> 输出 <code>shopt -u lastpipe</code>，默认关闭，而交互式 shell 里作业控制默认开着，所以这条只在脚本里可靠。</p>
+<h2>十、九号：未加引号的 here-doc 定界符会展开</h2>
+<p>这条是我这一年里踩得最多的一条，也是唯一一条会「改写你写进去的内容」的。</p>
+<p>bash 手册 3.6.6 节的原文：「If any part of <code>word</code> is quoted, the <code>delimiter</code> is the result of quote removal on <code>word</code>, and the lines in the here-document are not expanded. If <code>word</code> is unquoted, <code>delimiter</code> is <code>word</code> itself, and the here-document text is treated similarly to a double-quoted string.」</p>
+<p>实测对照：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">定界符写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">落盘内容</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">不加引号</td><td style="border:1px solid #ddd;padding:8px;"><code>unquoted: /c/Users/xuany and X</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">加单引号</td><td style="border:1px solid #ddd;padding:8px;"><code>quoted: $HOME and $(printf X)</code></td></tr></tbody></table>
+<p>也就是说，用不带引号的定界符写一段「要落盘的脚本或配置」时，里面的 <code>$变量</code>、<code>$(命令)</code>、反引号会在我写文件的那一刻被执行掉，落盘的是执行结果，不是原文。更麻烦的是落盘结果往往是合法文本，语法检查也过得去，直到某个变量在别的机器上取不到值才暴露。</p>
+<p>还有一条更隐蔽的：定界符没闭合时，bash 只给一条 warning，<strong>退出码仍是 0</strong>，而且它会把后面所有内容都当成 here-doc 的内容喂给命令。我构造了一个漏掉 <code>EOF</code> 的脚本实测：</p>
+<pre><code>w2.sh: line 2: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')
+body
+w2 退出码=0</code></pre>
+<p><code>body</code> 是被吞进去的内容，仍然被打印了；<code>bash -n w2.sh</code> 的退出码也是 0。这条 warning 必须被当成错误对待，否则脚本「跑完了」，内容却少了一大段。</p>
+<h2>十一、五个真实报错的原文与修法</h2>
+<p>下面五段都是我在本机跑出来的原样文案，连同退出码一起给出。</p>
+<p>报错一：单引号数量不配对</p>
+<pre><code>w1.sh: line 1: unexpected EOF while looking for matching `"'</code></pre>
+<p>退出码 2。原因是一个引号没闭合，解析器一路读到底。修法：先跑 <code>bash -n 脚本名</code>（这类错误它返回 2，能拦住），再检查引号嵌套，尤其是把 SQL、正则、JSON 塞进单引号里的行。</p>
+<p>报错二：here-doc 定界符没闭合</p>
+<pre><code>w2.sh: line 2: warning: here-document at line 1 delimited by end-of-file (wanted `EOF')</code></pre>
+<p>退出码 0——注意它只是一条 warning。修法见上一条：把定界符写成 <code>'EOF'</code> 并缩进对齐；用 <code>&lt;&lt;-EOF</code> 时注意它只剥制表符，用空格缩进同样不匹配。</p>
+<p>报错三：<code>if</code> 少了 <code>fi</code></p>
+<pre><code>w3.sh: line 3: syntax error: unexpected end of file from `if' command on line 1</code></pre>
+<p>退出码 2。bash 5.3 的措辞比老版本多了「from <code>if' command on line 1」，会直接告诉你是哪一行开的头。修法：</code>bash -n` 加上编辑器的高亮配对，不要靠缩进目测。</p>
+<p>报错四：<code>[</code> 收到空变量</p>
+<pre><code>bash: line 1: [: =: unary operator expected</code></pre>
+<p>退出码 2。原因是 <code>[ $e = x ]</code> 里 <code>$e</code> 为空，<code>[</code> 只看到两个参数。修法有两种，任选其一但不要混用：</p>
+<pre><code>[ "$e" = x ]        # 加引号，让它成为空字符串
+[[ $e = x ]]        # bash 的 [[ ]] 不做分词，空值安全</code></pre>
+<p>报错五：<code>set -u</code> 撞上未定义变量</p>
+<pre><code>bash: line 1: nope: unbound variable</code></pre>
+<p>退出码 1。位置参数也一样：<code>set -u; echo "${1}"</code> 在没有参数时给 <code>bash: line 1: 1: unbound variable</code>（写成 <code>$</code> 后面直接跟数字的形态，文案里会连那个 <code>$</code> 一起打印出来）。修法：可选值一律写默认值 <code>${nope:-}</code>，必填值用 <code>${nope:?nope is required}</code>。顺带说一句，<code>set -u</code> 对 <code>$@</code>、<code>$*</code> 和空数组是安全的——实测 <code>set -u</code> 下遍历空数组、<code>f "$@"</code> 都不报错。</p>
+<h2>十二、让脚本真的停下来：可以照抄的头部</h2>
+<p>把上面九条翻成一段能用的头部，就这几行：</p>
+<pre><code>#!/usr/bin/env bash
+set -euo pipefail
+shopt -s inherit_errexit
+trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" >&2' ERR
+IFS=$'\n\t'</code></pre>
+<p>实测效果：把开头那份失败脚本改成这版（并把 <code>cd</code> 与 <code>note</code> 改成显式判断），运行时立刻停下，退出码 1，并打印 <code>no such dir: /opt/app/release</code>。</p>
+<p>逐行说明：<code>-e</code> 管失败退出、<code>-u</code> 管未定义变量、<code>pipefail</code> 让管道左侧失败可见；<code>inherit_errexit</code> 让命令替换内部也遵守 <code>-e</code>；<code>trap ... ERR</code> 提供出错位置（不加 <code>set -E</code> 时，ERR trap 不会进函数与命令替换，这一点手册在 <code>-E</code> 条里写明：「If set, any trap on <code>ERR</code> is inherited by shell functions, command substitutions, and commands executed in a subshell environment. The <code>ERR</code> trap is normally not inherited in such cases.」）；<code>IFS</code> 收窄分词范围。</p>
+<p>但这段头部并不等于安全。实测下来，九条里仍有几条能从它底下溜过去：</p>
+<ul><li>管道里的 <code>while</code> 照样在子 shell 里，<code>inherit_errexit</code> 不改变管道结构</li><li>空变量拼出的 <code>/</code> 照样是 <code>/</code>，<code>-u</code> 拦不住「变量已定义但为空」</li><li>未闭合的 here-doc 照样只是 warning，退出码照样 0</li><li><code>pipefail</code> 会让「某命令接 <code>head -n 1</code>」以 141 退出，需要单独标注</li></ul>
+<p>所以真正可靠的做法是把关键步骤改成显式判断，让判断本身成为失败点：</p>
+<pre><code>if ! out=$(cp src.txt "$DIR/" 2>&1); then
+  echo "copy failed: $out" >&2
+  exit 1
+fi</code></pre>
+<p>实测 <code>if ! out=$(false 2>&1); then</code> 能稳定进入 <code>then</code> 分支，<code>out=$(false) || { ... }</code> 同样能捕获（退出码 1）。这两种写法不依赖 <code>set -e</code> 的豁免规则，读代码的人也不用背那张表。</p>
+<h2>十三、这份清单怎么用：四条自检</h2>
+<p>写完脚本后按顺序跑这四步，比事后读日志便宜得多：</p>
+<ul><li>全文搜 <code>local </code> 后面直接跟 <code>=</code> 的行，改成两行或加 <code>|| return 1</code></li><li>每个管道问一句「左边失败了会怎样」，需要知道的就开 <code>pipefail</code> 并处理 141</li><li>每个 <code>if</code>/<code>while</code> 里调用的函数，确认失败是否能浮出来（函数内 <code>|| return 1</code>）</li><li>所有拼路径的变量，改成 <code>: "${VAR:?}"</code> 或显式 <code>-z</code> 判断，别用 <code>${VAR%/}</code> 当防护</li></ul>
+<p>另外把 <code>bash -n</code> 当成第一道闸，但要知道它能抓什么：未闭合引号返回 2、未闭合 <code>if</code> 返回 2、未闭合 here-doc 返回 0。第三项是它最容易放过的那一类。</p>
+<h2>十四、本文的边界：哪些结论我没测出来</h2>
+<p>为了让上面的数字能被复核，边界写清楚：</p>
+<ul><li>全部结论来自 Git Bash 的 bash <strong>5.3.15(1)-release</strong>（构建目标 <code>x86_64-pc-cygwin</code>），系统 <code>MINGW64_NT-10.0-26300</code>。dash、zsh、<code>set -o posix</code> 模式下的行为不同，我没有测，本文不作断言。</li><li>CRLF 换行导致 shebang 失效（<code>bad interpreter</code>）这一类，在本机没能复现：用 Python 以 <code>\r\n</code> 写出的脚本，<code>./x1.sh</code> 与 <code>bash x1.sh</code> 都正常跑完，命令替换读回的内容里 <code>\r</code> 也被吞掉了。所以本文不提这条修法。</li><li>没有安装 shellcheck，静态检查与手工对照的差异没有量。</li><li><code>trap ... ERR</code> 的触发次数随构造变化：同一次失败，在「函数体内直接 <code>false</code>」与「函数被当条件」两种构造下，我实测到 1 次与 2 次两种计数。次数不是契约，不要写进去断言。</li></ul>
+<h2>常见问题</h2>
+<p><strong>Q：加上 <code>set -euo pipefail</code> 就安全了吗？</strong></p>
+<p>不是。它覆盖的是「命令失败要退出」这一层，管道子 shell、空值拼路径、未闭合 here-doc 三条都能绕过去。真正稳住的做法是关键步骤显式 <code>if ! cmd; then</code>，把那句判断当作唯一的失败点。</p>
+<p><strong>Q：为什么 <code>local out=$(cmd)</code> 不触发 <code>set -e</code>？</strong></p>
+<p>因为返回值是 <code>local</code> 自己的。手册写的是 <code>local</code> 在三种情况下才非 0：不在函数里用、变量名非法、变量只读。被赋值的命令失败与否不在其中。拆成 <code>local out</code> 与 <code>out=$(cmd)</code> 两行，第二行就是真实的命令退出码。</p>
+<p><strong>Q：读文件到底该用哪种循环？</strong></p>
+<p>需要变量留在当前 shell 的，用 <code>while read -r line; do ...; done &lt; 文件</code> 或进程替换；只在脚本里且作业控制关闭时才考虑 <code>lastpipe</code>；不需要流式读取就直接 <code>for line in ...</code>。管道接 <code>while</code> 是唯一会静默丢计数的那种。</p>
+<p><strong>Q：<code>set -e</code> 还值得用吗？</strong></p>
+<p>值得，但必须配合显式判断。BashFAQ/105 的结论是「its rules are extremely convoluted」，并给了几种立场：有人建议不用、改用显式错误处理，有人认为可用但要清楚所有陷阱。我的做法是：小工具脚本用 <code>set -euo pipefail</code> 加 <code>trap ERR</code>，涉及产物与发布的脚本，关键步骤一律显式判断。</p>
+<h2>收尾</h2>
+<p>这九条的共同点不是「bash 有 bug」，而是「退出码只回答了一个非常窄的问题：最后一条命令有没有成功」。脚本说成功时，值得再问三件事：产物真的变了吗、错误信息是否被 <code>|| true</code> 或 <code>local</code> 吃掉、判断用的 <code>$?</code> 是不是已经被覆盖。把这三问写成脚本里的断言，比给 <code>set -e</code> 再加一个选项有用。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python import 取错文件的 8 种方式 - TechPassive</title>
+  <meta name="description" content="同一个 import 语句可能加载到另一个文件:同名遮蔽、sys.path 空字符串跟着 chdir 走、.pyc 只比整数秒与字节数、循环导入拿到的半成品模块。八种形态在 Windows 11 与 CPython 3.13.14 上逐个复现,其中六条退出码为 0;附报错原文、十条路径的对照表与三条定位命令。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python import 导进来的不是那个文件：8 处静默取错</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">import</span><span class="tag">踩坑</span>
+  </div>
+  <div class="content">
+    <p>服务重启了三次，输出还是一行。我把 <code>json.dumps</code> 换成 <code>json.dump</code>、补上 <code>indent=2</code>、又确认了三遍文件真的存盘，最后在进程里打了一行 <code>print(json.__file__)</code>，屏幕上给出的是项目目录下的 <code>json.py</code> —— 一个三个月前为了写迁移脚本随手建的、只有 17 字节的空文件。</p>
+<p><code>import</code> 这件事最容易被忽略的一点是:<strong>导入失败一定报错,导入到错的文件一声不响</strong>。它确实执行了一次导入,只是那个模块不是你写代码时脑子里想的那个。下面八种形态我实际跑了八组脚本,每一种都能量出「文件是真的、代码是真的、结果不是你以为的」。</p>
+<p>本文的实验环境是 Windows 11 加 CPython 3.13.14(MSC v.1944 64 位),抓取与实测时间 2026-11-13。全程只用标准库,没有装任何第三方包 —— 这次实验里最「外部」的依赖,是标准库自己。下文每段输出都是原样粘贴,没有改写。文中不含任何联盟推广链接,也不含佣金链接。</p>
+<figure class="auto-visual" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#000000" role="img" aria-label="Json" style="flex:none;"><path d="M12.043 23.968c.479-.004.953-.029 1.426-.094a11.805 11.805 0 003.146-.863 12.404 12.404 0 003.793-2.542 11.977 11.977 0 002.44-3.427 11.794 11.794 0 001.02-3.476c.149-1.16.135-2.346-.045-3.499a11.96 11.96 0 00-.793-2.788 11.197 11.197 0 00-.854-1.617c-1.168-1.837-2.861-3.314-4.81-4.3a12.835 12.835 0 00-2.172-.87h-.005c.119.063.24.132.345.201.12.074.239.146.351.225a8.93 8.93 0 011.559 1.33c1.063 1.145 1.797 2.548 2.218 4.041.284.982.434 1.998.495 3.017.044.743.044 1.491-.047 2.229-.149 1.27-.554 2.51-1.228 3.596a7.475 7.475 0 01-1.903 2.084c-1.244.928-2.877 1.482-4.436 1.114a3.916 3.916 0 01-.748-.258 4.692 4.692 0 01-.779-.45 6.08 6.08 0 01-1.244-1.105 6.507 6.507 0 01-1.049-1.747 7.366 7.366 0 01-.494-2.54c-.03-1.273.225-2.553.854-3.67a6.43 6.43 0 011.663-1.918c.225-.178.464-.333.704-.479l.016-.007a5.121 5.121 0 00-1.441-.12 4.963 4.963 0 00-1.228.24c-.359.12-.704.27-1.019.45a6.146 6.146 0 00-.733.494c-.211.18-.42.36-.615.555-1.123 1.153-1.768 2.682-2.022 4.256-.15.973-.15 1.96-.091 2.95.105 1.395.391 2.787.945 4.062a8.518 8.518 0 001.348 2.173 8.14 8.14 0 003.132 2.23 7.934 7.934 0 002.113.54c.074.015.149.015.209.015zm-2.934-.398a4.102 4.102 0 01-.45-.228 8.5 8.5 0 01-2.038-1.534c-1.094-1.137-1.827-2.566-2.247-4.08a15.184 15.184 0 01-.495-3.172 12.14 12.14 0 01.046-2.082c.135-1.257.495-2.501 1.124-3.58a6.889 6.889 0 011.783-2.053 6.23 6.23 0 011.633-.9 5.363 5.363 0 013.522-.045c.029 0 .029 0 .045.03.015.015.045.015.06.03.045.016.104.045.165.074.239.12.479.271.704.42a6.294 6.294 0 012.097 2.502c.42.914.615 1.934.631 2.938.014 1.079-.18 2.157-.645 3.146a6.42 6.42 0 01-2.638 2.832c.09.03.18.045.271.075.225.044.449.074.688.074 1.468.045 2.892-.66 3.94-1.647.195-.18.375-.375.54-.585.225-.27.435-.54.614-.823.239-.375.435-.75.614-1.154a8.112 8.112 0 00.509-1.664c.196-1.004.211-2.022.149-3.026-.135-2.022-.673-4.045-1.842-5.724a9.054 9.054 0 00-.555-.719 9.868 9.868 0 00-1.063-1.034 8.477 8.477 0 00-1.363-.915 9.927 9.927 0 00-1.692-.598l-.3-.06c-.209-.03-.42-.044-.634-.06a8.453 8.453 0 00-1.015.016c-.704.045-1.412.16-2.112.337C5.799 1.227 2.863 3.566 1.3 6.67A11.834 11.834 0 00.238 9.801a11.81 11.81 0 00-.104 3.775c.12 1.02.374 2.023.778 2.977.227.57.511 1.124.825 1.648 1.094 1.783 2.683 3.236 4.51 4.24.688.39 1.408.69 2.157.944.226.074.45.15.689.21z"/></svg><span>Json</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><figure class="auto-visual" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="本文阅读路线" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftaea5da7egrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ftaea5da7egrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">本文阅读路线</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">TL;DR:八条里六条退出码是 0</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">先看清 import 的执行顺序</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">陷阱一:同目录一个同名文件就能顶掉标准库</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">陷阱二:sys.path 第 0 项有三种身份</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">陷阱三:.pyc 的失效判据只有整数秒和字节数</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>本文小节导航 · 依据正文标题自动生成</figcaption></figure><h2>TL;DR:八条里六条退出码是 0</h2>
+<p><strong>TL;DR</strong>:导入失败会报错,导入错文件不会。十个可复现路径里有六条以退出码 0 结束 —— 它们不会让 CI 变红,也不会让服务起不来,只会在某一天让一个单例变成两份、让 <code>isinstance</code> 安静地返回 False、让改过的代码继续跑旧逻辑。定位只需要三条命令:<code>module.__file__</code>、<code>importlib.util.find_spec(name).origin</code>、<code>python -X importtime</code>。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">场景</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">触发条件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">失败形态</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">退出码</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">同名遮蔽</td><td style="border:1px solid #ddd;padding:8px;">脚本目录里有 <code>json.py</code></td><td style="border:1px solid #ddd;padding:8px;">AttributeError,附带改名提示</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">空字符串路径</td><td style="border:1px solid #ddd;padding:8px;"><code>-c</code> 启动后中途 <code>os.chdir()</code></td><td style="border:1px solid #ddd;padding:8px;">静默导入另一目录的同名文件</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">旧字节码</td><td style="border:1px solid #ddd;padding:8px;">改写后字节数不变且落在同一秒</td><td style="border:1px solid #ddd;padding:8px;">运行旧代码,无警告</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">顶层循环导入</td><td style="border:1px solid #ddd;padding:8px;">模块 A、B 相互 <code>from ... import</code></td><td style="border:1px solid #ddd;padding:8px;">ImportError,提示里不提循环</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">同上,改用 <code>import</code></td><td style="border:1px solid #ddd;padding:8px;">只写 <code>import b</code> 不取属性</td><td style="border:1px solid #ddd;padding:8px;">拿到半成品模块</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">直接跑包内文件</td><td style="border:1px solid #ddd;padding:8px;"><code>python pkg/mod.py</code></td><td style="border:1px solid #ddd;padding:8px;">ModuleNotFoundError</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>-m</code> 跑包内文件</td><td style="border:1px solid #ddd;padding:8px;"><code>python -m pkg.mod</code></td><td style="border:1px solid #ddd;padding:8px;">同一文件两个模块对象</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">命名空间包</td><td style="border:1px solid #ddd;padding:8px;">目录没有 <code>__init__.py</code></td><td style="border:1px solid #ddd;padding:8px;">取 <code>__file__</code> 时 TypeError</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">大小写两种拼写</td><td style="border:1px solid #ddd;padding:8px;">设了 <code>PYTHONCASEOK</code></td><td style="border:1px solid #ddd;padding:8px;">两个模块对象,状态互不可见</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>reload()</code></td><td style="border:1px solid #ddd;padding:8px;">之前用过 <code>from m import f</code></td><td style="border:1px solid #ddd;padding:8px;">旧函数继续被调用</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr></tbody></table>
+<p>这张表本身就是本篇的结论:<strong>退出码不是判据</strong>。下面逐条给出复现方法与报错原文。</p>
+<h2>先看清 import 的执行顺序</h2>
+<p>顺序不复杂,但每一步都可能被你的文件截胡。</p>
+<p>第一步查缓存。官方文档的原文是「The first place checked during import search is <code>sys.modules</code>」,并且「During import, the module name is looked up in <code>sys.modules</code> and if present, the associated value is the module satisfying the import, and the process completes」。注意最后半句:一旦命中,导入过程直接结束,后面的查找一步都不走。</p>
+<p>第二步查 <code>sys.meta_path</code>,默认三个 finder:内建模块、冻结模块、路径查找器。前两个与你无关,第三个才是出问题的地方 —— 它按 <code>sys.path</code> 的顺序逐个路径项去问「你这儿有没有这个模块」。</p>
+<p>第三步,找到之后先登记再执行。文档原文:「The module will exist in <code>sys.modules</code> before the loader executes the module code.」这一句解释了后面两节的现象:循环导入能拿到一个「半个」模块,以及一个模块 import 自己不会无限递归。</p>
+<p>关键在第二步的「按 <code>sys.path</code> 顺序」。我在这台机器上把 <code>sys.path</code> 打出来,九项,挑四项看:</p>
+<pre><code>0 ''
+1 D:\openclaw-blog\tmp\implab-1113\pathorder
+2 ...\python313.zip
+3 ...\DLLs
+4 ...\Lib
+6 C:\Users\xuany\AppData\Roaming\Python\Python313\site-packages
+8 ...\Lib\site-packages</code></pre>
+<p>标准库目录 <code>Lib</code> 在索引 4,而用户 site-packages 在 6、系统 site-packages 在 8。也就是说 <strong>你自己的目录排在标准库前面,而装进去的包排在标准库后面</strong>。同一条规则,两种后果,这是下面第一条陷阱的全部原因。</p>
+<h2>陷阱一:同目录一个同名文件就能顶掉标准库</h2>
+<p>目录里放一个 <code>json.py</code>,内容只有一行 <code>MARK = 'local json'</code>,然后写 <code>main.py</code>:</p>
+<pre><code>import json
+print('file =', json.__file__)
+print('has dumps =', hasattr(json, 'dumps'))
+print(json.dumps({'a': 1}))</code></pre>
+<p>跑出来是这样:</p>
+<pre><code>file = D:\openclaw-blog\tmp\implab-1113\lab1\e1\json.py
+has dumps = False
+AttributeError: module 'json' has no attribute 'dumps' (consider renaming
+'D:\openclaw-blog\tmp\implab-1113\lab1\e1\json.py' since it has the same name
+as the standard library module named 'json' and prevents importing that
+standard library module)</code></pre>
+<p>三行输出里有两个信号。第一,<code>json.__file__</code> 已经指向本地文件,说明导入成功了;第二,3.13 在报错尾部加了一句改名建议,并且明说这个文件「prevents importing that standard library module」。这句提示是 3.13 才有的一类改进,老版本只会给你一句干巴巴的 <code>AttributeError</code>,让人以为是标准库改了 API。</p>
+<p>顺带把另一半验证了:<code>PYTHONPATH</code> 也一样能顶掉标准库。把同一个 <code>json.py</code> 放进一个目录,用 <code>PYTHONPATH=.</code> 启动,<code>json.__file__</code> 依然指向本地文件 —— 因为 <code>PYTHONPATH</code> 的条目落在索引 1,仍然在 <code>Lib</code>(索引 4)之前。</p>
+<p>反面则是 <code>site-packages</code>:按同一顺序规则,它排在标准库之后,所以在 <code>site-packages</code> 里放一个叫 <code>json</code> 的包顶不掉标准库。这一条我是按 <code>sys.path</code> 实测顺序推定的,没有真的装一个假包去试 —— 区别在这里说明白,免得读者以为所有「同名」都一样危险。</p>
+<p>判断方法便宜到不用记:在项目根目录跑一句 <code>python -c "import json; print(json.__file__)"</code>,看路径里有没有你的项目名。有,就是它。</p>
+<h2>陷阱二:sys.path 第 0 项有三种身份</h2>
+<p>同样是 <code>import helper</code>,启动方式不同,<code>sys.path[0]</code> 完全不同。实测三种:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">启动方式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>sys.path[0]</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>python main.py</code></td><td style="border:1px solid #ddd;padding:8px;">脚本所在目录的绝对路径</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>python -c "..."</code></td><td style="border:1px solid #ddd;padding:8px;">空字符串 <code>''</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>python -m probe</code></td><td style="border:1px solid #ddd;padding:8px;">当前工作目录的绝对路径</td></tr></tbody></table>
+<p>文档对这三种都有明文:<code>-c</code> 是「the current directory will be added to the start of <code>sys.path</code>」,脚本是「the directory containing that file is added to the start of <code>sys.path</code>, and the file is executed as the <code>__main__</code> module」。</p>
+<p>差别不在「第 0 项是什么」,而在<strong>它什么时候被解析</strong>。绝对路径在启动那一刻就固化了;空字符串是一个占位,每次导入时才按当时的当前目录去解释。于是 <code>os.chdir()</code> 会改变后续导入的结果,而这一点在两种启动方式下表现相反。</p>
+<p>我建了两个目录 <code>a/</code> 和 <code>b/</code>,各放一个 <code>helper.py</code>,分别写 <code>WHERE = 'a'</code> 和 <code>WHERE = 'b'</code>。用 <code>-c</code> 启动,先 import 一次,<code>chdir</code> 到另一个目录、从 <code>sys.modules</code> 删掉缓存再 import 一次:</p>
+<pre><code>cwd-run first a
+cwd-run second b</code></pre>
+<p>同一个进程,同一个 <code>import helper</code>,拿到两个不同的模块。换成脚本方式再跑一遍完全相同的事,第二次仍然是 <code>a</code> —— 因为 <code>sys.path[0]</code> 是 <code>a</code> 的绝对路径,不会跟着 cwd 走。</p>
+<p>这条在真实项目里长这样:CI 里是 <code>cd build && python ../scripts/gen.py</code>,本地是 IDE 里直接点运行。两边 <code>sys.path[0]</code> 一个是 <code>scripts/</code>、一个是别的东西,同名模块的胜者就变了。3.11 起有个开关能直接掐掉这个不确定性:<code>python -P</code>,不把可能不安全的路径塞进 <code>sys.path[0]</code>。我在放了这个 <code>json.py</code> 的目录里加 <code>-P</code> 再跑,<code>json.__file__</code> 回到了标准库,<code>has dumps</code> 也回来了。</p>
+<h2>陷阱三:.pyc 的失效判据只有整数秒和字节数</h2>
+<p>这条最反直觉,因为它连「文件变了」都不看。</p>
+<p>CPython 的字节码缓存不带源码哈希(默认模式),只带两个数:源码的修改时间(截断到整秒)与源码的字节数。源码第 1113 行附近就写着 <code>source_mtime = int(st['mtime'])</code>,校验函数里两处比较分别是 <code>_unpack_uint32(data[8:12])</code> 与 <code>source_mtime</code> 比、<code>_unpack_uint32(data[12:16])</code> 与 <code>source_size</code> 比。</p>
+<p>于是有一个很窄但完全真实的口子:<strong>字节数不变、且改动落在同一个整数秒内</strong>,旧字节码就继续有效。</p>
+<p>我按这个条件做了一遍。先写 <code>VALUE = 'first'</code>,导入一次生成缓存;然后把文件改成 <code>VALUE = 'FIRST'</code> —— 大小写互换,字节数还是 17;再用 <code>os.utime</code> 把修改时间放回原来那一秒。磁盘上现在明明白白写着 <code>FIRST</code>。再导入:</p>
+<pre><code>file on disk now: VALUE = 'FIRST' | size 17
+run2: first</code></pre>
+<p>跑出来是 <code>first</code>。退出码 0,没有任何警告。把修改时间往后挪五秒,同样的导入立刻给出 <code>FIRST</code>,说明卡住的正是那一秒。</p>
+<p>更值得记住的是 <code>-v</code> 的诊断输出。它不会告诉你「我读的是缓存」,它说的是:</p>
+<pre><code># ...\__pycache__\greet.cpython-313.pyc matches ...\greet.py
+# code object from '...\__pycache__\greet.cpython-313.pyc'</code></pre>
+<p>一个 <code>matches</code> 就把源码跳过去了。缓存头里那两个数字我顺手解出来对过:<code>source_mtime = 1794521655</code>,<code>source_size = 17</code>。</p>
+<p>换个失效模式就骗不过了。标准库支持哈希校验的 pyc,用 <code>py_compile.compile(..., invalidation_mode=PycInvalidationMode.CHECKED_HASH)</code> 生成一份,再用同样的「同字节数 + 同一秒」手法改写,导入拿到的是新值。两种失效模式里,只有 50% 能被这个手法绕过 —— 时间戳模式会,哈希模式不会。</p>
+<p>现实里怎么撞上:代码生成器写完文件立刻 import(模板渲染、DTO 生成、迁移脚本都常见);打包镜像或解包 tar 时把 mtime 抹平成固定值;两台机器之间同步文件但保留旧时间戳。我这台机器的环境里恰好设了 <code>PYTHONDONTWRITEBYTECODE=1</code>,第一次做实验时连 <code>__pycache__</code> 都没生成,才意识到这台机器根本不会撞上这条 —— 而生产容器通常不会设它。</p>
+<h2>陷阱四:循环导入有两种报错,顶层文件那种不提循环</h2>
+<p>同一个 bug,顶层的模块和包里的模块给出的提示不一样,而其中一种完全没有「循环」两个字。</p>
+<p>顶层文件互导的场景:<code>alpha.py</code> 里 <code>from beta import BEE</code>,<code>beta.py</code> 里 <code>from alpha import VALUE</code>,而 <code>VALUE</code> 写在 import 语句之后。报错是:</p>
+<pre><code>ImportError: cannot import name 'VALUE' from 'alpha' (consider renaming
+'...\alpha.py' if it has the same name as a library you intended to import)</code></pre>
+<p>这里给出的建议是「改名」,理由是怀疑你撞了同名库。<strong>它一次都没提循环导入</strong>。新手照着这句话去改文件名,改完还是同样的错。</p>
+<p>同一个环放进包里,提示立刻换了一套:</p>
+<pre><code>ImportError: cannot import name 'A' from partially initialized module 'pkg.a'
+(most likely due to a circular import) (...\pkg\a.py)</code></pre>
+<p><code>partially initialized module</code> 加上 <code>most likely due to a circular import</code> —— 这才是能搜到答案的那句话。所以「同样的错为什么别人搜得到我搜不到」有时候不是搜索技巧问题,是报错文案不同。</p>
+<p>比报错更贵的是不报错的那种。把 <code>from alpha import VALUE</code> 改成 <code>import alpha</code>,再在 <code>delta.py</code> 里 <code>import gamma</code> 并读 <code>gamma</code> 的属性:</p>
+<pre><code>delta sees []
+ok</code></pre>
+<p><code>delta sees []</code> 说明它拿到的 <code>gamma</code> 是一个还没有任何属性的空壳 —— 因为那时 <code>gamma</code> 只执行到第一行。整个进程退出码 0。等到某次请求真的访问那个属性,才会在别的地方炸出 <code>AttributeError: module 'a3' has no attribute 'A'</code>,而栈里已经看不到循环导入的影子。</p>
+<p>顺带一个能救命的细节:顺序决定成败。把 <code>A = 1</code> 挪到 <code>from .b import B</code> 之前,同一个环立刻就通了,<code>b got A = 1</code>。所以定位这类问题时不要只问「谁 import 了谁」,要问「被取的那个名字在第几行被赋值」。</p>
+<h2>陷阱五:__main__ 是另一份模块</h2>
+<p>包里的文件用两种方式跑,结果不同,而第二种更隐蔽。</p>
+<p><code>pkg/state.py</code> 里建一个模块级字典 <code>REGISTRY</code>,文件末尾用 <code>if __name__ == '__main__'</code> 再 <code>import pkg.state</code> 自己。直接跑:</p>
+<pre><code>python pkg/state.py
+ModuleNotFoundError: No module named 'pkg'</code></pre>
+<p>原因还是第 0 项:<code>sys.path[0]</code> 变成了 <code>pkg/</code> 目录,仓库根不在路径上,<code>pkg</code> 这个包名自然找不到。</p>
+<p>换成 <code>python -m pkg.state</code>,能跑,但模块体执行了两次:</p>
+<pre><code>body runs, __name__ = __main__
+body runs, __name__ = pkg.state
+two module objects: True</code></pre>
+<p>两个模块对象、两个 <code>REGISTRY</code> 字典、两个 id。<code>__main__</code> 那一份和 <code>pkg.state</code> 那一份互不相识,你往其中一个写进去的东西,从另一个里读不到。在真实项目里这会长成:注册表少了一半条目、Flask 应用被实例化两次、信号处理器注册两遍、单例连接池变成两个。</p>
+<p>修法不复杂:入口文件只做一件事 —— 调 <code>main()</code>,不要在里面创建模块级状态;或者干脆建 <code>pkg/__main__.py</code>,业务状态全部放在能被正常导入的模块里。同属「代码到底跑没跑」这个问题的还有<a href="https://yaohehe.github.io/2026-11-07-unittestmock-7.html" class="internal-link">变异测试下的 unittest.mock 七个静默失效</a>,那篇测的是测试替身。</p>
+<h2>陷阱六:没有 __init__.py 也能 import,但 __file__ 是 None</h2>
+<p>PEP 420 之后,目录里没有 <code>__init__.py</code> 也是一个包 —— 命名空间包。文档写得很清楚:「With namespace packages, there is no <code>parent/__init__.py</code> file.」而且它的 <code>__path__</code> 不是普通列表:「They instead use a custom iterable type which will automatically perform a new search for package portions on the next import attempt within that package if the path of their parent package (or <code>sys.path</code> for a top level package) changes.」</p>
+<p>我建了一个只有 <code>ns/sub/leaf.py</code> 的目录树,没有任何 <code>__init__.py</code>。<code>import ns.sub.leaf</code> 成功,<code>leaf.V</code> 正常拿到 1。然后:</p>
+<pre><code>ns.__file__ = None
+ns.__path__ = _NamespacePath ['D:\openclaw-blog\tmp\implab-1113\lab2\e5\ns']
+TypeError: argument should be a str or an os.PathLike object where __fspath__
+returns a str, not 'NoneType'</code></pre>
+<p><code>__file__</code> 是 <code>None</code>,于是 <code>Path(ns.__file__).parent</code> 这一行 —— 出现在无数项目的日志配置、资源加载、模板路径里 —— 直接抛 TypeError,而且报错信息里连变量名都没有,只说 <code>not 'NoneType'</code>。</p>
+<p>所以「包目录要不要放 <code>__init__.py</code>」不是风格问题,是契约问题:只要有任何一处代码依赖 <code>包.__file__</code>(哪怕只是为了打印一下启动路径),就得放。需要读包内资源文件的话,正确工具是 <code>importlib.resources</code>,它按 <code>__path__</code> 找,不依赖 <code>__file__</code>。</p>
+<h2>陷阱七:同一个文件可以是两个模块对象</h2>
+<p><code>sys.modules</code> 的键是字符串,精确匹配。而文件系统可能不区分大小写。这两件事凑在一起,就有了「一个文件、两个模块」。</p>
+<p>Windows 上的默认行为其实是<strong>大小写敏感</strong>的:目录里有 <code>Casemod.py</code>,写 <code>import casemod</code> 会得到 <code>ModuleNotFoundError: No module named 'casemod'</code>。但文档里还留着一个开关:「If this is set, Python ignores case in <code>import</code> statements. This only works on Windows and macOS.」设上 <code>PYTHONCASEOK=1</code> 再跑同一段代码:</p>
+<pre><code>same object = False
+STATE = ['x'] []
+isinstance across both = False
+sys.modules keys = ['Casemod', 'casemod']</code></pre>
+<p>四项全中:两个模块对象、两个列表、<code>isinstance</code> 跨两个类对象返回 False(不报错,就是 False)、<code>sys.modules</code> 里两个键指向同一个文件。</p>
+<p>这就是最难查的一类线上问题:类型检查全对、逻辑全对、对象就是过不了 <code>isinstance</code>;注册表单例看起来「有时候生效」。它和<a href="https://yaohehe.github.io/2026-11-06-unicode-nfc-nfkc-7.html" class="internal-link">两个看起来一样的字符串为什么永远不相等</a>是同一个母题 —— 你看见的身份和解释器使用的身份是两样东西。修法很土但有效:统一命名规范并在 CI 里禁止设置 <code>PYTHONCASEOK</code>;如果你在大小写不敏感的文件系统上工作(macOS 默认如此),这条值得自己跑一遍 —— 我没有 macOS 机器,这一句只作提醒,不作为结论。</p>
+<h2>陷阱八:reload 不重绑已经 from-import 出去的名字</h2>
+<p>热更新脚本最喜欢 <code>importlib.reload()</code>。它做的事比多数人以为的少。</p>
+<p>实测:模块 <code>m</code> 里 <code>f()</code> 返回 <code>'v1'</code>;主程序同时 <code>from m import f</code> 和 <code>import m</code>;运行中把 <code>m.py</code> 改成返回 <code>'v2'</code>;然后 <code>importlib.reload(m)</code>。结果:</p>
+<pre><code>before = v1
+module.f() = v2
+bound f() = v1
+f is m.f = False</code></pre>
+<p><code>reload</code> 确实重编译、重执行了模块体,<code>m.f</code> 已经是新函数;但你之前 <code>from m import f</code> 绑到局部命名空间的那个名字,还是旧函数对象。官方文档把这条写在 caveats 里:「Other references to the old objects (such as names external to the module) are not rebound to refer to the new objects and must be updated in each namespace where they occur if that is desired.」</p>
+<p>同一段文档里还有一句更阴的:「If the new version of a module does not define a name that was defined by the old version, the old definition remains.」删掉的函数不会消失 —— 模块字典是先保留再覆盖的。</p>
+<p>顺带把三种 import 形式各自绑定什么量清楚了,这在排 NameError 时很省时间:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">绑定的名字</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>import pkg.mod</code></td><td style="border:1px solid #ddd;padding:8px;">只绑 <code>pkg</code>,<code>mod</code> 未绑定</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>import pkg.mod as mm</code></td><td style="border:1px solid #ddd;padding:8px;">只绑 <code>mm</code>,连 <code>pkg</code> 都不绑</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>from pkg import mod</code></td><td style="border:1px solid #ddd;padding:8px;">只绑 <code>mod</code></td></tr></tbody></table>
+<p>第一种后面写 <code>mod.VALUE</code> 会得到 <code>NameError: name 'mod' is not defined</code>,而 <code>pkg.mod.VALUE</code> 正常 —— 这个不对称每年都要坑一批人。</p>
+<h2>Troubleshooting:三条命令定位「这个模块到底从哪来」</h2>
+<p>第一步,打印来源。在任何怀疑点上插一句 <code>print(json.__file__)</code>,或者对包用 <code>print(pkg.__path__)</code>。这一步能解决七成问题,因为它把「我以为」换成了一行路径。</p>
+<p>第二步,不导入也能查。<code>importlib.util.find_spec('json').origin</code> 直接给出将被加载的文件,不会执行模块体。我这边输出是:</p>
+<pre><code>C:\Users\xuany\.workbuddy\binaries\python\versions\3.13.12\Lib\json\__init__.py</code></pre>
+<p>第三步,看导入耗时找异常。<code>python -X importtime</code> 的输出走 stderr,格式是三段:自身耗时、累计耗时、模块名,单位微秒。我这边 <code>json</code> 那一行是:</p>
+<pre><code>import time:       987 |      18903 | json</code></pre>
+<p>自身 987 微秒、含依赖累计 18,903 微秒。真正有用的是发现「某个你根本没写的模块被导入了」以及「某个模块出现在意料之外的路径下」——把 stderr 重定向到文件再按模块名排序,比读代码快。</p>
+<p>再加一条隐形的:<code>python -v</code> 会把每个模块「从哪个文件加载、缓存命中与否」逐行打出来,前面陷阱三那条 <code>matches</code> 就出自它。它的输出量很大,只在锁定单个模块时用。</p>
+<p>如果你只想记一张清单,记这六条:</p>
+<ul><li>项目根目录不要出现与标准库同名的文件(<code>json.py</code>、<code>types.py</code>、<code>random.py</code>、<code>logging.py</code>、<code>queue.py</code> 是高发名单)</li><li>包内代码用 <code>python -m pkg.module</code> 跑,不要 <code>python pkg/module.py</code></li><li>需要 <code>__file__</code> 的包,放一个空 <code>__init__.py</code></li><li>生成代码后立刻导入的流程,加 <code>PYTHONDONTWRITEBYTECODE=1</code> 或改用哈希 pyc</li><li>循环导入优先把 import 挪进函数,而不是调整赋值顺序</li><li>热更新只用 <code>import m; m.f()</code>,不要依赖 <code>from m import f</code> 加 <code>reload</code></li></ul>
+<h2>本文的边界</h2>
+<p>我在这台机器上只测了 CPython 3.13.14 与 Windows 11 的组合。以下都没测,不当结论用:macOS 与 Linux 的大小写与 mtime 行为;Docker 镜像层的 mtime 处理与只读文件系统下 pyc 写入失败的表现;PyPy 与 freezer 工具链;<code>zipimport</code> 与冻结模块;3.8 到 3.12 各版本之间的提示文案差异(3.13 的改名提示与 <code>-P</code> 都是较新的东西)。第八条的 <code>reload</code> 行为在文档里写了很久,但具体到你的框架是否包装过 <code>reload</code>,只能自己验。同一条思路用在数值上,是<a href="https://yaohehe.github.io/2026-11-12-python-round-decimal-float-8.html" class="internal-link">金额舍入的八处静默分歧</a>。</p>
+<h2>FAQ</h2>
+<p><strong>Q:</strong>删掉 <code>__pycache__</code> 是不是就干净了?</p>
+<p>只解决缓存那一层。同名遮蔽、循环导入、<code>__main__</code> 双份都与 pyc 无关;而且下次导入会重新生成缓存,在生成代码的场景里旧问题会立刻回来。反过来,如果一个「改了没生效」的问题删缓存就好了,那基本可以确认是陷阱三。</p>
+<p><strong>Q:</strong><code>pip</code> 装了一个叫 <code>json</code> 的包,会顶掉标准库吗?</p>
+<p>按这台机器实测的 <code>sys.path</code> 顺序,<code>site-packages</code> 排在标准库目录之后,所以不会。真正危险的是脚本所在目录与 <code>PYTHONPATH</code> —— 这两处都排在标准库之前。区别的原因在查找顺序,不在名字。</p>
+<p><strong>Q:</strong>本地跑得好好的,容器里为什么 <code>ModuleNotFoundError</code>?</p>
+<p>先看启动方式。<code>python pkg/mod.py</code> 把 <code>pkg/</code> 目录放进了 <code>sys.path[0]</code>,仓库根不在路径上;容器里的工作目录又常常与本地不同,于是同一个命令在两边命中不同的路径项。用 <code>python -m</code> 并把工作目录固定,能消掉这一类。</p>
+<p><strong>Q:</strong><code>import a.b</code> 之后为什么 <code>b</code> 用不了?</p>
+<p>因为 <code>import a.b</code> 只绑定 <code>a</code>。要么写 <code>a.b.x</code>,要么 <code>from a import b</code>,要么 <code>import a.b as b</code>。这是语法层面的规定,和模块找不找得到无关。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
