@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pip-audit 的 SBOM 输出实测：下游拿不到的五样东西 - TechPassive</title>
+  <meta name="description" content="同一套 Flask 依赖，pip-audit 产出的 SBOM 里 35 个组件没有一个 purl、0 条依赖边，也没有生成工具信息，漏洞条目连评级都没有。我用 1.4 到 1.7 四版官方 schema 校验全部通过，再把同一环境交给 cyclonedx-py 逐项对照，差在哪一层一次说清。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>pip-audit 的 SBOM 输出实测：下游拿不到的五样东西</h1>
+  <div class="post-tags">
+    <span class="tag">供应链安全</span><span class="tag">Python</span><span class="tag">SBOM</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：<code>pip-audit -f cyclonedx-json</code> 产出的 JSON 能通过 1.4 / 1.5 / 1.6 / 1.7 四版官方 schema 校验，零报错；但 35 个组件里 purl 是 0 个、哈希 0 个、许可证 0 个，<code>dependencies</code> 35 条全是空壳、依赖边 0 条，<code>metadata</code> 里只有一个时间戳。它能当漏洞报告的附件用，不能当资产清单交给下游。要清单，同一环境用 <code>cyclonedx-py</code> 能拿到 35 个 purl 和 39 条依赖边。</p>
+<h2>先说结论：这份文件是漏洞报告的附件，不是资产清单</h2>
+<p>2026-11-09 我写过 pip-audit 2.10.1 的扫描结果怎么读，当时明确写了一句「没碰 SBOM 和 CycloneDX 输出」。这一篇就补上那一块：不再讲漏洞怎么读，而是讲<strong>把文件交出去之后，下游到底能拿它做什么</strong>。</p>
+<p>结论先说死：<code>pip-audit</code> 的 CycloneDX 输出是一份<strong>格式合法但语义稀薄</strong>的文件。它不是坏文件——schema 能过、工具能读、字段名都对；它是<strong>空文件</strong>，每一个下游真正需要的字段都恰好是可选字段，于是全都空着。</p>
+<p>下面每一条都是我在本机跑出来的，命令和输出原文都贴了。</p>
+<h2>实测环境与两条命令</h2>
+<ul><li>Windows 11，CPython 3.13.12</li><li>pip-audit 2.10.1（PyPI 当前版本）</li><li>cyclonedx-python-lib 11.12.0（pip-audit 的 CycloneDX 依赖）</li><li>对照工具 cyclonedx-py 8.0.1（CycloneDX 官方 Python 实现，即 cyclonedx-bom 包）</li><li>校验器 jsonschema 4.26.0，schema 取自 cyclonedx-python-lib 11.12.0 自带的四份官方文件</li></ul>
+<p>被测环境是一个干净的 venv，装了 <code>flask==3.1.3</code> 与 <code>requests==2.34.2</code>，再加上 pip-audit 自己：</p>
+<pre><code>python -m pip_audit --format cyclonedx-json -o base.json --progress-spinner off</code></pre>
+<p>第二组环境刻意装了老版本（requests 2.19.0 / Jinja2 2.11.2 / urllib3 1.23 / idna 2.7 / chardet 3.0.4），好让 <code>vulnerabilities</code> 数组里真的有东西。</p>
+<h2>空白一：35 个组件，0 个 purl</h2>
+<p>第一份 BOM 有 35 个组件，每个组件的全部字段就是这四个：</p>
+<pre><code>{"bom-ref": "BomRef.10813865932059208.4858470511441134",
+ "name": "CacheControl", "type": "library", "version": "0.14.4"}</code></pre>
+<p>purl 数量 0/35，hashes 0/35，licenses 0/35，externalReferences 0/35。</p>
+<p>为什么 purl 重要，CycloneDX 官方文档在 <code>purl</code> 字段下写得很直白：<strong>"Asserts the identity of the component using package-url (purl)"</strong> —— 它断言的是「这个组件是谁」，不是「它叫什么」。少了这个断言，下游只能自己按名字猜。</p>
+<p>猜的代价在这个文件里立刻可见：同一个 BOM 里同时出现 <code>CacheControl</code>、<code>pip_api</code>、<code>boolean.py</code> 三种写法。用 purl 归一化之后它们分别是 <code>pkg:pypi/cachecontrol</code>、<code>pkg:pypi/pip-api</code>、<code>pkg:pypi/boolean.py</code>——大小写要不要压、下划线要不要变连字符、点号保不保留，全得你自己实现一遍 PEP 503 归一化。实现错了不会报错，只会匹配不上，然后漏洞库里那一条就这么静默漏过去。</p>
+<h2>空白二：35 个组件，0 条依赖边</h2>
+<p>这一条比 purl 更致命。文件里有 <code>dependencies</code> 数组，长度正好 35，看起来像是图建好了：</p>
+<pre><code>"dependencies": [
+  {"ref": "BomRef.004782033393651575.9086783281722834"},
+  {"ref": "BomRef.005548436256527678.8461533511536604"}
+]</code></pre>
+<p>35 条记录，<strong>没有一条带 <code>dependsOn</code></strong>，边数 0。这份图是 35 个孤点。</p>
+<p>CycloneDX 官方规格页对依赖图的定义是「capable of representing both direct and transitive relationships」，直接与传递关系都要能表达。孤点图一层都表达不了。</p>
+<p>后果很具体：拿到这份 BOM，你答不出「urllib3 是被谁拉进来的」。而这个问题恰恰是处置漏洞时要问的第一个——是直接依赖，还是 Flask 或 requests 的传递依赖？决定你改 requirements 还是等上游。同一台机器、同一个环境换 cyclonedx-py 8.0.1 生成对照文件，<code>dependencies</code> 里 35 条记录带 <strong>39 条 <code>dependsOn</code></strong>，Flask 那一条明确写出 <code>Jinja2</code> / <code>MarkupSafe</code> / <code>Werkzeug</code> / <code>blinker</code> / <code>click</code> / <code>itsdangerous</code> 六条边。数据一直都在，只是 pip-audit 没往外写。</p>
+<h2>空白三：metadata 里没有 tools，也没有 component</h2>
+<p><code>metadata</code> 的全部内容是：</p>
+<pre><code>{"timestamp": "2026-11-10T22:14:12.494737+00:00"}</code></pre>
+<p>一个键。</p>
+<p>官方规格页对 BOM metadata 的定义是两部分：「the target component for which the BOM describes」和「the tools used to create the BOM」。这两样在这份文件里都没有。</p>
+<p>没有 <code>tools</code>，收到文件的人无法回答「这份 SBOM 是谁、哪个版本生成的」——半年后审计追溯时，这一条就是断链。没有 <code>metadata.component</code>，文件里没有任何一处说明「这是哪个项目的 BOM」，它只是一袋包。</p>
+<p>顺便说句公道话：cyclonedx-py 8.0.1 的 <code>metadata.tools</code> 有，<code>metadata.component</code> 也是 null。所以「缺 BOM 主体」不是 pip-audit 独有的问题，<code>cyclonedx-py environment</code> 模式同样不写；但 <code>tools</code> 这一项两边一个有一个没有，差距是真实的。</p>
+<h2>空白四：vulnerabilities 只有四个字段，aliases 对它无效</h2>
+<p>含漏洞那份 BOM 有 38 条 <code>vulnerabilities</code>，每条的全部字段是：<code>id</code>、<code>description</code>、<code>recommendation</code>、<code>affects</code>、<code>bom-ref</code>。就这样。</p>
+<ul><li>没有 <code>ratings</code>：38 条里 0 条有 CVSS 分数或 severity 分级。下游按严重度排序，全部落在「未评级」。</li><li>没有 <code>source</code>：<code>PYSEC-2018-28</code> 这种号出自 OSV 体系，但文件里没写它来自哪个库。下游想回源核对，只能猜。</li><li>没有 <code>analysis</code>：可修复性、处置状态一个都没有。</li><li>没有 aliases：而 pip-audit 的 <code>--aliases</code> 默认是 <code>auto</code>。我显式加 <code>--aliases on</code> 再跑一次，产出文件里 <code>"aliases"</code> 字段出现 <strong>0 次</strong>，<code>CVE-</code> 字样只在 6 处出现在 description 的自然语言里（38 条中）。</li></ul>
+<p>这不是 bug，是写在帮助文本里的设计。<code>pip-audit --help</code> 原文：<code>--desc</code> 与 <code>--aliases</code> 都是「This flag has no effect on the cyclonedx-json or cyclonedx-xml formats」。所以想按 CVE 号查这份 SBOM，只能靠描述文本里恰好提到——38 条里只有 6 处。</p>
+<p><code>recommendation</code> 则一律硬编码成 <code>Upgrade</code>，没有目标版本。对比 11-09 那篇讲过的 JSON 格式：那边每条漏洞都带 <code>fix_versions</code>（哪一版能修）。同一份数据，JSON 里有、SBOM 里没有。</p>
+<h2>空白五：本地包被静默丢出 BOM</h2>
+<p>这条最容易被当成「没问题」。我在 requirements 里写一行本地目录：</p>
+<pre><code>./localpkg</code></pre>
+<p><code>-f json</code> 的输出老老实实告诉你它跳过了：</p>
+<pre><code>{"name": "localdemo", "skip_reason": "Dependency not found on PyPI and could not be audited: localdemo (0.1.0)"}</code></pre>
+<p>换成 <code>-f cyclonedx-json</code>，产出文件是：<code>metadata</code>、<code>serialNumber</code>、<code>version</code>、<code>$schema</code>、<code>bomFormat</code>、<code>specVersion</code> 六个键，<strong><code>components</code> 键根本不存在</strong>。控制台打印「No known vulnerabilities found」，退出码 0。</p>
+<p>源码里就一行：<code>if dep.is_skipped(): continue</code>。跳过的依赖被直接跳过，连个空组件都不留。</p>
+<p>这意味着：你的项目自己那一层代码（本地包、可编辑安装的内部库）在 SBOM 里完全不存在，而文件表面上依然合法、依然能上传、依然能通过校验。<strong>一份宣称描述你的应用、却把你的应用丢掉的清单</strong>，这是我认为最该警惕的一种「通过」。</p>
+<h2>四版 schema 全过，这才是最危险的地方</h2>
+<p>我把含漏洞那份文件分别喂给 1.4 / 1.5 / 1.6 / 1.7 四份官方 schema：</p>
+<pre><code>--- 1.4: 0 errors
+--- 1.5: 0 errors
+--- 1.6: 0 errors
+--- 1.7: 0 errors</code></pre>
+<p>四版全绿。原因不复杂：上面说的每一个字段——purl、hashes、licenses、dependsOn、metadata.component、ratings、source、analysis——在 schema 里都是<strong>可选</strong>。必填项只有 <code>bomFormat</code> 和 <code>specVersion</code> 两个。</p>
+<p>所以「SBOM 校验通过」这句话的信息量约等于零。它只证明文件能被解析器读，不证明文件里有内容。如果你的 CI 里唯一门禁是 <code>cyclonedx validate</code>，那这个门禁对这份文件恒真，等于没装。</p>
+<h2>同一环境，三个数字对不上：49 / 38 / 25</h2>
+<p>这是我这轮最没料到的一处。老版本环境下：</p>
+<ul><li>控制台：<code>Found 49 known vulnerabilities in 5 packages</code></li><li>JSON 格式：49 行漏洞记录</li><li>CycloneDX 格式：38 条 <code>vulnerabilities</code></li></ul>
+<p>差 11 条。逐条对拍后原因是：JSON 里同一包的同一公告重复出现了两次，两行逐字节相同（同 id、同 aliases、同 description），而 CycloneDX 侧把漏洞存成有序集合，去重键里含 id、description、affects，完全相同的行被合并了。</p>
+<p>但合并不彻底：38 条里只有 <strong>25 个唯一公告号</strong>，另外 13 条是「同号但描述不同」——一条是 OSV 原始描述，一条是 GHSA advisories 风格的描述。去重键里含 description，于是两条都留下了。</p>
+<p>结果是同一台机器、同一个环境、同一次审计，三个官方口径给出三个数字：49、38、25。你在周报里写哪个都能被质疑。我的做法是<strong>报唯一公告号</strong>（25），另外两个数只用来对拍工具是否换了行为。</p>
+<h2>specVersion 固定 1.4：一行源码与三个版本的差距</h2>
+<p>文件里写的是：</p>
+<pre><code>"$schema": "http://cyclonedx.org/schema/bom-1.4.schema.json", "specVersion": "1.4"</code></pre>
+<p>CycloneDX 官方规格页现在写的是 1.7，发布日期 2025-10-21，已作为 ECMA-424 发布。pip-audit 用的是 1.4，差三个大版本。</p>
+<p>这不是环境问题，是硬编码。pip-audit 源码 <code>pip_audit/_format/cyclonedx.py</code> 里那句：</p>
+<pre><code>schema_version=output.SchemaVersion.V1_4</code></pre>
+<p>而它依赖的 cyclonedx-python-lib 11.12.0 自己支持到 1.7（<code>SchemaVersion</code> 枚举里 V1_7 到 V1_0 八个值都在）。工具链能产 1.7，调用方钉死在 1.4。</p>
+<p>差距有多大，直接比 schema 定义：1.7 的 <code>vulnerability</code> 定义比 1.4 多三个字段（<code>workaround</code>、<code>proofOfConcept</code>、<code>rejected</code>），<code>component</code> 定义多十个（<code>authors</code>、<code>manufacturer</code>、<code>swhid</code>、<code>omniborId</code>、<code>modelCard</code> 等）。也就是说「这个漏洞有没有缓解办法」「这个组件是谁制造的」这类问题的字段位，1.4 里根本不存在。</p>
+<h2>对照：同一环境交给 cyclonedx-py 会得到什么</h2>
+<p>同一个 venv、同样 35 个组件，两个工具的产出逐项对比：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">项目</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pip-audit 2.10.1</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">cyclonedx-py 8.0.1</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">specVersion</td><td style="border:1px solid #ddd;padding:8px;">1.4</td><td style="border:1px solid #ddd;padding:8px;">1.6</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">组件数</td><td style="border:1px solid #ddd;padding:8px;">35</td><td style="border:1px solid #ddd;padding:8px;">35</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">有 purl</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">35</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">有 licenses</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">35</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">有 externalReferences</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">35</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">有 hashes</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">依赖边 dependsOn</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">39</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">metadata.tools</td><td style="border:1px solid #ddd;padding:8px;">无</td><td style="border:1px solid #ddd;padding:8px;">有</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">metadata.component</td><td style="border:1px solid #ddd;padding:8px;">无</td><td style="border:1px solid #ddd;padding:8px;">无（null）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">bom-ref 形态</td><td style="border:1px solid #ddd;padding:8px;">BomRef 加随机数</td><td style="border:1px solid #ddd;padding:8px;">CacheControl==0.14.4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">vulnerabilities</td><td style="border:1px solid #ddd;padding:8px;">有（4 字段）</td><td style="border:1px solid #ddd;padding:8px;">无（environment 模式不含）</td></tr></tbody></table>
+<p>两个工具的分工在这张表里很清楚：pip-audit 给漏洞，cyclonedx-py 给清单。想让一份文件同时干两件事，得自己拼。</p>
+<p>顺带一个细节值得记：cyclonedx-py 的 <code>bom-ref</code> 是 <code>CacheControl==0.14.4</code>，稳定且可读；pip-audit 的是 <code>BomRef.10813865932059208.4858470511441134</code>，每次运行都变。我连跑两次同一环境：<code>serialNumber</code> 不同，8 个组件的 <code>bom-ref</code> <strong>0/8 相同</strong>，25 个漏洞的 <code>bom-ref</code> <strong>0/25 相同</strong>。</p>
+<p>如果你的 CI 里做「SBOM 与本季度基线 diff，有变化就告警」，这份文件每次都会 100% 变化。告警会响，但你查不出任何东西。</p>
+<h2>--fix 与 CycloneDX 互斥：修好了，文件里没痕迹</h2>
+<p>这条是我原本没打算测、顺手撞上的。命令：</p>
+<pre><code>python -m pip_audit --path 环境路径 --fix -f cyclonedx-json -o fix.json</code></pre>
+<p>控制台：</p>
+<pre><code>Found 49 known vulnerabilities in 5 packages and fixed 49 vulnerabilities in 5 packages
+WARNING:pip_audit._format.cyclonedx:--fix output is unsupported by CycloneDX formats</code></pre>
+<p>漏洞真修了 49 条，包真的升级了；但 SBOM 里<strong>没有任何修复痕迹</strong>——没有升级前版本、没有升级后版本、没有 fix_versions，<code>recommendation</code> 还是那三个字 <code>Upgrade</code>。</p>
+<p>源码里对应的是那一句 <code>logger.warning("--fix output is unsupported by CycloneDX formats")</code>，也就是「不支持」只以一条 WARNING 表达。如果你的脚本只检查退出码（这次是 0），你会以为「修完的 SBOM 已经归档」。</p>
+<h2>交付前必须补的四件事</h2>
+<p>1. <strong>别用 pip-audit 的 SBOM 当资产清单</strong>。要清单跑 <code>cyclonedx-py environment venv 里的 python 路径</code>，要漏洞跑 pip-audit，两份文件用组件数对拍（我这里是 35 对 35，一致）。</p>
+<p>2. <strong>自己加三道完整性断言</strong>，不要只跑 schema 校验：每个组件有 purl 吗（比例应为 100%）？<code>sum(len(dep.get("dependsOn", [])))</code> 大于 0 吗？<code>metadata.component</code> 指向你的项目吗？这三问任一为否，文件就不该进制品库。</p>
+<p>3. <strong>diff 之前先归一化</strong>。把 <code>serialNumber</code> 和所有 <code>bom-ref</code> 剥掉再比，否则每次都是全量变化。</p>
+<p>4. <strong>别把 <code>--fix</code> 和 CycloneDX 混用</strong>。要么分两步（先用 pip-audit --fix 改环境，再重新生成 SBOM），要么用 JSON 格式拿 fix_versions。</p>
+<h2>Troubleshooting：四个原样报错</h2>
+<p><strong>报错一：格式名写错，退出码 2</strong></p>
+<pre><code>pip-audit: error: argument -f/--format: invalid OutputFormatChoice value: 'cyclonedx'</code></pre>
+<p>合法值只有 <code>columns</code>、<code>json</code>、<code>cyclonedx-json</code>、<code>cyclonedx-xml</code>、<code>markdown</code> 五个（<code>pip-audit --help</code> 原文）。写 <code>cyclonedx</code> 是最常见的手误，注意它是两个值不是一族。</p>
+<p><strong>报错二：<code>--require-hashes</code> 撞上没写哈希的 requirements</strong></p>
+<pre><code>ERROR:pip_audit._virtual_env:internal pip failure: ERROR: Hashes are required in --require-hashes mode,
+but they are missing from some requirements.</code></pre>
+<p>这行以 <code>internal pip failure</code> 开头，很容易被当成 pip-audit 自己的 bug。实际是 pip 在临时虚拟环境里装依赖时拒绝了——你要么补 <code>--hash=sha256:...</code>，要么去掉 <code>--require-hashes</code>。注意 pip 已经把该写的哈希值打印出来了，直接抄。</p>
+<p><strong>报错三：requirements 路径不存在</strong></p>
+<pre><code>ERROR:pip_audit._cli:invalid requirements input: nope.txt</code></pre>
+<p>只一行 ERROR，没有栈，退出码 1。在 CI 里如果不打印 stderr，这条看起来就像「审计无结果」。</p>
+<p><strong>报错四：<code>-o</code> 的目录不存在，审计白跑</strong></p>
+<pre><code>Found 37 known vulnerabilities in 3 packages
+Traceback (most recent call last):
+  ...
+FileNotFoundError: [Errno 2] No such file or directory: 'nodir\\x.json'</code></pre>
+<p>注意顺序：<strong>先打印「找到 37 条」，再崩在写文件上</strong>。审计已经跑完、网络和时间都花了，结果在落盘那一刻丢掉，退出码 1。pip-audit 不会替你创建输出目录。</p>
+<p>另外还有一个不算报错但更阴的：<code>-f cyclonedx-xml -o xml-out.json</code> 会把 XML 原样写进一个 <code>.json</code> 文件名，退出码 1（因为有漏洞）、零报错。CycloneDX 官方约定的文件名是 <code>bom.json</code> / <code>bom.xml</code>，或后缀 <code>*.cdx.json</code> / <code>*.cdx.xml</code>；下游很多工具按扩展名选解析器，名字写错就解析失败。</p>
+<h2>本文的边界</h2>
+<p>说清楚没测的部分，比多写三条结论更有用：</p>
+<ul><li>没有把 BOM 上传到 Dependency-Track 或任何商业 SCA 平台。所以「下游到底怎么处理没有 purl 的组件」我只写了推断（按 name+version 匹配、需要自己做归一化），没有实测。</li><li>没有测 1.7 的新字段能不能被下游消费，只比对了 schema 定义。</li><li>没有测 Syft、cdxgen 等其它生成器，对照只做了 cyclonedx-py 一个。</li><li><code>hashes</code> 两边都是 0，我没有进一步追查是 pip 元数据里没有、还是两个工具都没取。这一条存疑。</li></ul>
+<p>写这篇的过程中我反复回到一个判断上：<strong>格式合法与信息可用是两件事，而所有自动化门禁默认只检查前者</strong>。我实际测试了四版 schema，全部零报错；而文件里五个下游最需要的字段，五个全空。</p>
+<p>本文不含任何联盟推广链接。想按同一层往前追，可以看 11-09 那篇<a href="https://yaohehe.github.io/2026-11-09-pip-audit-37-19.html" class="internal-link">扫描结果怎么读</a>，或者往上游一整层看<a href="https://yaohehe.github.io/2026-10-21-python.html" class="internal-link">版本钉死的语法边界</a>；如果你更关心「包装进来之后会不会写到目录外」，那是<a href="https://yaohehe.github.io/2026-10-29-python-314-tarfile-5.html" class="internal-link">解压执行层</a>的问题。</p>
+<h2>FAQ</h2>
+<p><strong>Q：pip-audit 的 SBOM 能直接上传到 SCA 平台吗？</strong></p>
+<p>能上传，多数平台也能解析。但组件没有 purl，平台只能按 name+version 去匹配，<code>CacheControl</code> 与 <code>cachecontrol</code> 这类写法差异要靠平台自己的归一化兜。建议把 cyclonedx-py 的产出当资产清单，pip-audit 的产出只当漏洞附件。</p>
+<p><strong>Q：specVersion 只有 1.4，会不会不兼容？</strong></p>
+<p>不会。1.4 是向后兼容最好的版本，老平台都认。代价是拿不到 1.5 之后新增的字段（<code>workaround</code>、<code>proofOfConcept</code>、<code>rejected</code> 等）。如果你的流程需要「缓解办法」这类信息，1.4 的容器里没地方放。</p>
+<p><strong>Q：我只要漏洞报告，还需要 SBOM 吗？</strong></p>
+<p>要，但两者回答的问题不同。漏洞报告答「有什么洞」，SBOM 答「这个洞是谁引进来的、影响哪几个服务」。前者决定修不修，后者决定改哪个文件、通知哪个团队。</p>
+<p><strong>Q：为什么本地包会从 SBOM 里消失？</strong></p>
+<p>pip-audit 对无法在 PyPI 上解析的依赖会标记为 skipped。JSON 格式会把 <code>skip_reason</code> 写出来，CycloneDX 格式在源码里直接跳过，不留任何痕迹，退出码仍是 0。可编辑安装与内部私有包最容易踩这一条。</p>
+<p><strong>Q：两次生成的 BOM 完全不一样，正常吗？</strong></p>
+<p>正常。<code>serialNumber</code> 每次新生成，<code>bom-ref</code> 是随机串。要比内容，先把这两个字段剥掉，再按 name 加 version 建索引比对。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
