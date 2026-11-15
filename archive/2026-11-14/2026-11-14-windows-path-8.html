@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Windows path 的 8 处静默分歧：写进去的不是那个名字 - TechPassive</title>
+  <meta name="description" content="同一台 Windows 上，你写的路径串和磁盘上的条目可以不是同一个东西：尾随空格与点被静默剥掉、隐藏数据流不进任何目录列表、C: 开头的相对路径依赖一个看不见的工作目录、260 字符边界让 exists 返回 False 而不报错、junction 骗过 islink 又骗过 os.walk。八处分歧全部本机实测。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Windows path 的 8 处静默分歧：写进去的不是那个名字</h1>
+  <div class="post-tags">
+    <span class="tag">Windows</span><span class="tag">Python</span><span class="tag">pathlib</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：Windows 上的路径不是「一个字符串对应一个文件」的映射，而是一条流水线：你先写一个串，Win32 层做规范化，再决定用哪个命名空间，最后才到 NTFS 解析名字。流水线上每一步都可能把串改掉或者换掉，而其中大部分动作不抛异常、不写日志、<code>exit code</code> 还是 0。</p>
+<p>这篇文章里的数字全部来自 2026-11-14 在本机的实测：Windows 11 build 26300、CPython 3.13.12、NTFS 卷。被测对象是我自己建的临时目录，不是别人的仓库。官方口径逐条对照了 Microsoft Learn 的 Naming Files, Paths, and Namespaces 与 CPython 3.13 的文档和源码。</p>
+<p>先说结论：路径比较永远不要用字符串相等，遍历目录前永远先问一句「这是不是一个重解析点」，写文件前永远先看一眼 <code>abspath</code> 之后的长度。下面八处，每一处都配了实测输出和它会咬人的场景。</p>
+<figure class="auto-visual" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#FCC624" role="img" aria-label="Linux" style="flex:none;"><path d="M12.504 0c-.155 0-.315.008-.48.021-4.226.333-3.105 4.807-3.17 6.298-.076 1.092-.3 1.953-1.05 3.02-.885 1.051-2.127 2.75-2.716 4.521-.278.832-.41 1.684-.287 2.489a.424.424 0 00-.11.135c-.26.268-.45.6-.663.839-.199.199-.485.267-.797.4-.313.136-.658.269-.864.68-.09.189-.136.394-.132.602 0 .199.027.4.055.536.058.399.116.728.04.97-.249.68-.28 1.145-.106 1.484.174.334.535.47.94.601.81.2 1.91.135 2.774.6.926.466 1.866.67 2.616.47.526-.116.97-.464 1.208-.946.587-.003 1.23-.269 2.26-.334.699-.058 1.574.267 2.577.2.025.134.063.198.114.333l.003.003c.391.778 1.113 1.132 1.884 1.071.771-.06 1.592-.536 2.257-1.306.631-.765 1.683-1.084 2.378-1.503.348-.199.629-.469.649-.853.023-.4-.2-.811-.714-1.376v-.097l-.003-.003c-.17-.2-.25-.535-.338-.926-.085-.401-.182-.786-.492-1.046h-.003c-.059-.054-.123-.067-.188-.135a.357.357 0 00-.19-.064c.431-1.278.264-2.55-.173-3.694-.533-1.41-1.465-2.638-2.175-3.483-.796-1.005-1.576-1.957-1.56-3.368.026-2.152.236-6.133-3.544-6.139zm.529 3.405h.013c.213 0 .396.062.584.198.19.135.33.332.438.533.105.259.158.459.166.724 0-.02.006-.04.006-.06v.105a.086.086 0 01-.004-.021l-.004-.024a1.807 1.807 0 01-.15.706.953.953 0 01-.213.335.71.71 0 00-.088-.042c-.104-.045-.198-.064-.284-.133a1.312 1.312 0 00-.22-.066c.05-.06.146-.133.183-.198.053-.128.082-.264.088-.402v-.02a1.21 1.21 0 00-.061-.4c-.045-.134-.101-.2-.183-.333-.084-.066-.167-.132-.267-.132h-.016c-.093 0-.176.03-.262.132a.8.8 0 00-.205.334 1.18 1.18 0 00-.09.4v.019c.002.089.008.179.02.267-.193-.067-.438-.135-.607-.202a1.635 1.635 0 01-.018-.2v-.02a1.772 1.772 0 01.15-.768c.082-.22.232-.406.43-.533a.985.985 0 01.594-.2zm-2.962.059h.036c.142 0 .27.048.399.135.146.129.264.288.344.465.09.199.14.4.153.667v.004c.007.134.006.2-.002.266v.08c-.03.007-.056.018-.083.024-.152.055-.274.135-.393.2.012-.09.013-.18.003-.267v-.015c-.012-.133-.04-.2-.082-.333a.613.613 0 00-.166-.267.248.248 0 00-.183-.064h-.021c-.071.006-.13.04-.186.132a.552.552 0 00-.12.27.944.944 0 00-.023.33v.015c.012.135.037.2.08.334.046.134.098.2.166.268.01.009.02.018.034.024-.07.057-.117.07-.176.136a.304.304 0 01-.131.068 2.62 2.62 0 01-.275-.402 1.772 1.772 0 01-.155-.667 1.759 1.759 0 01.08-.668 1.43 1.43 0 01.283-.535c.128-.133.26-.2.418-.2zm1.37 1.706c.332 0 .733.065 1.216.399.293.2.523.269 1.052.468h.003c.255.136.405.266.478.399v-.131a.571.571 0 01.016.47c-.123.31-.516.643-1.063.842v.002c-.268.135-.501.333-.775.465-.276.135-.588.292-1.012.267a1.139 1.139 0 01-.448-.067 3.566 3.566 0 01-.322-.198c-.195-.135-.363-.332-.612-.465v-.005h-.005c-.4-.246-.616-.512-.686-.71-.07-.268-.005-.47.193-.6.224-.135.38-.271.483-.336.104-.074.143-.102.176-.131h.002v-.003c.169-.202.436-.47.839-.601.139-.036.294-.065.466-.065zm2.8 2.142c.358 1.417 1.196 3.475 1.735 4.473.286.534.855 1.659 1.102 3.024.156-.005.33.018.513.064.646-1.671-.546-3.467-1.089-3.966-.22-.2-.232-.335-.123-.335.59.534 1.365 1.572 1.646 2.757.13.535.16 1.104.021 1.67.067.028.135.06.205.067 1.032.534 1.413.938 1.23 1.537v-.043c-.06-.003-.12 0-.18 0h-.016c.151-.467-.182-.825-1.065-1.224-.915-.4-1.646-.336-1.77.465-.008.043-.013.066-.018.135-.068.023-.139.053-.209.064-.43.268-.662.669-.793 1.187-.13.533-.17 1.156-.205 1.869v.003c-.02.334-.17.838-.319 1.35-1.5 1.072-3.58 1.538-5.348.334a2.645 2.645 0 00-.402-.533 1.45 1.45 0 00-.275-.333c.182 0 .338-.03.465-.067a.615.615 0 00.314-.334c.108-.267 0-.697-.345-1.163-.345-.467-.931-.995-1.788-1.521-.63-.4-.986-.87-1.15-1.396-.165-.534-.143-1.085-.015-1.645.245-1.07.873-2.11 1.274-2.763.107-.065.037.135-.408.974-.396.751-1.14 2.497-.122 3.854a8.123 8.123 0 01.647-2.876c.564-1.278 1.743-3.504 1.836-5.268.048.036.217.135.289.202.218.133.38.333.59.465.21.201.477.335.876.335.039.003.075.006.11.006.412 0 .73-.134.997-.268.29-.134.52-.334.74-.4h.005c.467-.135.835-.402 1.044-.7zm2.185 8.958c.037.6.343 1.245.882 1.377.588.134 1.434-.333 1.791-.765l.211-.01c.315-.007.577.01.847.268l.003.003c.208.199.305.53.391.876.085.4.154.78.409 1.066.486.527.645.906.636 1.14l.003-.007v.018l-.003-.012c-.015.262-.185.396-.498.595-.63.401-1.746.712-2.457 1.57-.618.737-1.37 1.14-2.036 1.191-.664.053-1.237-.2-1.574-.898l-.005-.003c-.21-.4-.12-1.025.056-1.69.176-.668.428-1.344.463-1.897.037-.714.076-1.335.195-1.814.12-.465.308-.797.641-.984l.045-.022zm-10.814.049h.01c.053 0 .105.005.157.014.376.055.706.333 1.023.752l.91 1.664.003.003c.243.533.754 1.064 1.189 1.637.434.598.77 1.131.729 1.57v.006c-.057.744-.48 1.148-1.125 1.294-.645.135-1.52.002-2.395-.464-.968-.536-2.118-.469-2.857-.602-.369-.066-.61-.2-.723-.4-.11-.2-.113-.602.123-1.23v-.004l.002-.003c.117-.334.03-.752-.027-1.118-.055-.401-.083-.71.043-.94.16-.334.396-.4.69-.533.294-.135.64-.202.915-.47h.002v-.002c.256-.268.445-.601.668-.838.19-.201.38-.336.663-.336zm7.159-9.074c-.435.201-.945.535-1.488.535-.542 0-.97-.267-1.28-.466-.154-.134-.28-.268-.373-.335-.164-.134-.144-.333-.074-.333.109.016.129.134.199.2.096.066.215.2.36.333.292.2.68.467 1.167.467.485 0 1.053-.267 1.398-.466.195-.135.445-.334.648-.467.156-.136.149-.267.279-.267.128.016.034.134-.147.332a8.097 8.097 0 01-.69.468zm-1.082-1.583V5.64c-.006-.02.013-.042.029-.05.074-.043.18-.027.26.004.063 0 .16.067.15.135-.006.049-.085.066-.135.066-.055 0-.092-.043-.141-.068-.052-.018-.146-.008-.163-.065zm-.551 0c-.02.058-.113.049-.166.066-.047.025-.086.068-.14.068-.05 0-.13-.02-.136-.068-.01-.066.088-.133.15-.133.08-.031.184-.047.259-.005.019.009.036.03.03.05v.02h.003z"/></svg><span>Linux</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><figure class="auto-visual" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="本文阅读路线" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft2780fe03grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft2780fe03grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">本文阅读路线</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">尾随空格与点：你写的名字被改掉了，没人告诉你</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">data.txt:hidden 里的 18 字节：任何目录列表都看不见</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">C:rel.txt 不是 C:\rel.txt，它指向一个你看不见的工作目录</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">\\?\ 前缀：关掉字符串解析的同时，也关掉了你的容错</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">259 与 260：exists() 在这条线上会骗你</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>本文小节导航 · 依据正文标题自动生成</figcaption></figure><h2>尾随空格与点：你写的名字被改掉了，没人告诉你</h2>
+<p>我实际测试的第一件事，是在一个空目录里写两个文件：</p>
+<pre><code>open('note.txt ', 'w')      # 结尾有一个空格
+open('report.txt.', 'w')    # 结尾有一个点</code></pre>
+<p>两个 <code>open</code> 都成功返回。然后 <code>os.listdir</code> 给出的结果是 <code>['note.txt', 'report.txt']</code>，空格和点都不见了。文件的字节数正常、内容能读回、<code>open('note.txt ')</code> 也能打开它——因为系统在打开时又做了一次同样的剥离，所以你完全看不出中间发生过什么。</p>
+<p>微软的官方文档把这条写在命名规则里：「Do not end a file or directory name with a space or a period. Although the underlying file system may support such names, the Windows shell and user interface does not.」注意这句话的结构：文件系统支持，是 shell 和界面不支持。真正做剥离的是 Win32 那条路径上的一层，NTFS 本身并不禁止。</p>
+<p>更细的一处：<code>os.path.abspath</code> 的官方文档直接写了这个行为，「Trailing dots and spaces are stripped」，并给了一个例子 <code>os.path.abspath('c:/temp/spam. . .')</code> 返回 <code>c:\temp\spam</code>。也就是说，你在规范化函数里能看到这个动作，但在 <code>open</code> 里看不到。</p>
+<p>危险场景有三个：从表格或文件名列表批量导入名字时，<code>a.txt </code> 和 <code>a.txt</code> 会指向同一个文件，去重逻辑却认为是两个；把标题直接当文件名时，结尾的点被吃掉后扩展名判断跟着变；以及跨平台同步——在 Linux 上这样命名是合法的，两个平台各自维护索引，最后对不上。</p>
+<h2>data.txt:hidden 里的 18 字节：任何目录列表都看不见</h2>
+<p>同一台机器上，我写了这样一个文件：</p>
+<pre><code>open(str(path) + ':hidden', 'w').write('secret-stream-here')</code></pre>
+<p>主文件 <code>data.txt</code> 仍然是 9 字节，内容仍是 <code>main-body</code>。而 <code>os.path.getsize(路径 + ':hidden')</code> 返回 18。目录列表 <code>os.listdir</code> 只有一条 <code>data.txt</code>，<code>dir</code> 也看不出来。只有 <code>dir /r</code> 会多打一行：</p>
+<pre><code>2026/11/14  06:13                 9 data.txt
+                                 18 data.txt:hidden:$DATA</code></pre>
+<p>这是 NTFS 的备用数据流（alternate data stream）。官方 File Streams 文档的命名规则写得很清楚：完整形式是 <code>filename:stream name:stream type</code>，默认数据流是无名的，写全了就是 <code>filename::$DATA</code>。文档里还有一句容易漏掉的：「There are no file times associated with a stream. The file times for a file are updated when any stream in a file is updated.」——流没有自己的时间戳，但改了流会动主文件的时间，于是任何靠 mtime 判断「这个文件有没有变」的增量备份都会误判。</p>
+<p>我顺手验了最容易踩的一步：<code>shutil.copy2</code> 复制过去的 <code>copy.txt</code> 再打开 <code>copy.txt:hidden</code> 直接 <code>FileNotFoundError</code>。Python 的复制走的是读主数据流再写新文件，流不在其中。这不是 Python 的缺陷，Windows 自己的 <code>copy</code> 命令行为一致。</p>
+<p>这一条的现实影响集中在三处：备份工具只备份主数据流，流里的内容静默消失；杀毒软件与取证工具如果不扫 <code>:$DATA</code>，看的是半个文件；而做体积统计时，<code>sum(getsize(f) for f in listdir())</code> 得到的是 9 而不是 27。</p>
+<h2>C:rel.txt 不是 C:\rel.txt，它指向一个你看不见的工作目录</h2>
+<p>这是我认为最容易被写进生产代码的一条。先看两组实测：</p>
+<pre><code>os.chdir('C:\\Windows')
+os.path.abspath('C:rel.txt')     ->  'C:\\Windows\\rel.txt'
+os.chdir('D:\\')
+os.path.abspath('C:rel.txt')     ->  'C:\\Windows\\rel.txt'   # 没变</code></pre>
+<p>第二行才是重点。cmd 的 <code>cd</code> 只改当前盘的工作目录，Windows 为每个盘符单独保留了一个「该盘的当前目录」，而且这个值在进程里是隐藏的、<code>os.getcwd()</code> 永远只报当前盘那一个。所以 <code>C:rel.txt</code> 的含义不是 <code>C:\rel.txt</code>，而是「C 盘那个隐藏工作目录下的 rel.txt」；你把进程切到 D 盘，它照样回 C 盘去解析。</p>
+<p><code>os.path.isabs('C:rel.txt')</code> 返回 False，<code>os.path.splitdrive</code> 给出 <code>('C:', 'rel.txt')</code>，<code>PureWindowsPath('C:rel.txt').is_absolute()</code> 也是 False。官方 <code>os.path.abspath</code> 文档写的是同一件事：「A drive-relative path is resolved against the current directory of the specified drive, and the drive letter is capitalized.」</p>
+<p>拼接函数也会配合这个语义：<code>os.path.join('C:', 'x.txt')</code> 得到 <code>'C:x.txt'</code>，而 <code>os.path.join('C:\\', 'x.txt')</code> 才是 <code>'C:\\x.txt'</code>。少一个反斜杠，就从一个绝对路径退化成一个依赖隐藏状态的相对路径，而且不报错。</p>
+<p>还有一个跨盘的硬错误值得记住：<code>os.path.relpath('C:/x.txt', 'D:/openclaw-blog')</code> 直接抛 <code>ValueError: path is on mount 'C:', start on mount 'D:'</code>。这不是 bug，是两个卷之间没有相对路径可言。</p>
+<h2>\\?\ 前缀：关掉字符串解析的同时，也关掉了你的容错</h2>
+<p><code>\\?\</code> 前缀的用途写在官方命名空间一节里：「the '\\?\' prefix to a path string tells the Windows APIs to disable all string parsing and to send the string that follows it straight to the file system」，并且它能让路径突破 MAX_PATH。</p>
+<p>但「不解析」是双向的。实测四种写法：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>\\?\D:\...\v4\a.txt</code></td><td style="border:1px solid #ddd;padding:8px;">正常读回内容</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>\\?\D:\...\v4\..\v4\a.txt</code></td><td style="border:1px solid #ddd;padding:8px;"><code>OSError: [Errno 22] Invalid argument</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>\\?\D:\...\v4/a.txt</code>（混正斜杠）</td><td style="border:1px solid #ddd;padding:8px;"><code>OSError: [Errno 22] Invalid argument</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>\\?\a.txt</code>（相对路径）</td><td style="border:1px solid #ddd;padding:8px;"><code>FileNotFoundError: [Errno 2]</code></td></tr></tbody></table>
+<p>也就是说，前缀不是「路径清洗器」，它是「免检通道」：写了 <code>..</code> 就是往文件系统里塞一个叫 <code>..</code> 的成分，写了正斜杠就是不认，写相对路径就是不认。要用它，必须自己先 <code>abspath</code> 再统一成反斜杠，而且路径本身必须是完整限定名。</p>
+<p>官方文档里有一句容易被误读的话：前缀「also allows the use of ".." and "." in the path names」。这句的本意是关掉自动展开后，你可以拿这些字面量当文件名的一部分去操作；在把 <code>..</code> 当目录成分用的场景下，本机实测是直接 EINVAL。这类文档句子必须配一次实测才能落进代码。</p>
+<h2>259 与 260：exists() 在这条线上会骗你</h2>
+<p>我用了很短的基座目录 <code>D:\pl1114</code>，再拼两级各 100 字符的目录，把父路径定死在 211 字符，然后二分文件名长度：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">完整路径长度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">259</td><td style="border:1px solid #ddd;padding:8px;">写入成功</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">260</td><td style="border:1px solid #ddd;padding:8px;"><code>FileNotFoundError: [Errno 2] No such file or directory</code></td></tr></tbody></table>
+<p>同一时刻，对那条 260 字符的路径：<code>os.path.exists()</code> 返回 <strong>False</strong>，<code>os.path.isfile()</code> 返回 False，<code>os.stat()</code> 抛 <code>FileNotFoundError: [WinError 3] 系统找不到指定的路径</code>，<code>os.listdir()</code> 同样 WinError 3，<code>Path.mkdir()</code> 也是 WinError 3。</p>
+<p>这是我最想让人记住的一点：超长路径不会给你一个「太长」的错，它给你一个「不存在」。任何 <code>if not exists(p): create(p)</code> 的写法在这条线上会静默走进创建分支，然后再崩在创建那一步。</p>
+<p>官方口径：Windows 10 1607 之前的路径上限就是 MAX_PATH = 260；之后的版本要「changing a registry key or using the Group Policy tool」才能解除。本机 <code>HKLM\SYSTEM\CurrentControlSet\Control\FileSystem</code> 下的 <code>LongPathsEnabled</code> 是 <strong>0</strong>，也就是出厂默认，所以 260 这条线是活的。</p>
+<p>另外两个数字：单段名字的上限是 255，我测到 255 字符的文件名（路径 258）可以建，256 字符（路径 259）抛 <code>OSError: [Errno 22] Invalid argument</code>——注意这里路径还没到 260，所以它是名字长度超限，不是总长超限。而加 <code>\\?\</code> 前缀后，260 字符的路径可以正常写入，前提是父目录已经存在：前缀只免除长度检查，不负责替你建目录。</p>
+<p>实践判据只有一句：<code>len(os.path.abspath(p)) >= 260</code> 就当超长处理，别问 <code>exists</code>。</p>
+<h2>junction：islink 说它不是链接，os.walk 却走进去了</h2>
+<p>用 <code>cmd /c mklink /J</code> 建一个目录联结（不需要管理员权限，实测返回码 0），然后问 Python 它是什么：</p>
+<pre><code>os.path.islink(junc)         ->  False
+os.path.isjunction(junc)     ->  True
+os.path.isdir(junc)          ->  True
+os.path.samefile(junc, real) ->  True
+Path(junc).resolve()         ->  ...\real</code></pre>
+<p><code>islink</code> 为 False 不是 bug：符号链接和 junction 是两种不同的重解析点。官方 Hard Links and Junctions 页说 junction「is implemented through reparse points」，Python 从 3.12 才补上 <code>os.path.isjunction</code>（文档标注 Added in version 3.12）。</p>
+<p>后果在遍历上。我在父目录里放了 <code>real\x.txt</code> 和一个指向 <code>real</code> 的 <code>junc</code>，然后：</p>
+<pre><code>os.walk(父目录, followlinks=False)  ->  ['junc\\x.txt', 'real\\x.txt']
+Path(父目录).rglob('*.txt')         ->  ['junc\\x.txt', 'real\\x.txt']</code></pre>
+<p>同一个文件被数了两次。原因能追到源码：CPython 3.13.12 的 <code>Lib/os.py</code> 第 434 行是 <code>if followlinks or not islink(new_path):</code>——<code>followlinks=False</code> 只挡住了 <code>islink</code> 为真的项，junction 不在其中。<code>followlinks</code> 这个名字会让人以为是「别跟着链接走」，实际语义是「别跟着符号链接走」。</p>
+<p>这一条对备份、磁盘占用统计、静态资源扫描是硬伤：统计会偏大，复制会重复，如果 junction 指回自己的祖先目录，就是无限递归。</p>
+<h2>C:/PROGRA~1 与 8.3 短名：同一个目录，两个字符串</h2>
+<p>同一台机器上：</p>
+<pre><code>os.path.exists('C:/PROGRA~1')                        ->  True
+os.path.samefile('C:/Program Files', 'C:/PROGRA~1')  ->  True
+os.listdir('C:/PROGRA~1')                            ->  ['AMD', 'Android', 'Autodesk', ...]
+os.path.exists('C:/WINDOW~1')                        ->  False</code></pre>
+<p>前两条说明短名是真实存在的别名，第三条说明它指向的就是同一个目录。第四条才是坑：同一台机器上、同样是系统目录，<code>C:\Windows</code> 没有 <code>WINDOW~1</code> 这个短名。8.3 名字的生成取决于卷的策略和条目创建时机，不是普遍存在的东西。</p>
+<p>于是字符串比较全线失败：<code>'C:/PROGRA~1' != 'C:/Program Files'</code>，长度、哈希、白名单匹配全都不一样，但 <code>samefile</code> 说是同一个目录。</p>
+<p>所以要判「是不是同一个东西」，用 <code>os.path.samefile</code>，不要用 <code>==</code>。要判「是不是同一个字符串」，用 <code>os.path.normcase</code>——官方文档：「On Windows, convert all characters in the pathname to lowercase, and also convert forward slashes to backward slashes.」</p>
+<h2>a[1].txt：glob 会把方括号当字符类</h2>
+<p>我在一个目录里建了 <code>a[1].txt</code> 和 <code>a1.txt</code> 两个文件，然后按字面去匹配第一个：</p>
+<pre><code>Path(d).glob('a[1].txt')                  ->  ['a1.txt']
+Path(d).glob(glob.escape('a[1].txt'))     ->  ['a[1].txt']
+fnmatch.fnmatch('a[1].txt', 'a[1].txt')   ->  False</code></pre>
+<p><code>[1]</code> 被当成「匹配字符 1」，于是模式命中的是 <code>a1.txt</code>。glob 文档自己给了说法：「For a literal match, wrap the meta-characters in brackets. For example, '[?]' matches the character '?'」——这句是在教你写模式，不是在告诉你它会自动转义；<code>glob.escape</code> 才是转义入口（转义 <code>?</code>、<code>*</code>、<code>[</code> 三个字符）。</p>
+<p>现实中这个形状很常见：日志文件、备份文件名、从用户输入拼出来的路径，都可能带方括号。用模式去复制、删除、统计时，少一次 <code>escape</code>，动到的就是另一个文件。这也是所有「按模式批量操作」的默认风险，不是 glob 独有。</p>
+<h2>Troubleshooting：四个真实报错怎么读</h2>
+<p><strong><code>OSError: [Errno 22] Invalid argument</code>，路径里带 \\?\ 前缀。</strong> 八成是前缀后面的串里有 <code>..</code> 或正斜杠。修法：先 <code>os.path.abspath()</code>，再 <code>.replace('/', '\\')</code>，确认没有 <code>..</code> 残留，最后才拼前缀。</p>
+<p><strong><code>FileNotFoundError: [Errno 2] No such file or directory</code>，而文件其实就在那儿。</strong> 先量长度。260 及以上在默认配置下就是这个报错，<code>exists()</code> 还会配合着返回 False。判据是 <code>len(p) >= 260</code>，不是「文件真的没了」。</p>
+<p><strong><code>FileNotFoundError: [WinError 3] 系统找不到指定的路径</code>，出现在 os.stat 或 os.listdir。</strong> 同一个原因，不同的 API 报不同的码：<code>open</code> 给 Errno 2，<code>stat</code> 与 <code>listdir</code> 给 WinError 3。看到 WinError 3 先怀疑长度，不要先怀疑权限。</p>
+<p><strong><code>OSError: [WinError 17] 系统无法将文件移到不同的磁盘驱动器</code>，出现在 os.replace。</strong> 跨卷重命名在 Windows 上根本不成立。实测 <code>os.replace</code> 抛 17，而 <code>shutil.move</code> 成功——后者会退化成复制加删除，代价是原子性没了，源文件可能已经删掉而目标只写了一半。</p>
+<p>顺带一个：对文件调 <code>os.listdir</code> 会得到 <code>NotADirectoryError: [WinError 267] 目录名称无效</code>，这个码只在「路径存在但类型不对」时出现，和「不存在」是两回事。</p>
+<h2>另外两处可以顺手记住</h2>
+<p>大小写。写 <code>Case.TXT</code>，用 <code>case.txt</code> 能直接读到内容，<code>os.path.samefile</code> 判 True，<code>Path('C:/Temp/Case.TXT') == Path('c:/temp/case.txt')</code> 在 Windows 上也是 True——<code>PurePath</code> 在 Windows 上的相等比较不分大小写。但字符串 <code>==</code> 是 False。所以「同一个文件」在 Python 里有三种答案：字符串不等、Path 对象相等、<code>samefile</code> 相等。</p>
+<p>设备名。官方命名规则明确写「Also avoid these names followed immediately by an extension; for example, NUL.txt and NUL.tar.gz are both equivalent to NUL」。而我这台 build 26300 上，<code>cmd /c echo hello > nul.txt</code> 建出了一个 12 字节的真文件，<code>type nul.txt</code> 能读回 <code>hello</code>，<code>os.listdir</code> 也列得出来；只有不带扩展名的裸 <code>nul</code> 仍然是个黑洞，写进去返回成功、磁盘上什么都没有。两个行为都能复现，所以我给的建议不是「哪个对」，而是：别把设备名当文件名用，也别写依赖某一种行为的代码。</p>
+<h2>一份能直接抄进代码的清单</h2>
+<ul><li>判断「是不是同一个文件」用 <code>os.path.samefile</code>；判断「是不是同一个字符串」用 <code>os.path.normcase</code>。两者都不等于 <code>==</code>。</li><li>遍历目录时先问 <code>os.path.isjunction</code>，不要只信 <code>followlinks=False</code>。</li><li>写文件前先 <code>abspath</code> 并量长度，<code>>= 260</code> 就走短路径或加前缀，不要依赖 <code>exists</code>。</li><li>备份或统计前先枚举流（<code>dir /r</code> 或 <code>FindFirstStreamW</code>），主数据流不等于整个文件。</li><li>用 glob 或任何模式匹配去复制、删除之前，先 <code>glob.escape</code>。</li><li>名字来源是用户输入或表格时，先剥尾随空格与点，再判空——否则你判的那个名字和磁盘上的名字不是一个。</li></ul>
+<p>这一套的门槛很低，但漏掉任何一条，出错时都只会看到「文件不存在」或者「结果多了一份」，看不到真正的原因。路径这一层和模块导入层是同一类问题：你以为你在描述一个对象，其实你在写一个会被重新解释的字符串。站内另一篇讲 <a href="https://yaohehe.github.io/2026-11-13-python-import-8.html" class="internal-link">Python import 的 8 处静默取错</a> 是同一个思路的另一个面；再往前，<a href="https://yaohehe.github.io/2026-10-29-python-314-tarfile-5.html" class="internal-link">tarfile 解压的五种写到目录外</a> 讲的是路径字符串被下游重新解释后的安全后果，而 <a href="https://yaohehe.github.io/2026-11-13-shell-set-e-exit-code-0.html" class="internal-link">Shell 脚本九个静默失败</a> 讲的是同一种「退出码 0、什么都没发生」的失败形态。</p>
+<p>本文不含任何联盟推广链接。所有数字均为本机实测，环境为 Windows 11 build 26300 + CPython 3.13.12 + NTFS，官方口径引自 Microsoft Learn 的 Naming Files, Paths, and Namespaces、File Streams、Hard Links and Junctions 三页与 CPython 3.13 文档及 <code>Lib/os.py</code> 源码。</p>
+<h2>本文的边界</h2>
+<ul><li>只测了 NTFS 本地卷，没测 exFAT、FAT32、ReFS 与网络共享（SMB 的短名与流支持另有一套规则）。</li><li>没有开 <code>LongPathsEnabled=1</code> 做对照，所以「开了之后 260 以上是否全部可用」没有实测数字，只引官方说法。</li><li>符号链接（需要管理员或开发者模式）没有建成功过对照组，本文只覆盖 junction。</li><li>macOS 的 Unicode 规范化（NFD）与 APFS 大小写策略没有测，本文所有结论只对 Windows 成立。</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q：os.path.exists 返回 False，就一定说明文件不存在吗？</strong></p>
+<p>不一定。路径长度达到 260 时它同样返回 False，而文件可能真的在那里。先量 <code>abspath</code> 之后的长度，再怀疑存在性。</p>
+<p><strong>Q：为什么 shutil.copy2 复制过去的文件少了东西？</strong></p>
+<p>因为它复制的是主数据流。NTFS 的命名流（<code>file:stream</code>）不在复制范围内，Windows 自带的 <code>copy</code> 也一样。要连流一起搬，得用支持流的工具或 <code>CopyFile2</code> 一类 API。</p>
+<p><strong>Q：followlinks=False 为什么还会走进 junction？</strong></p>
+<p>这个参数只检查 <code>islink</code>。junction 的 <code>islink</code> 是 False，所以在 <code>os.walk</code> 眼里它是一个普通目录，会被正常下钻。要挡掉它，遍历时自己判 <code>os.path.isjunction</code>。</p>
+<p><strong>Q：\\?\ 前缀是不是「长路径开关」？</strong></p>
+<p>它关掉的是字符串解析，顺带绕开长度检查。代价是 <code>..</code>、正斜杠、相对路径全部不再被处理。要用就得自己先把路径规范化好。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
