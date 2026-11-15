@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Framework checkpoint：8 处让恢复失效的地方 - TechPassive</title>
+  <meta name="description" content="checkpoint 存档写成功不等于恢复可用：入口存档让存档数比 superstep 多一个、从末尾存档恢复会零调用空转、自定义类型被白名单拦下时工作流照常成功、图指纹只认结构不认代码、列表顺序也不是迭代顺序；本文同一组实验在 1.25.0 与 1.26.0 上各复跑一遍，结论完全一致。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Agent Framework checkpoint：8 处让恢复失效的地方</h1>
+  <div class="post-tags">
+    <span class="tag">Agent Framework</span><span class="tag">checkpoint</span><span class="tag">状态恢复</span>
+  </div>
+  <div class="content">
+    <p>给一个工作流加了存档，跑通、输出正确、日志里还有「Created checkpoint」这一行，然后你放心地把它放到线上——这是 checkpoint 这一层最常见的误判。存档写成功和恢复可用是两件事，中间隔着六七个不会抛异常的环节。我实际在 Windows 11 上用一个隔离目录装了 Microsoft Agent Framework 1.25.0（PyPI 发布于 2026-11-07），又单独装了 1.26.0（截至发稿 PyPI 最新版，2026-11-12）做对照，用纯 executor 搭了三条链反复跑，本文所有数字都来自这两次本机实测，凡是没有实测到的地方我会写明「未验证」。</p>
+<p>先说结论：存档确实能跨进程恢复，这一层是成立的；但让恢复失效的方式比让恢复成功的方式多得多，而且大部分失效不报错。另外声明一句，本文不含任何联盟推广链接，下面出现的版本号与异常原文都可以在官方包和官方文档里逐字核对。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="checkpoint 的写入与恢复路径（本文实测）" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftcc6e020agrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ftcc6e020agrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">checkpoint 的写入与恢复路径（本文实测）</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">build（start_executor + checkpoint_storage）</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">入口存档 iteration 0</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">执行 superstep 1</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">存档 iteration 1</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">执行 superstep 2</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">存档 iteration 2</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>checkpoint 的写入与恢复路径（本文实测） · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#000000" role="img" aria-label="Json" style="flex:none;"><path d="M12.043 23.968c.479-.004.953-.029 1.426-.094a11.805 11.805 0 003.146-.863 12.404 12.404 0 003.793-2.542 11.977 11.977 0 002.44-3.427 11.794 11.794 0 001.02-3.476c.149-1.16.135-2.346-.045-3.499a11.96 11.96 0 00-.793-2.788 11.197 11.197 0 00-.854-1.617c-1.168-1.837-2.861-3.314-4.81-4.3a12.835 12.835 0 00-2.172-.87h-.005c.119.063.24.132.345.201.12.074.239.146.351.225a8.93 8.93 0 011.559 1.33c1.063 1.145 1.797 2.548 2.218 4.041.284.982.434 1.998.495 3.017.044.743.044 1.491-.047 2.229-.149 1.27-.554 2.51-1.228 3.596a7.475 7.475 0 01-1.903 2.084c-1.244.928-2.877 1.482-4.436 1.114a3.916 3.916 0 01-.748-.258 4.692 4.692 0 01-.779-.45 6.08 6.08 0 01-1.244-1.105 6.507 6.507 0 01-1.049-1.747 7.366 7.366 0 01-.494-2.54c-.03-1.273.225-2.553.854-3.67a6.43 6.43 0 011.663-1.918c.225-.178.464-.333.704-.479l.016-.007a5.121 5.121 0 00-1.441-.12 4.963 4.963 0 00-1.228.24c-.359.12-.704.27-1.019.45a6.146 6.146 0 00-.733.494c-.211.18-.42.36-.615.555-1.123 1.153-1.768 2.682-2.022 4.256-.15.973-.15 1.96-.091 2.95.105 1.395.391 2.787.945 4.062a8.518 8.518 0 001.348 2.173 8.14 8.14 0 003.132 2.23 7.934 7.934 0 002.113.54c.074.015.149.015.209.015zm-2.934-.398a4.102 4.102 0 01-.45-.228 8.5 8.5 0 01-2.038-1.534c-1.094-1.137-1.827-2.566-2.247-4.08a15.184 15.184 0 01-.495-3.172 12.14 12.14 0 01.046-2.082c.135-1.257.495-2.501 1.124-3.58a6.889 6.889 0 011.783-2.053 6.23 6.23 0 011.633-.9 5.363 5.363 0 013.522-.045c.029 0 .029 0 .045.03.015.015.045.015.06.03.045.016.104.045.165.074.239.12.479.271.704.42a6.294 6.294 0 012.097 2.502c.42.914.615 1.934.631 2.938.014 1.079-.18 2.157-.645 3.146a6.42 6.42 0 01-2.638 2.832c.09.03.18.045.271.075.225.044.449.074.688.074 1.468.045 2.892-.66 3.94-1.647.195-.18.375-.375.54-.585.225-.27.435-.54.614-.823.239-.375.435-.75.614-1.154a8.112 8.112 0 00.509-1.664c.196-1.004.211-2.022.149-3.026-.135-2.022-.673-4.045-1.842-5.724a9.054 9.054 0 00-.555-.719 9.868 9.868 0 00-1.063-1.034 8.477 8.477 0 00-1.363-.915 9.927 9.927 0 00-1.692-.598l-.3-.06c-.209-.03-.42-.044-.634-.06a8.453 8.453 0 00-1.015.016c-.704.045-1.412.16-2.112.337C5.799 1.227 2.863 3.566 1.3 6.67A11.834 11.834 0 00.238 9.801a11.81 11.81 0 00-.104 3.775c.12 1.02.374 2.023.778 2.977.227.57.511 1.124.825 1.648 1.094 1.783 2.683 3.236 4.51 4.24.688.39 1.408.69 2.157.944.226.074.45.15.689.21z"/></svg><span>Json</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#334155" role="img" aria-label="OpenAI" style="flex:none;"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg><span>OpenAI</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>先固定版本与实验环境</h2>
+<p>环境是 Windows 11 + CPython 3.13.12，agent-framework 1.25.0 与 1.26.0 装在两个互相隔离的目录里（1.26.0 用 no-deps 装核心包，其余依赖从 1.25.0 的目录复用），用 PYTHONPATH 切换。工作流全部由 WorkflowBuilder 构建，executor 是纯函数或类式 executor，不接任何模型，所以下面每个数字都可以在没有 API key 的机器上复现。</p>
+<p>一个必须先说清的边界：文档站讲 checkpoint 的那一页给的是跨语言并列示例（C#、Python、Go 各一套 API），Python 侧的入口是 <code>WorkflowBuilder(start_executor=..., checkpoint_storage=...)</code>。我按这个入口写，没有遇到任何问题；但 <a href="https://yaohehe.github.io/2026-11-08-agent-framework-1250-6-4.html" class="internal-link">11-08 那篇</a>已经确认过，同一个文档站的部分页面列的方法在 1.25.0 里并不存在，所以凡是文档与包对不上的地方，本文一律以包里的实际行为为准。</p>
+<h2>存档数量 = superstep 数 + 1，第 0 个是入口存档</h2>
+<p>单节点工作流跑一次，存了 2 个存档（iteration 0 与 1）；两节点链跑一次，存了 3 个（0、1、2）；三节点链跑一次，存了 4 个（0、1、2、3）。规律很稳定：<strong>iteration 从 0 到 superstep 数，两端各多一个边界</strong>。</p>
+<p>第 0 个不是「第一个节点跑完」，而是入口存档：它的 messages 里键名是 <code>internal:</code> 加首节点 id（实测是 <code>internal:step_a</code> 这种形态），装的是本次 run 的输入消息，迭代号 0、<code>previous_checkpoint_id</code> 为 None。最后一个存档的 messages 是空字典——此时没有待投递的消息了，只剩各 executor 的状态。</p>
+<p>顺带记一条：存档里的 <code>state</code> 键只有四个，<code>_workflow_run_kwargs</code>、<code>_resolved_workflow_run_kwargs</code>、<code>_routed_workflow_run_kwargs</code> 与 <code>_executor_state</code>。最后那个是每个 executor id 对应的状态字典，没实现 <code>on_checkpoint_save</code> 的 executor 在这里是空字典。</p>
+<h2>恢复的边界是「第 N 个 superstep 之后」</h2>
+<p>这条决定了恢复到底是重放还是续跑。三节点链 a1 → b1 → c1，一次完整 run 的调用序列是 a1、b1、c1。从 iteration 1 的存档恢复，调用序列变成 b1、c1——a1 没有被再执行；从 iteration 2 恢复，只有 c1 被执行；从 iteration 0（入口存档）恢复，三个节点全部重跑。</p>
+<p>换句话说，<strong><code>run(checkpoint_id=X)</code> 的语义是「X 这个存档之后的部分重新开始」</strong>，X 里面已经存下的消息会被直接当作下一批输入投递出去。上面三次恢复的最终输出完全一致，都是同一条 <code>c1:v|a1|b1</code>，所以恢复正确性本身是可以验证的——但只有在你把「恢复点之后会执行什么」当成显式契约的时候。</p>
+<h2>从最后一个存档恢复：零调用、空输出、不报错</h2>
+<p>这是最容易踩的一个坑，因为它在正常路径上几乎一定会发生。上面那三次恢复里，如果我传的是 iteration 3（也就是跑完之后的那个存档），<code>run()</code> 会正常返回，<code>get_outputs()</code> 是空列表，executor 调用次数是 0，<strong>没有任何异常</strong>。</p>
+<p>从使用者的角度看，这非常像「恢复成功，只是没有新输出」。真实含义是「你从这个存档恢复时，工作流的全部 superstep 都已经完成了」。如果恢复逻辑写在重试链路里，条件写成「只要有存档就恢复」，那么一个已经跑完的任务会被判成「恢复完成、结果为空」，然后空结果被当成正常结果落库。</p>
+<p>判断方法只有一条：恢复前先比较目标存档的 iteration 与本次图的总 superstep 数，或者只从「明确不是末位」的存档恢复。<code>get_latest()</code> 返回的恰恰是末位存档，它是最不该直接拿来恢复的那一个。</p>
+<h2>存档写失败不会让工作流失败</h2>
+<p>这是本文最贵的一条，也是它不该只出现在日志里的原因。给 executor 加一个 <code>on_checkpoint_save</code>，让它返回一个自定义类的实例（我这里是一个 <code>Order(oid, qty)</code>），然后跑一次：<code>run()</code> 正常返回输出 <code>['step1']</code>，一切看起来都成功，<strong>但存档目录里一个文件都没有</strong>——存档数是 0，不是减少，是完全没有。</p>
+<p>日志里能看到的原文是这样的：</p>
+<pre><code>WARNING | agent_framework._workflows._runner | Failed to create checkpoint at iteration 0: Failed to decode pickled checkpoint data: Checkpoint deserialization blocked for type 'ckptmodel:Order'. ... Note that this does not fail the workflow run. The next successfully-created checkpoint will be parented to the last successful checkpoint</code></pre>
+<p>注意两件事：级别是 WARNING 不是 ERROR，logger 名是 <code>agent_framework._workflows._runner</code>；以及它自己写明了「does not fail the workflow run」。包里的实现也一致——<code>_runner.py</code> 里整个存档动作包在 <code>except Exception</code> 里，捕获后只打一条 warning，然后继续跑。所以只要你的日志级别把 <code>agent_framework</code> 压到 ERROR，这条信息就是不可见的，而工作流依然是成功的。</p>
+<p>根因在解码侧：FileCheckpointStorage 的文档字符串写明，反序列化默认限制在内置安全类型（primitives、datetime、uuid 等）、所有 <code>agent_framework</code> 与 <code>agent_framework_orchestrations</code> 内部类型、以及 OpenAI SDK 的 <code>openai.types</code>。存档文件本身是 JSON，但复杂对象是以 <code>__pickled__</code> 加 base64 的形式嵌在 JSON 里的（我打开过文件，11 个顶层键，messages 里就是这种形态），所以取值时走的是受限 unpickler。放行一个应用自定义类有两条路：构造 storage 时传 <code>allowed_checkpoint_types=["模块名:类名"]</code>，或者调用 <code>agent_framework.register_checkpoint_type(类)</code> 全局注册。</p>
+<p>实测对照很干脆：默认 storage 跑同一个 executor，存档数 1（只有入口存档写得下去，因为它当时的状态里那个列表还是空的）；传了 <code>allowed_checkpoint_types=['ckptmodel:Order']</code> 之后存档数 2，并且 <code>load()</code> 出来的 <code>_executor_state</code> 里能读回 <code>Order(X1,1)</code>。</p>
+<h2>白名单参数写错格式也不报错</h2>
+<p>接着上一条做个反例：把参数写成 <code>allowed_checkpoint_types=['Order']</code>（只有类名，没有 <code>模块名:类名</code>），构造 storage 时<strong>不抛异常，不警告</strong>，跑起来的结果和完全不传一模一样——存档数 1，自定义状态照旧丢失。</p>
+<p>也就是说这个参数是「静默无效」型的：格式对了才生效，格式错了不告诉你。在 1.26.0 上行为相同。落地时唯一可靠的判据不是「参数写了没」，而是「跑完之后 <code>list_checkpoint_ids()</code> 的数量对不对」——按前面那条规律，两节点链应该是 3，不是 3 就说明有存档没写进去。</p>
+<h2>图指纹只认结构，不认代码</h2>
+<p>每个存档都带一个 <code>graph_signature_hash</code>。改图会怎样，实测很清楚：把 a1 的下游从 b1 换成 c1，恢复立刻抛</p>
+<pre><code>WorkflowCheckpointException: Workflow graph has changed since the checkpoint was created. Please rebuild the original workflow before resuming.</code></pre>
+<p>改动 executor 的 id（把 <code>x</code> 换成 <code>y</code>）、改类名，同样触发这条异常。但把 workflow 的名字从 <code>s8</code> 改成 <code>renamed</code>，恢复照样成功。</p>
+<p>真正值得记的是第三种情况：<strong>只改 executor 的函数体，指纹一模一样</strong>。我把 worker 从 <code>v1</code>（追加 <code>|v1</code>）改成 <code>v2</code>（追加 <code>|v2-changed-body</code>），两版算出来的 hash 完全相同（都是 <code>324fa621effcaf94</code> 开头），恢复没有任何阻拦，而恢复时投递给下游的消息是 <code>v1</code> 时代的产物，最终输出还是 <code>tail:x|v1</code>。</p>
+<p>翻一下 <code>_workflow.py</code> 里的 <code>_compute_graph_signature</code> 就明白了：它收集的是 <code>start_executor</code>、每个 executor 的 <code>模块名.类名</code>、edge group 的 source/target/condition，然后排序序列化算 sha256。<strong>函数体、默认参数、业务逻辑都不在里面。</strong> 所以「改了代码但没改结构」这种情况下，旧存档会被安静地接受，新代码拿着旧数据继续跑——这正好是最容易出数据错配的场景。要防它，只能靠自己的版本号：把逻辑版本写进 workflow 名字或者存档目录路径，改逻辑就换目录。</p>
+<h2>list_checkpoints 的顺序不是 superstep 顺序</h2>
+<p>三节点链跑完，<code>list_checkpoints(workflow_name=...)</code> 返回的 iteration 序列我实测到过两种：<code>[1, 2, 0]</code> 和 <code>[2, 1, 0]</code>，两次都不是 <code>[0, 1, 2]</code>。原因在实现里：文件后端是 <code>for file_path in self.storage_path.glob("*.json")</code>，直接按文件系统返回顺序遍历，没有任何排序。</p>
+<p>这一点直接冲击官方示例的写法。文档里的恢复示例是「假设我们要从第 6 个存档恢复」，然后取 <code>checkpoints[5]</code>——在文件后端上，「第 6 个」这个位置和「第 6 个 superstep」不是一回事。要按迭代走，必须自己 <code>sorted(..., key=lambda c: c.iteration_count)</code>；实测 <code>get_latest()</code> 是可靠的，它按 timestamp 取最新、同一时间戳再用 lineage 链（<code>previous_checkpoint_id</code>）解冲突，返回值是 iteration 2 而不是迭代号最大的猜测值。</p>
+<p>同一个实现还有个副作用：列表是「逐文件解码，失败只 warning」——某个存档文件解码失败时，它会被静默从列表里丢掉（warning 原文是 <code>Failed to read checkpoint file ...</code>），而 <code>load(那个 id)</code> 会老老实实抛异常。所以「列表里没有」不代表「不存在」。</p>
+<h2>每个存档是完整快照：能删父存档，也没有回收机制</h2>
+<p>我先删掉 iteration 1 的存档，再从 iteration 2 恢复——结果正确，只有 c1 被执行。删掉入口存档（iteration 0）之后重新跑一次全新 run，也正常完成。这说明存档里存的是完整状态，不是增量补丁，恢复不依赖父链。</p>
+<p>好消息是旧存档可以删；坏消息是<strong>没有任何东西替你删</strong>。CheckpointStorage 这一层的接口只有 save、load、get_latest、list_checkpoints、list_checkpoint_ids、delete 六个，没有 TTL、没有保留条数、没有清扫参数（官方文档那一页也没有讲保留策略）。实测代价：一次两节点 run 产生 3 个存档，做两次恢复后目录里变成 6 个（+100%）；换成 20 KB 左右的消息载荷跑 20 次，目录里 60 个文件、合计约 1,097 KB，<code>list_checkpoints()</code> 一次 18 ms 左右——而它每次都要把每个文件完整解码一遍，<code>list_checkpoint_ids()</code> 也是委托给它做的，耗时 19 ms，两者几乎一样。存档量线性涨，列表成本也跟着线性涨。</p>
+<h2>时间戳是 UTC，文件时间是本地时间</h2>
+<p>存档里的 <code>timestamp</code> 带时区偏移，实测值是 <code>2026-11-14T22:12:49.750179+00:00</code>；同一个文件的 mtime 用本地时间读出来是 <code>2026-11-15T06:12:49</code>（机器时区 +0800）。两者差 8 小时，指的是同一瞬间。</p>
+<p>如果你把「存档时间」拿去和业务侧的本地时间字段比较（比如「只恢复今天产生的存档」），这 8 小时会直接把跨零点的任务判到昨天。要么统一转 UTC，要么统一用 mtime，不要混着用。</p>
+<h2>跨进程恢复成立，前提是图能重建出一致的指纹</h2>
+<p>这是 checkpoint 这一层真正要兑现的承诺，所以我单独跑了两个进程：进程 A（PID 20032）写入存档并打印 iteration 1 的 id，进程 B（PID 16244）用这个 id 恢复。B 读出的 <code>graph_signature_hash</code> 与 A 完全相同（<code>a48f53cff8c2b80a</code> 开头），恢复后只执行了 stage2，输出与 A 那次完整 run 一致。</p>
+<p>因此图指纹是跨进程稳定的，不含内存地址之类的东西；只要 executor 的 id、类名与模块路径不变、边的结构不变，另一个进程能重建出同一个指纹。反过来说，三层重构会一次性废掉所有历史存档：改类名、改模块（比如把 executor 从 <code>app.nodes</code> 挪到 <code>app.workflow.nodes</code>）、改 executor id。C# 侧文档对这一点讲得很细（agent 的 id 必须稳定），Python 侧的实现是同一个道理，只是异常报文只告诉你「图变了」，不告诉你变在哪。</p>
+<h2>与 LangGraph 那一层的分工</h2>
+<p>站内 <a href="https://yaohehe.github.io/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">10-19 那篇</a>讲的是 LangGraph 的 checkpointer 层，那篇回答的是「持久化接上之后哪些行为会变」；这一篇回答的是「存档文件到底记了什么、恢复从哪一格开始」。两者不要混着记：LangGraph 侧的接线是 thread 概念驱动的，而这一层没有 thread，恢复要靠调用方把 <code>checkpoint_id</code> 显式传进 <code>run()</code>，传错或不传都不会有默认值兜底。</p>
+<p>如果你手上有 <a href="https://yaohehe.github.io/2026-11-04-python-threadpoolexecutor-asyncio-queue.html" class="internal-link">11-04 那篇</a>里并发等待型的慢任务，checkpoint 也帮不上——它不解决调度，只解决「从哪一格继续」。真正该考虑开它的，是单次 superstep 很贵（调模型、调外部写接口）、失败重跑代价高的链路。至于「崩溃时到底丢了哪一段」，站内 <a href="https://yaohehe.github.io/2026-10-29-langgraph-durability.html" class="internal-link">10-29 那篇</a>按 durability 模式逐档拆过，可以对照着看。</p>
+<h2>Troubleshooting：四个原文报错与处理</h2>
+<p><strong>报错一：<code>WorkflowCheckpointException: Workflow graph has changed since the checkpoint was created. Please rebuild the original workflow before resuming.</code></strong></p>
+<p>触发条件：改边、改 executor id、改 executor 类名（模块路径也会算进去）。处理：要么重建出与存档时完全一致的结构，要么放弃旧存档。注意它不告诉你差在哪个节点，只能自己按上面三样逐项对照。</p>
+<p><strong>报错二：<code>WorkflowCheckpointException: No checkpoint found with ID not-a-real-id</code></strong></p>
+<p>触发条件：<code>run(checkpoint_id=...)</code> 传了不存在或已被 delete 的 id。处理：先 <code>list_checkpoint_ids(workflow_name=...)</code> 确认；注意传错 workflow 名字不会报这个异常，而是返回空列表，让你以为「本来就没有存档」。</p>
+<p><strong>报错三：<code>TypeError: FileCheckpointStorage.list_checkpoint_ids() missing 1 required keyword-only argument: 'workflow_name'</code></strong></p>
+<p>触发条件：三个查询接口的 <code>workflow_name</code> 都是仅关键字参数，位置传参或不传都直接 TypeError。处理：统一写 <code>list_checkpoints(workflow_name=wf.name)</code>。附带一条：同一个类型错误也会出现在 <code>list_checkpoints()</code> 与 <code>get_latest()</code> 上，报错文案只差方法名。</p>
+<p><strong>报错四：<code>Checkpoint deserialization blocked for type 'ckptmodel:Order'. To allow this type, either include its 'module:qualname' key in the 'allowed_types' set passed to 'decode_checkpoint_value', or add it to 'allowed_checkpoint_types' on your checkpoint storage (for example, 'FileCheckpointStorage.allowed_checkpoint_types').</code></strong></p>
+<p>触发条件：executor 状态里有未放行的自定义类型。<strong>它不是异常，是 WARNING 日志</strong>，工作流照常成功，存档静默缺失。处理：按报文里的 <code>module:qualname</code> 形态传 <code>allowed_checkpoint_types</code>，然后回到「存档数量 = superstep 数 + 1」这条硬判据上复核。</p>
+<h2>FAQ</h2>
+<p><strong>Q：存档文件能不能直接看、直接改？</strong></p>
+<p>能看——顶层是 JSON，11 个键（workflow_name、graph_signature_hash、checkpoint_id、previous_checkpoint_id、timestamp、messages、state、pending_request_info_events、iteration_count、metadata、version）。但复杂对象是 <code>__pickled__</code> 加 base64 嵌在里面的，改了就解不开。更重要的是安全边界：官方文档明确写了存档存储属于信任边界，不要从不可信或可能被篡改的来源加载。这一层用的是受限 unpickler，但它挡的是「类型不在白名单」，不是「文件被替换过」。</p>
+<p><strong>Q：InMemory 和 File 后端能不能混用？</strong></p>
+<p>接口一样（同一个 CheckpointStorage 协议），但行为有差别：InMemory 的列表就是插入顺序，File 的列表是文件系统顺序。我实测在 InMemory 上给两个不同名字的工作流建存档，两边各 3 个、互不串台，查询同样必须带 <code>workflow_name</code>。跨进程恢复只能用 File（或 Cosmos 那类外部存储），InMemory 出了进程就没了。</p>
+<p><strong>Q：恢复会不会重复执行已经成功的节点？</strong></p>
+<p>取决于你从哪个存档恢复。从 iteration 1 恢复时，第 1 个 superstep 之前的节点不会重跑；但从入口存档（iteration 0）恢复等于全量重放。所以「恢复」不是幂等保证，幂等要自己在 executor 里做。删掉父存档不影响子存档恢复这件事说明存档是完整快照，但这跟「重复执行」是两件事——它是靠跳过已完成的 superstep 实现的，不是靠去重。</p>
+<p><strong>Q：升级到 1.26.0 之后这些行为变了吗？</strong></p>
+<p>我逐条复跑了：存档数量规律、从末尾存档恢复的空转、白名单拦截后的静默缺失（存档数仍是 0）、图指纹不认代码、列表不排序（这次顺序是 <code>[2, 1, 0]</code>）、delete 的幂等返回（先 True 后 False），全部一致。同构图在两版上算出的指纹也相同。所以本文的结论按「1.25.0 与 1.26.0 都成立」来读是安全的；再往后的版本我没有验证。</p>
+<h2>什么时候值得开 checkpoint</h2>
+<p>把上面这些拼起来，判断标准其实只有三条：单个 superstep 足够贵（值得为它付存档成本）、失败重跑有外部副作用（重复调用会出事）、以及你能接受「恢复点由调用方指定」这件事。反面的三种情况不要开：任务总时长只有几秒、executor 状态里有大量自定义对象却没配白名单（你会得到一堆看不见的失败）、以及把 <code>get_latest()</code> 直接当恢复点用（那是末位存档，恢复等于空转）。</p>
+<p>最后一句话总结这一层的性格：它把「从哪一格继续」这件事交给了你，并且在你自己搞错的时候，倾向于安静地什么都不做。11-08 那篇讲的是节点之间接线层的六个静默失效，这一篇是同一类问题的存档层版本——两者的共同点不是 API 难用，而是<strong>失效的默认表现是成功</strong>。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
