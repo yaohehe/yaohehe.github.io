@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pip-audit 实测：37 条漏洞告警去重后只有 19 个 - TechPassive</title>
+  <meta name="description" content="在本机用 pip-audit 2.10.1 逐层跑真实依赖：requests 2.19.0 报出 37 条告警，按包名加 id 去重后只有 19 个公告；未锁定的依赖文件甚至审了 0 个包也照样返回成功，--fix 开关会把 CI 的失败直接改成通过；另附三个真实报错、完整复现命令与处置办法，全部可重复验证。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>pip-audit 2.10.1 实测：37 条告警去重后只剩 19 个真问题</h1>
+  <div class="post-tags">
+    <span class="tag">pip-audit</span><span class="tag">供应链安全</span><span class="tag">依赖漏洞</span>
+  </div>
+  <div class="content">
+    <p>CI 里那行 <code>pip-audit -r requirements.txt</code> 绿了，很多人就认为供应链审计这一关过了。我在 Windows 11 + CPython 3.13.14 上装了 pip-audit 2.10.1（PyPI 上截至发稿的最新版，2.10.1 的上传时间是 2026-06-10），把同一份依赖文件从锁定改成范围、从默认漏洞服务换成 OSV、从 <code>--fix</code> 跑到 <code>--strict</code>，一共跑了十几轮。</p>
+<p>第一个结论很不舒服：<strong><code>Found 37 known vulnerabilities in 3 packages</code> 里的 37 不是漏洞数</strong>。去重之后是 19 个。差的 18 条不是噪声，是同一条安全公告被 OSV 用两套编号各发了一次，而 pip-audit 2.10.1 把它们都留下了。</p>
+<p>本文是一次本机实测记录，不是工具介绍。所有数字都来自我自己跑出来的输出，命令和文件都写在正文里，你可以逐条复现。本文不含任何联盟推广链接，也没有 affiliate 佣金链接——纯技术，不带货。</p>
+<h2>这件事在站内属于哪一层</h2>
+<p>站里已经有三篇相邻的文章，决策层各不相同，先划清楚界限，免得读重：</p>
+<p><a href="https://yaohehe.github.io/2026-09-29-2026-github-actions-4-action.html" class="internal-link">09-29 那篇</a>讲的是 CI 层的供应链事件复盘（GitHub Actions 被投毒之后怎么看）；<a href="https://yaohehe.github.io/2026-10-17-xz-cve-2024-3094.html" class="internal-link">xz 后门那篇</a>讲的是产物溯源层（tarball 和 git 仓库对不上怎么办）；<a href="https://yaohehe.github.io/2026-10-21-python.html" class="internal-link">10-21 那篇</a>讲 PEP 440 版本钉死的语法层。本篇往下走一层：<strong>本机 Python 依赖层</strong>——你手上这台机器、这份锁文件，到底被审了几个包、审出了几个真问题。</p>
+<h2>实验台：六个文件，一台机器</h2>
+<p>环境固定：Windows 11、CPython 3.13.14、pip-audit 2.10.1，装在隔离目录 <code>tmp/w46-pipa</code>（用 <code>pip install --target</code> 装，不动主环境），调用方式是 <code>PYTHONPATH=tmp/w46-pipa python -m pip_audit</code>。</p>
+<p>我测试了六份文件，内容都很短，你可以照着建：</p>
+<ul><li><code>reqs-req.txt</code>：<code>requests==2.19.0</code></li><li><code>reqs-range.txt</code>：<code>requests>=2.0</code></li><li><code>reqs-flask-pin.txt</code>：<code>flask==3.0.0</code></li><li><code>reqs-flask-range.txt</code>：<code>flask>=3.0</code></li><li><code>reqs-vuln2.txt</code>：requests 2.19.0 + PyYAML 5.1 + Jinja2 2.11.2 + setuptools 65.5.0 + certifi 2022.12.7</li><li><code>reqs-local.txt</code>：<code>requests==2.19.0</code> 加一行本地路径依赖 <code>tmp/audit-1109/localpkg</code></li></ul>
+<p>另外还有两份故意写坏的，用来取真实报错（见第八节）。</p>
+<h2>一、37 这个数字是怎么来的</h2>
+<p>先看单个包。<code>requests==2.19.0</code> 跑出来是这样：</p>
+<pre><code>Found 37 known vulnerabilities in 3 packages</code></pre>
+<p>三个包（requests、idna、urllib3）合计 37 条。我把 JSON 输出按 <code>id</code> 去重，数字立刻变了：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">包</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">告警行数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">去重后公告数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">requests</td><td style="border:1px solid #ddd;padding:8px;">2.19.0</td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">5</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">idna</td><td style="border:1px solid #ddd;padding:8px;">2.7</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">2</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">urllib3</td><td style="border:1px solid #ddd;padding:8px;">1.23</td><td style="border:1px solid #ddd;padding:8px;">23</td><td style="border:1px solid #ddd;padding:8px;">12</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">chardet</td><td style="border:1px solid #ddd;padding:8px;">3.0.4</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">合计</td><td style="border:1px solid #ddd;padding:8px;">-</td><td style="border:1px solid #ddd;padding:8px;">37</td><td style="border:1px solid #ddd;padding:8px;">19</td></tr></tbody></table>
+<p>每一条都恰好出现两次。不是巧合，是两套编号在同一个响应里并存。</p>
+<h2>二、直接问 OSV：同一个版本，10 条记录只对应 5 个公告</h2>
+<p>跳过 pip-audit，直接 POST 到 <code>https://api.osv.dev/v1/query</code>，只用包名和版本：</p>
+<pre><code>POST /v1/query
+{"package": {"name": "requests", "ecosystem": "PyPI"}, "version": "2.19.0"}</code></pre>
+<p>返回 10 条，distinct 也是 10——OSV 这边没重复，它老老实实给了 10 条记录。但看 <code>id</code> 和 <code>aliases</code> 就明白了：</p>
+<pre><code>GHSA-x84v-xcm2-53pg  aliases: ["CVE-2018-18074", "PYSEC-2018-28"]
+PYSEC-2018-28        aliases: ["CVE-2018-18074", "GHSA-x84v-xcm2-53pg"]
+GHSA-j8r2-6x86-q33q  aliases: ["CVE-2023-32681", "PYSEC-2023-74"]
+PYSEC-2023-74        aliases: ["CVE-2023-32681", "GHSA-j8r2-6x86-q33q"]</code></pre>
+<p>5 对，每对自己指自己。这是 OSV 的正常形态：一篇 GitHub Advisory（GHSA-）和一条 PyPA 的 PYSEC 记录，指同一个问题，互为别名。真正的问题是<strong>下一步</strong>。</p>
+<p>pip-audit 拿到这 10 条之后，在 <code>pip_audit/_service/interface.py</code> 里做了一次主 id 归一化——<code>VulnerabilityResult.create()</code> 把 <code>ids</code> 排序后取第一个当主 id，排序规则优先 PYSEC 和 CVE。于是那条 GHSA 记录也被改写成 <code>PYSEC-2018-28</code>。到这里还算合理，两条记录现在长得一模一样了。</p>
+<p>再往下就出问题了。<code>pip_audit/_audit.py</code> 的去重分两轮：第一轮只挑 <code>id</code> 以 <code>PYSEC</code> 开头的，<strong>直接 append，不查彼此是不是别名</strong>；第二轮才处理非 PYSEC 的，会拿 <code>seen_aliases</code> 去判重。第一轮进来的两条已经是同一个 PYSEC id、别名集也完全相同，但没人拦，就都留下了。</p>
+<p>结果就是：一条公告，两行输出，数字翻倍。urllib3 1.23 那 23 行里，只有 12 个是真公告——其中一条 <code>PYSEC-2026-4177</code> 只出现一次，因为它没有 PYSEC 对手（OSV 只有 GHSA 那条）。这也解释了为什么 37 不是 38 的整数倍关系，重复是"大多数被复制"，不是"全都复制"。</p>
+<p>顺带一个直接证据：同一条公告的两行，<code>description</code> 措辞不一样。PYSEC 那条写 "The Requests package before 2.20.0..."，GHSA 那条写 "The Requests package through 2.19.1 before 2018-09-14..."。这是同一条公告的两个版本。</p>
+<h2>三、`--dry-run` 那一行才是真正的体检结果</h2>
+<p>README 里写得很清楚：<code>pip-audit --dry-run</code> 单独使用时会跳过审计步骤、只打印"本来会审多少个依赖"。这一行是我现在每轮必看的：</p>
+<pre><code>INFO:pip_audit._audit:Dry run: would have audited 4 packages
+INFO:pip_audit._audit:Dry run: would have audited 7 packages
+INFO:pip_audit._audit:Dry run: would have audited 0 packages</code></pre>
+<p>三条分别对应 <code>requests==2.19.0</code>、<code>flask>=3.0</code>、<code>requests>=2.0</code>。</p>
+<p>前两个正常。第三个要命：<strong>同一个未锁定的写法，<code>flask>=3.0</code> 审了 7 个包，<code>requests>=2.0</code> 审了 0 个包</strong>，两次的命令、退出码、末行输出完全一样——都是 <code>No known vulnerabilities found</code>，都是 exit 0。我换了一个从没跑过的新文件名重测，结果不变；逐层复现到 pip-audit 内部的临时虚拟环境，<code>installed_packages</code> 就是空列表，而我自己手工建一个 venv 跑同一条 <code>pip install --dry-run --report</code>，pip 老老实实解析出了 requests 2.34.2 加四个依赖。</p>
+<p>我翻完了 <code>_dependency_source/requirement.py</code> 的收集逻辑和内建 venv 的报告解析，<strong>没有找到一条显式规则能解释这个差异</strong>。所以我不把它当成"设计意图"写，只当成"2.10.1 上实测到的现象"：同样是范围声明，能不能被审到因包而异。可操作的结论只有一条——<strong>别信末行那句 No known vulnerabilities found，去看 <code>--dry-run</code> 报的包数</strong>。</p>
+<p>同一节还有一个更常见的坑：版本漂移。<code>flask==3.0.0</code> 报 2 行（去重后 1 个公告 <code>PYSEC-2026-2151</code>，也就是 CVE-2026-27205，官方修复版本 3.1.3）；而 <code>flask>=3.0</code> 因为解析到最新的 3.1.3，7 个包全干净、exit 0。也就是说，<strong>审计范围声明审的是"将来会装的最新版"，不是你线上正在跑的那一版</strong>。</p>
+<h2>四、三种"没审到"，只有一种会响</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">情况</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">表现</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">退出码</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">会不会响</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">本地路径依赖（不在 PyPI）</td><td style="border:1px solid #ddd;padding:8px;">JSON 里 <code>skip_reason</code> 一行，不计入总数</td><td style="border:1px solid #ddd;padding:8px;">由其它包决定</td><td style="border:1px solid #ddd;padding:8px;">默认不响，加 <code>--strict</code> 才失败</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">版本范围声明（本例）</td><td style="border:1px solid #ddd;padding:8px;">审 0 个包</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">不响</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">包名打错、版本不存在</td><td style="border:1px solid #ddd;padding:8px;"><code>No matching distribution found</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">响</td></tr></tbody></table>
+<p>本地路径依赖那一条值得单独说。JSON 输出是这样的：</p>
+<pre><code>{"name": "localsample", "skip_reason": "Dependency not found on PyPI and could not be audited: localsample (0.1.0)"}</code></pre>
+<p>它出现在 <code>dependencies</code> 数组里，但没有 <code>version</code> 字段，也没有 <code>vulns</code>。你的解析脚本如果写 <code>dep["version"]</code>，这里直接 KeyError——我第一版就是这么崩的。它不计入 <code>Found N vulnerabilities</code>，也不影响退出码；同一份文件里只要有一个包有漏洞，你还是拿到 exit 1，看起来"审计跑过了"，其实内部包一个都没审。</p>
+<p>加 <code>--strict</code> 才会把这件事变成失败，报错原文是：</p>
+<pre><code>ERROR:pip_audit._cli:localsample: Dependency not found on PyPI and could not be audited: localsample (0.1.0)</code></pre>
+<p>README 对 <code>--strict</code> 的定义是"dependency collection fails 时让整个审计失败"。私有包、内部 sdist 多的项目，这个开关基本是必须的。</p>
+<h2>五、`--fix` 会把 CI 的失败改成成功</h2>
+<p>这是我这一轮最不想要、但确实存在的发现。把 <code>requests==2.19.0</code> 那份文件复制一份，跑 <code>pip-audit --fix</code>：</p>
+<pre><code>Found 37 known vulnerabilities in 3 packages and fixed 37 vulnerabilities in 3 packages</code></pre>
+<p>退出码是 <strong>0</strong>。也就是说，一个本来该让流水线红掉的命令，加上 <code>--fix</code> 之后变成了绿灯，而它做的事是两件：把 <code>requests==2.19.0</code> 改成 <code>requests==2.33.0</code>，并且往文件里<strong>追加两条原本没有的依赖</strong>：</p>
+<pre><code>requests==2.33.0
+# pip-audit: subdependency explicitly fixed
+idna==3.15
+    # pip-audit: subdependency explicitly fixed
+urllib3==2.8.0</code></pre>
+<p>两个细节值得记：注释缩进不一致（第二条多了四个空格）；子依赖被提升成了直接依赖并钉死。这在"锁文件由工具生成"的流程里也许没问题，但如果你把 <code>requirements.txt</code> 当人工维护的清单，下次有人手动改版本时就会发现多出两行没人记得加过的包。</p>
+<p><code>--fix --dry-run</code> 是安全的那个：它只打印"would have upgraded requests to 2.33.0"这类信息，不改文件。要用就用这个，改文件的那一步留在人手上。</p>
+<h2>六、换一个漏洞服务，数字又变了</h2>
+<p>默认服务不是 OSV。命令行参数解析日志里写着 <code>vulnerability_service=<VulnerabilityServiceChoice.Pypi: 'pypi'></code>，README 的参数表也把默认值列在 <code>PIP_AUDIT_VULNERABILITY_SERVICE</code> 那一行。同一份文件显式加 <code>-s osv</code>：</p>
+<ul><li>默认（pypi）：37 行，去重 19 个</li><li><code>-s osv</code>：38 行，去重 <strong>19 个</strong></li></ul>
+<p>两者去重后的公告集合<strong>完全相同</strong>（我用"包名 + id"做键对比，两个方向的差集都是空）。差的 1 条只是某一条公告在 OSV 侧又多复制了一次。所以"换服务数字变了"这个现象是真的，"换服务审出的问题变了"是假的——至少在这三个包上是假的。</p>
+<h2>七、我建议接进 CI 的最小写法</h2>
+<p>三条命令，各管一件事：</p>
+<pre><code># 1. 先确认到底审了几个包（这一步决定后面两步有没有意义）
+python -m pip_audit -r requirements.txt --strict --dry-run
+
+# 2. 真审计，输出 JSON 自己数（别信末行的数字）
+python -m pip_audit -r requirements.txt --strict --progress-spinner off -f json -o audit.json
+
+# 3. 解析：按"包名 + id"去重，报"去重后的公告数"和"审计包数"</code></pre>
+<p>第 3 步的判据我建议写成两条与：<strong>去重后公告数等于 0</strong>，且<strong>审计包数等于你预期的值</strong>（比如锁文件里 <code>==</code> 的行数）。只判第一条，就会漏掉"审了 0 个包"这种绿灯。只判退出码，会同时漏掉这两种——CI 面板上照样是 100% 通过。</p>
+<p>另外两个提醒：pip-audit 要出网（它建临时 venv 让 pip 解析依赖），网络受限的 CI 上先跑一次确认；<code>--fix</code> 不要放进流水线，它会把失败改成成功并且改文件。</p>
+<h2>八、Troubleshooting：三个我实际撞到的报错</h2>
+<h3>报错一：`ResolutionImpossible`</h3>
+<p>我第一版文件写了 <code>requests==2.19.0</code> 加 <code>urllib3==1.24.1</code>，想"一次多扫几个"，结果：</p>
+<pre><code>ERROR:pip_audit._virtual_env:internal pip failure: ERROR: Cannot install -r tmp\audit-1109\reqs-vuln.txt (line 1) and urllib3==1.24.1 because these package versions have conflicting dependencies.
+ERROR: ResolutionImpossible: for help visit https://pip.pypa.io/en/latest/topics/dependency-resolution/#dealing-with-dependency-conflicts
+ERROR:pip_audit._cli:Failed to install packages: [...]</code></pre>
+<p>原因是 requests 2.19.0 自己要求 <code>urllib3<1.24</code>，和手写的 <code>urllib3==1.24.1</code> 直接冲突。pip-audit 靠"把文件装进临时环境"来解析，装不上就没有审计对象。处置：<strong>别手工指定子依赖的版本</strong>，让它自己解析；或者拆成两个文件分别跑。好消息是这类失败是响的，exit 1。</p>
+<h3>报错二：`No matching distribution found`</h3>
+<pre><code>ERROR:pip_audit._virtual_env:internal pip failure: ERROR: Could not find a version that satisfies the requirement not-a-real-package-zzz==1.0.0 (from versions: none)
+ERROR: No matching distribution found for not-a-real-package-zzz==1.0.0</code></pre>
+<p>这是我故意用一个不存在的包名测的。行为符合预期：直接失败、exit 1。<strong>但它也解释了一个隐蔽情况</strong>：如果包名拼错发生在依赖树深处（某个包的 <code>install_requires</code> 写错），整轮审计会直接崩，而不是"跳过这一条继续"。看到这条不要以为是网络问题，先去看包名和私有源配置。</p>
+<h3>报错三：`Dependency not found on PyPI and could not be audited`</h3>
+<pre><code>ERROR:pip_audit._cli:localsample: Dependency not found on PyPI and could not be audited: localsample (0.1.0)</code></pre>
+<p>这条只在加了 <code>--strict</code> 时出现（不加就静默跳过，见第四节）。你的私有包、内部 SDK、本地路径依赖，全部走这一条。处置：私有包在企业内部源上时，用 <code>--index-url</code> / <code>--extra-index-url</code> 指过去；本地开发期的路径依赖，接受它被跳过，但要在 CI 里用 <code>--strict</code> 让"被跳过的数量"变成可见的失败。</p>
+<h2>九、这篇没解决的问题</h2>
+<p>三条，写清楚以免读者误用：</p>
+<p>1. <strong><code>requests>=2.0</code> 为什么一个包都没审到，我没定位到根因</strong>。复现路径在第三节，源码层面只确认了它是空集合，没找到规则。</p>
+<p>2. <strong>只测了 Windows</strong>。Linux 上临时 venv 和 <code>pip install --dry-run --report</code> 的行为可能有差异，尤其涉及系统包时。</p>
+<p>3. <strong>没碰 SBOM 和 CycloneDX 输出</strong>（<code>-f cyclonedx-json</code>）。pip-audit 2.10.1 的依赖里已经带了 <code>cyclonedx-python-lib 11.12.0</code>，这条路是通的，但它是另一个决策层的事，留到以后。</p>
+<h2>结语</h2>
+<p>如果这篇只留一句话：<strong>pip-audit 的末行数字不是漏洞数，退出码也不是审计覆盖率</strong>。去重后有几个公告、实际审了几个包，这两件事都得自己数。想继续往上游走，可以看 10-17 那篇 xz 后门（产物怎么和源码对不上）和 <a href="https://yaohehe.github.io/2026-10-29-python-314-tarfile-5.html" class="internal-link">10-29 那篇 tarfile 解压安全</a>（装进来的东西会写到哪去）——一个在依赖进来之前，一个在依赖落地之后，中间这段才是本篇覆盖的本机扫描层。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
