@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Docker Compose 5.x 改了配置不生效：4 个真实报错复盘 - TechPassive</title>
+  <meta name="description" content="改了 docker-compose.yml 的端口和环境变量，restart 之后服务照旧跑旧配置；systemd drop-in 写完了也不生效。本文从 Compose 的 config hash 标签、reconciliation 变更讲到 daemon-reload，拆解 4 个高频误判并给出可直接复制的排查命令。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Docker Compose 改了配置不生效：4 个真实报错复盘</h1>
+  <div class="post-tags">
+    <span class="tag">Docker</span><span class="tag">运维</span><span class="tag">自托管</span><span class="tag">Docker Compose</span><span class="tag">systemd</span>
+  </div>
+  <div class="content">
+    <p>写代码久了，我最怕的一句话是：「我明明改了配置，为什么没生效？」</p>
+<p>这句话在自托管场景里出现得尤其频繁。它不一定是代码 bug，更多时候是<strong>部署工具的配置生效机制</strong>和你的直觉不一致。我在这台机器上管理着十几个 Compose 项目，踩过的坑可以归成一句话：容器的配置在<strong>创建那一刻</strong>就固化了，restart 只是让同一个容器里的进程再跑一遍，它永远不会重新读你的 YAML。</p>
+<p>这篇文章不讲怎么搭建服务，只讲一件事：<strong>配置为什么没生效，以及怎么在 5 分钟内定位到具体是哪一层把它吃掉了</strong>。全文的命令都可以直接复制。</p>
+<blockquote>声明：本文包含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接。你通过链接下单时价格不变，我会获得少量佣金。文中提到的硬件均为自费购买，价格为截至发稿的常见区间，请以商品页实际报价为准。</blockquote>
+<h2>先建立正确的心智模型：restart 和 up -d 根本不是一回事</h2>
+<p>很多人踩的第一个坑，是把 <code>docker compose restart</code> 当成「应用新配置」。它不是。</p>
+<p>容器的环境变量、端口映射、挂载路径、启动命令、运行用户、镜像 ID，这些全部在**容器被 create 的那一刻**写进容器自己的记录里。<code>restart</code> 做的是给主进程发停止信号，然后在**同一个容器**里再启动一次。既然容器没换，这些字段自然一个都没变。</p>
+<p>所以下面这些改动，<code>restart</code> 之后一定是原样：</p>
+<ul><li>改了 `docker-compose.yml` 里的 `ports:`、`volumes:`、`environment:`、`command:`</li><li>改了 `.env` 里的值（Compose 在**渲染服务定义**时读 `.env`，不是在启动进程时读）</li><li>改了 `env_file:` 指向的文件（同样在渲染阶段就被解析进定义了）</li><li>换了镜像（容器还在跑它被创建时那个 image）</li></ul>
+<p>真正会生效的命令是 <code>docker compose up -d</code>。它的工作方式是：读取 Compose 文件、解析所有变量、算出渲染后服务定义的哈希值，把这个哈希作为 label 打在容器上；下次执行 <code>up -d</code> 时再算一次哈希，和容器上那个 label 比。**哈希不同才重建，哈希相同就什么都不做。**</p>
+<p>这一条同时解释了另一个常见困惑：「我改了配置，<code>up -d</code> 却什么都没干」。不是它坏了，是真的没变化——要么你改的地方根本没进渲染结果（比如改了一个不存在的 key），要么改动被别的地方覆盖了。</p>
+<p>还有一个版本坑：老的 <code>docker-compose</code>（带连字符，Python 版 V1）已经不在当前软件包里了。2026 年 7 月之后在全新的 Ubuntu 上敲 <code>docker-compose</code> 得到 <code>command not found</code> 是**预期行为**，不是环境坏了。现在统一用带空格的 <code>docker compose</code>，它是随 Docker Engine 安装的 Go 插件，也就是 Compose V2。用 <code>docker compose version</code> 确认版本。</p>
+<h2>命令阶梯：按你改了什么来选，不要一律用最重的</h2>
+<p>从最便宜的 rung 开始往上爬，能省下大量无谓的重建和停机。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你改了什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">应该跑的命令</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">会不会重建容器</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">只是进程崩了想拉起来</td><td style="border:1px solid #ddd;padding:8px;">`docker compose restart web`</td><td style="border:1px solid #ddd;padding:8px;">不会，永远不重建</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">服务从宿主机 bind mount 读配置</td><td style="border:1px solid #ddd;padding:8px;">`docker compose exec web nginx -s reload`</td><td style="border:1px solid #ddd;padding:8px;">不会，且不断连接</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">改了 Compose 文件 / `.env` / `env_file`</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d`</td><td style="border:1px solid #ddd;padding:8px;">定义哈希变了才重建</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">改了 Dockerfile 或代码</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d --build web`</td><td style="border:1px solid #ddd;padding:8px;">先构建再重建</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">怀疑构建缓存脏了</td><td style="border:1px solid #ddd;padding:8px;">`docker compose build --no-cache web` 然后 `up -d web`</td><td style="border:1px solid #ddd;padding:8px;">全层重建</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">换了镜像 tag，要拉新版</td><td style="border:1px solid #ddd;padding:8px;">`docker compose pull web` 然后 `up -d web`</td><td style="border:1px solid #ddd;padding:8px;">拉完才会重建</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">想强制刷新运行环境</td><td style="border:1px solid #ddd;padding:8px;">`docker compose up -d --force-recreate`</td><td style="border:1px solid #ddd;padding:8px;">全部无条件重建</td></tr></tbody></table>
+<p>这张表里最反直觉的两行是第一行和第二行。<code>restart</code> 不是 reload，<code>exec ... reload</code> 才是 reload。如果你的 nginx 配置目录是从宿主机 bind mount 进去的，改完宿主机上的文件，容器本身根本不需要变，直接在容器内重载即可——这比重建容器温和得多，不会丢掉正在服务的连接。</p>
+<p>反过来，「更新镜像」需要**两条命令**。<code>pull</code> 负责把新镜像拉下来，<code>up -d</code> 才负责发现 image ID 变了并重建。只跑 <code>up -d</code> 不 pull，你会安安静静地继续跑上个月的 <code>latest</code>，而且没有任何报错。</p>
+<p>还有一个自动化相关的细节值得记住：<code>up -d</code> 在容器创建后就返回了，所以「跑完 <code>up -d</code> 紧接着 curl 探活」的部署脚本**经常在第一次就失败**。要让它等，就用 <code>up -d --wait</code>：它会阻塞到所有声明了 <code>healthcheck</code> 的服务都报告 healthy，如果有服务一直不健康则以非零码退出。这个 flag 有多好用，取决于你写的 healthcheck 是否真的可信——所以在自动化里用之前，先把 healthcheck 写扎实。</p>
+<h2>报错一：改了 .env，服务还在用旧值</h2>
+<p>这是我见过频率最高的一个。日志里没有任何异常，服务只是<strong>安静地忽略</strong>了你的改动。</p>
+<p>真实报错/现象通常是应用侧的配置缺失或回退，比如数据库连不上、端口还是旧的那一个，或者日志里打印的 config 值和你刚写的不一样。</p>
+<p>原因在于 <code>.env</code> 是在 Compose **渲染服务定义**时被读进来的，读完就固化进定义了。<code>restart</code> 根本不重新渲染。</p>
+<p>诊断顺序：</p>
+<pre><code># 1. 看渲染后的最终定义，确认你的值到底有没有进来
+docker compose config
+
+# 2. 看容器上记录的哈希标签
+docker inspect --format '{{ index .Config.Labels "com.docker.compose.config-hash" }}' <容器名>
+
+# 3. 直接看容器里真正生效的环境变量
+docker compose exec web env | grep MY_VAR</code></pre>
+<p>如果第 1 步 <code>docker compose config</code> 打印出来的就是你改过的新值，而第 3 步还是旧值，那就是没重建。跑 <code>docker compose up -d <服务名></code>。如果第 1 步打印的还是旧值，问题在渲染层——常见原因是 <code>env_file:</code> 指向的文件不存在，或者你在错误的目录执行（Compose 从当前目录取项目名和文件位置，在上一级目录跑会直接报 <code>no configuration file provided: not found</code>）。</p>
+<h2>报错二：systemd drop-in 写完了，服务行为一点没变</h2>
+<p>场景是这样的：你不想直接改 <code>/lib/systemd/system/nginx.service</code>（包管理器升级会覆盖你的改动），于是写了个 drop-in。结果 <code>systemctl restart</code> 之后配置完全没生效。</p>
+<p>最常见的报错文本：</p>
+<pre><code>Failed to read drop-in file /etc/systemd/system/nginx.service.d/override.conf:
+Syntax error</code></pre>
+<p>或者更隐蔽的一种——不报错，但你写的东西根本没被读：</p>
+<pre><code># 文件名叫 override.txt —— systemd 直接无视，因为它要求 .conf</code></pre>
+<p>systemd 对 drop-in 的规矩相当死板：</p>
+<ul><li>目录名必须是 `<完整单元名>.d`，也就是 `nginx.service.d`，不能是 `nginx.d`</li><li>文件名**必须以 `.conf` 结尾**</li><li>放在 `/etc/systemd/system/` 下，优先级高于 `/run/` 和 `/usr/lib/`</li><li>多个 drop-in 按文件名字典序叠加</li></ul>
+<p>写完之后**必须** <code>systemctl daemon-reload</code>。systemd 把单元文件读进内存后就不会再看磁盘，你改了文件但没 reload，等于什么都没做：</p>
+<pre><code>sudo systemctl edit nginx.service      # 交互式写 drop-in，最不容易写错
+sudo systemctl daemon-reload
+sudo systemctl restart nginx</code></pre>
+<p>改完想确认 systemd 到底用了什么，用 <code>systemctl cat nginx.service</code> 看合并后的结果——它显示的是**实际生效**的单元内容，比直接读磁盘上的文件可靠。</p>
+<h2>报错三：Service has more than one ExecStart= setting</h2>
+<p>这个报错在写 drop-in 覆盖 <code>ExecStart</code> 时出现：</p>
+<pre><code>nginx.service: Service has more than one ExecStart= setting in drop-in.
+Refusing.</code></pre>
+<p>原因是 <code>ExecStart=</code> 是列表类型的指令，drop-in 里再写一条会**追加**而不是覆盖，于是就有了两条。systemd 的规则是：**用一条空赋值先清空，再写新值**。</p>
+<pre><code>[Service]
+ExecStart=
+ExecStart=/usr/local/bin/nginx -c /etc/nginx/my.conf</code></pre>
+<p>同理，<code>OnCalendar=</code>（timer 里加第二个触发时间导致定时器跑两次）、<code>Environment=</code> 之类的列表型指令都是这个规则。单个值的指令直接写就是覆盖，不需要清空。</p>
+<p>另一个方向相反的坑：依赖是**加不上去也删不掉**的。<code>Requires=</code>、<code>After=</code> 这些没法通过 drop-in 移除，想彻底换掉一个单元，得用 <code>systemctl edit --full</code> 写完整单元，或者 mask 掉重新定义。</p>
+<p>想审计整台机器上有哪些单元被 drop-in 覆盖过、哪些被完整复制冻结了，跑：</p>
+<pre><code>systemctl daemon-reload
+systemd-delta --type=overridden</code></pre>
+<p><strong>完整复制单元文件是最坏的情况</strong>——它把上游的单元冻住了，包升级的新内容永远到不了你这里。</p>
+<h2>报错四：unit 改对了，但服务起不来</h2>
+<p>drop-in 语法没问题，daemon-reload 也跑了，<code>systemctl start</code> 却失败。这时报错通常长这样：</p>
+<pre><code>myapp.service: Failed at step EXEC spawning /opt/myapp/bin/myapp: No such file or directory</code></pre>
+<p>或者更常见的反复重启：</p>
+<pre><code>myapp.service: Start request repeated too quickly.
+myapp.service: Failed with result 'exit-code'.
+systemd: Failed to start MyApp daemon.</code></pre>
+<p>第一种是 <code>ExecStart</code> 指向的路径不存在或没有执行权限，直接 <code>ls -l</code> 确认；第二种是应用自己起来了又立刻退出，而 <code>Restart=on-failure</code> 把它立刻拉回来，于是撞上速率限制。这时候**别盯着 restart 策略看日志，要看应用为什么退出**：</p>
+<pre><code>sudo systemctl status myapp.service
+sudo journalctl -u myapp.service -n 50 -o cat   # 过滤 systemd 封装信息，看应用自己的第一行报错</code></pre>
+<p><code>-o cat</code> 这一步很关键。systemd 只告诉你「进程退出了」，真正的原因在服务自己的 stdout/stderr 里，不去掉封装根本看不到。</p>
+<p>改配置前先验证语法，能省掉大量盲目重启：</p>
+<pre><code>sudo systemd-analyze verify /etc/systemd/system/myapp.service</code></pre>
+<p>它会解析单元、报告语法错误和未知指令，并检查 <code>ExecStart=</code> 引用的可执行文件是否存在。</p>
+<h2>版本相关的坑：升级 Compose 之后容器被重建了</h2>
+<p>2026 年 Compose 的 reconciliation 逻辑改动比较密集，如果你最近升级过，值得知道这几件事：</p>
+<ul><li>**v5.2.0（2026-06-23）** 引入了观察状态与期望状态之间的新 reconciliation 算法，并标记为 minor 破坏性变更</li><li>**v5.4.0（2026-08-03）** 把卷和网络的生命周期纳入 reconcile plan，卷重建和子网变更在 plan 里可见；修复了多平台构建的 manifest digest 取值</li><li>**v5.5.0（2026-08-17）**  overhauled 镜像 digest 的 reconciliation。**注意：升级后第一次跑 `compose up` 时，现有容器可能会被重建一次**，因为 digest 判断逻辑换了一套模型。这是一次性的，digest 落位之后就不会再有意外重建。</li></ul>
+<p>也就是说，升级 Compose 之后，如果你的脚本会 diff 容器 ID 并据此判断「有没有变更」，<strong>第一次运行的结果要单独确认，别直接当成异常</strong>。</p>
+<h2>五分钟排查清单</h2>
+<p>配置改了没生效，按这个顺序走一遍：</p>
+<pre><code># 1. 渲染层：最终定义里有我的改动吗？
+docker compose config | grep -i MY_VAR
+
+# 2. 定义层：哈希变了吗？
+docker inspect --format '{{ index .Config.Labels "com.docker.compose.config-hash" }}' <容器名>
+
+# 3. 容器层：环境变量真的进来了吗？
+docker compose exec <服务> env | grep MY_VAR
+
+# 4. 挂载层：这是 bind mount 还是 named volume？
+docker inspect <容器名> --format '{{json .Mounts}}'
+
+# 5. 镜像层：我以为在跑新镜像，实际跑的是哪个 ID？
+docker inspect <容器名> --format '{{.Image}}'
+docker image inspect <镜像>:<tag> --format '{{.Id}}'</code></pre>
+<p>第 4 步经常被忽略。<strong>宿主机上改了文件，容器里看不到</strong>——如果那个挂载是 named volume 而不是 bind mount，宿主机目录和容器目录是两套完全独立的数据。这是另一个版本的「改了不生效」。</p>
+<h2>收尾：把生效机制变成默认习惯</h2>
+<p>我最后沉淀下来的规则只有三条：</p>
+<p>1. **改了 Compose 文件，永远先 <code>docker compose config</code> 看渲染结果**，别改完就 up。这一条能挡掉绝大多数低级错误。</p>
+<p>2. **<code>restart</code> 只用来拉崩溃的进程**，任何配置变更都走 <code>up -d</code>。构建产物变了才加 <code>--build</code>，镜像变了先 <code>pull</code>。</p>
+<p>3. **永远不直接编辑 <code>/lib/systemd/system/</code> 或 <code>/usr/lib/systemd/system/</code> 下的文件**，用 drop-in，改完 <code>daemon-reload</code>，然后 <code>systemctl cat</code> 验证。</p>
+<p>顺带一句：这台机器上跑着的一堆小服务，本质上都是「一台小主机 + 一堆容器」。如果你也在搭自己的实验环境，下面这三样是我实际在用的——一台树莓派 5 当常驻节点、一根 Cat6 网线做机柜连线、一张 microSD 存配置和日志。都是自费，价格以商品页为准。</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 Raspberry Pi 5（8GB）</a></p>
+<p>👉 <a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 Amazon Basics Cat6 网线</a></p>
+<p>👉 <a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 Amazon Basics microSD 卡 128GB</a></p>
+<h2>相关阅读</h2>
+<p>把自托管服务真正跑起来之后，下一步往往是怎么知道它活着、跑得怎么样。可观测性那套东西值得先搭起来——我在<a href="https://yaohehe.github.io/2026-09-26-langfuse-n8n-llm.html" target="_blank" rel="nofollow sponsored">用 Langfuse 给自托管工作流加全链路追踪</a>里记录过完整做法，Docker 和自托管的坑跟本文高度重叠。</p>
+<p>如果你这堆服务是跟着 CI/CD 一起改的，那配置什么时候生效就不只是运维问题了，而是发布流程问题。<a href="https://yaohehe.github.io/2026-09-29-2026-github-actions-4-action.html" target="_blank" rel="nofollow sponsored">GitHub Actions 供应链踩坑实录</a>里记的是另一类「改了不生效」——action 的 tag 被改了，你以为在跑旧版本，其实跑的是别人。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

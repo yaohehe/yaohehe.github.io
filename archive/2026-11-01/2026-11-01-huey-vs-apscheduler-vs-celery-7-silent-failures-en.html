@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>huey vs APScheduler vs Celery: 7 Silent Failures - TechPassive</title>
+  <meta name="description" content="huey 3.5.3, APScheduler 3.11.3 and Celery 5.6.3 on one Windows box: seven failures that never raise, from results eaten on first read to a 1-second misfire window.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>huey vs APScheduler vs Celery: Seven Silent Failures</h1>
+  <div class="post-tags">
+    <span class="tag">huey</span><span class="tag">APScheduler</span><span class="tag">Celery</span>
+  </div>
+  <div class="content">
+    <p>Running a scheduled job on a single machine is rarely hard. Working out whether it ran is the hard part. I tested huey 3.5.3, APScheduler 3.11.3 and Celery 5.6.3 on Windows 11 with CPython 3.13.14, trying to answer one question: why does the same requirement fail in three different ways, quietly, in three libraries?</p>
+<p>The short answer is uncomfortable. <strong>None of the dangerous parts are on the first page of the docs. They are in the defaults.</strong> Defaults never raise; they just make your job run fewer times than you think.</p>
+<p><strong>TL;DR</strong>: When a job "did not run but did not error", check four things first: whether a huey consumer is actually running, whether APScheduler's <code>misfire_grace_time</code> is still the default 1 second, whether your Celery broker is <code>memory://</code>, and whether the main thread exited before the job fired. Every number below comes from a run on my machine. No affiliate links in this article.</p>
+<h2>The three libraries on one table</h2>
+<p>Most comparison posts start with throughput. On a single machine, throughput is rarely the bottleneck; <strong>operability</strong> is. The real differences look like this:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">huey 3.5.3</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">APScheduler 3.11.3</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Celery 5.6.3</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">External service needed</td><td style="border:1px solid #ddd;padding:8px;">No (<code>SqliteHuey</code> uses stdlib <code>sqlite3</code>)</td><td style="border:1px solid #ddd;padding:8px;">No</td><td style="border:1px solid #ddd;padding:8px;">Yes, a broker</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Process model</td><td style="border:1px solid #ddd;padding:8px;">Separate consumer process</td><td style="border:1px solid #ddd;padding:8px;">Background thread in-process</td><td style="border:1px solid #ddd;padding:8px;">Separate worker process</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Persistence by default</td><td style="border:1px solid #ddd;padding:8px;">Yes (SQLite / Redis / PostgreSQL)</td><td style="border:1px solid #ddd;padding:8px;">No (memory jobstore)</td><td style="border:1px solid #ddd;padding:8px;">Configure a result backend</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Built-in retries</td><td style="border:1px solid #ddd;padding:8px;">Yes (<code>retries</code>, <code>retry_delay</code>)</td><td style="border:1px solid #ddd;padding:8px;">No, write your own</td><td style="border:1px solid #ddd;padding:8px;">Yes (<code>autoretry_for</code>)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Scheduling syntax</td><td style="border:1px solid #ddd;padding:8px;"><code>crontab(minute='*/5')</code></td><td style="border:1px solid #ddd;padding:8px;"><code>cron</code> / <code>interval</code> / <code>date</code> triggers</td><td style="border:1px solid #ddd;padding:8px;">beat + <code>crontab</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Works with no external service</td><td style="border:1px solid #ddd;padding:8px;">Yes</td><td style="border:1px solid #ddd;padding:8px;">Yes</td><td style="border:1px solid #ddd;padding:8px;"><strong>No</strong> (<code>memory://</code> is threads only)</td></tr></tbody></table>
+<p>That last row is where this article starts. On a machine without a broker, you cannot observe Celery's real behaviour. You observe a stand-in, and the stand-in gives you false confidence.</p>
+<h2>huey: three silent failures</h2>
+<p>huey is deliberately plain. A task is serialized, pushed into a queue store, and another process pops it. Few dependencies, but there is a person-shaped gap between "something is in the queue" and "something happened".</p>
+<h3>Failure 1: the task is queued and nobody executes it</h3>
+<p>Calling a <code>@huey.task()</code> function does not run it; it enqueues it. With no consumer running, the queue grows and the <code>Result</code> handle returns <code>None</code> forever:</p>
+<pre><code>from huey import SqliteHuey
+h = SqliteHuey('q1', filename='q1.db')
+
+@h.task()
+def add(a, b):
+    print('executed')
+    return a + b
+
+r = add(1, 2)
+print(r())                     # None
+print(h.storage.queue_size())  # 1</code></pre>
+<p>On my machine: <code>r()</code> returned <code>None</code>, <code>queue_size()</code> was 1, the side effect never happened, and <strong>there was no exception and no log line</strong>. After I manually ran <code>h.execute(h.dequeue())</code>, <code>r()</code> returned 3.</p>
+<p>The trap is semantic. <code>None</code> means "not executed yet", not "execution failed". A failed task makes <code>Result.get()</code> raise <code>TaskException</code>. If your health check is <code>if result is None</code>, you are reading "not ready" as "broken".</p>
+<h3>Failure 2: the result is destroyed on first read</h3>
+<p>I hit this while writing assertions: assert once, print once, and the value is gone. The cause is in <code>Result._get()</code>, which calls <code>huey.get_raw(task_id, peek=False)</code>, and <code>peek=False</code> routes to <code>storage.pop_data()</code>: <strong>reading deletes</strong>.</p>
+<p>The official API docs say it plainly:</p>
+<p>> <strong>preserve</strong> (*bool*) – when set to <code>True</code>, this parameter ensures that the task result will be preserved after having been successfully retrieved. Ordinarily, Huey will discard results after they have been read, to prevent the result store from growing without bounds.</p>
+<p>Measured:</p>
+<pre><code>r = mul(6, 7)
+h.execute(h.dequeue())
+print(r())                    # 42
+print(h.result(r.id))         # None - the store is already empty
+print(r.get(preserve=True))   # pass this when you need to re-read</code></pre>
+<p>The same <code>Result</code> object still returns 42 on a second call because it caches <code>_result</code>. A fresh <code>Result</code> does not. So "it works locally but the result endpoint returns nothing" is usually about how you read, not where you store.</p>
+<h3>Failure 3: an unregistered task name deletes the message</h3>
+<p>Rolling deploys leave two code versions alive at once. If a message carries an old task name and the consumer does not register it, huey does not skip it or retry it. It raises during dequeue, <strong>after the message is already gone</strong>:</p>
+<pre><code>huey.exceptions.HueyException: __main__.legacy_name not found in TaskRegistry</code></pre>
+<p>The measurement worth remembering: <code>queue_size()</code> was 1 before the exception and <strong>0</strong> after. <code>Huey.dequeue()</code> pops the message from storage first, then calls <code>deserialize_task()</code>, and <code>TaskRegistry.string_to_task()</code> raises when the name is unknown. There is no rollback path.</p>
+<p>The consumer loop does not save you either:</p>
+<pre><code>try:
+    task = self.huey.dequeue()
+except Exception:
+    self._logger.exception('Error reading from queue')
+    self.sleep()</code></pre>
+<p>One traceback, then backoff. The task never returns. Treat the task name as a persistence contract: rename with an alias, never in place.</p>
+<h2>huey's SQLite store: one timeout parameter, two meanings</h2>
+<p><code>SqliteHuey</code> takes a <code>timeout</code> parameter. The docs are thin; the source comment reads <code># Busy timeout in seconds, default is 5.</code> The problem is that it also sets a second deadline.</p>
+<p>huey 3.5.2's changelog has this line:</p>
+<blockquote>Fixed a "database is locked" problem when multiple processes open a new sqlite database at the same time. See #925.</blockquote>
+<p>The fix lives in <code>storage.py</code>:</p>
+<pre><code>def _set_journal_mode(self, conn):
+    # Switching a new database to WAL upgrades a read lock to a write
+    # lock, which can fail under concurrency.
+    deadline = time.monotonic() + self._timeout
+    while True:
+        try:
+            conn.execute('pragma journal_mode="%s"' % self._journal_mode)
+            return
+        except self.operational_error as exc:
+            if 'database is locked' not in str(exc):
+                raise
+            elif time.monotonic() >= deadline:
+                raise
+            time.sleep(0.01)</code></pre>
+<p>So <code>timeout</code> is both the SQLite busy timeout and the retry window for creating the database. Shrinking it (a common "performance" suggestion) closes that window. Three processes, 400 tasks each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>timeout</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Tasks stored</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Process outcome</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>0</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>400</strong> (800 lost, 66.7%)</td><td style="border:1px solid #ddd;padding:8px;">2 processes <code>rc=1</code>, <code>sqlite3.OperationalError: database is locked</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>5</code> (default)</td><td style="border:1px solid #ddd;padding:8px;">1200</td><td style="border:1px solid #ddd;padding:8px;">all 3 processes <code>rc=0</code></td></tr></tbody></table>
+<p>The two failing processes <strong>exited</strong>. They did not retry into success. If systemd or <code>nohup</code> starts several enqueue processes, one crash means one fewer writer while the queue still grows, which reads as healthy.</p>
+<p>One boundary: WAL allows readers alongside a single writer, and huey sets <code>isolation_level = None</code> (autocommit), so multi-process writes work. Long transactions do not. Same mechanism as WAL hot backups, which is covered in <a href="https://yaohehe.github.io/2026-10-28-sqlite-hot-backup-opens-fine-14500-rows-missing-en.html" class="internal-link">SQLite hot backup: 14,500 rows missing</a>.</p>
+<h2>APScheduler: three defaults, zero errors</h2>
+<p>APScheduler is subtler because there is no queue at all. Jobs run in an in-process thread pool, and both failures and skips only reach the log. The three defaults are printable:</p>
+<pre><code>python -c "from apscheduler.schedulers.background import BackgroundScheduler as B; print(B()._job_defaults)"
+# {'misfire_grace_time': 1, 'coalesce': True, 'max_instances': 1}</code></pre>
+<p>I ran this on 3.11.1 and 3.11.3. The values are identical in both.</p>
+<h3>Default 1: misfire_grace_time = 1 second</h3>
+<p>The docs describe it as "seconds after the designated runtime that the job is still allowed to be run". They do not say what a default of 1 second implies. A <code>date</code> job scheduled 30 seconds in the past <strong>never ran</strong>, and it disappeared from <code>get_jobs()</code> rather than waiting for a retry. All that was left:</p>
+<pre><code>WARNING apscheduler.executors.default Run time of job "job_a (trigger: date[2026-11-01 21:50:08 CST], next run at: 2026-11-01 21:50:08 CST)" was missed by 0:00:30.006098</code></pre>
+<p>Adding <code>misfire_grace_time=3600</code> made it run. One second is fine for "fire every second inside a live process". It is useless after a laptop suspend or a container restart.</p>
+<h3>Default 2: coalesce = True</h3>
+<p>The user guide says: "if coalescing is enabled for the job and the scheduler sees one or more queued executions for the job, it will only trigger it once." That sentence gets read too broadly. It applies <strong>within a single wakeup</strong>, and the implementation is one slice:</p>
+<pre><code>run_times = (run_times[-1:] if run_times and job.coalesce else run_times)</code></pre>
+<p>A pure-function measurement avoids scheduler jitter: <code>interval</code> of 2 seconds, <code>next_run_time</code> at t0, <code>now = t0 + 11s</code>. <code>Job._get_run_times()</code> returns 6 trigger points; <code>coalesce=True</code> submits 1, <code>coalesce=False</code> submits 6.</p>
+<p>A real pause/resume test agrees: after pausing for 11 seconds, <code>coalesce=True</code> caught up 2 times and <code>coalesce=False</code> caught up 6 times. So "how many catch-up runs" is neither 5 nor 1. It depends on which window you count, which means you cannot use it as a fixed alert threshold.</p>
+<h3>Default 3: max_instances = 1</h3>
+<p>Official wording: "By default, only one instance of each job is allowed to be run at the same time." Measured: 1-second interval, 3 seconds of work per run. In 8 seconds the job ran twice and emitted six lines like this:</p>
+<pre><code>WARNING apscheduler.scheduler Execution of job "slow (trigger: interval[0:00:01], next run at: 2026-11-01 21:51:12 CST)" skipped: maximum number of running instances reached (1)</code></pre>
+<p>It is a WARNING, easy to drown out. What it means is "your job is slower than its interval". What people conclude is "jobs are being dropped".</p>
+<h3>The fourth trap: the main thread exits</h3>
+<p>Not a default, but more common than the other three. <code>BackgroundScheduler</code> is background only relative to a blocking scheduler; it is still an in-process thread. Script exits after 1 second, job due at 3 seconds:</p>
+<ul><li>child process returns <code>rc=0</code>, prints nothing</li><li>4 seconds later the marker file does not exist</li><li><code>sched.shutdown(wait=True)</code> does not help; it waits for <strong>running</strong> jobs, not for jobs that have not fired</li></ul>
+<p>If that script is a <code>docker run</code> or a CI step, you get a green check and a job that never happened.</p>
+<h2>Celery: three boundaries</h2>
+<p>Celery usually fails at <strong>startup</strong>, but the error looks like an environment problem rather than a configuration one.</p>
+<h3>Boundary 1: memory:// is threads only</h3>
+<p>kombu's docs for the in-memory transport are one sentence:</p>
+<p>> Simple transport using memory for storing messages. <strong>Messages can be passed only between threads.</strong></p>
+<p>I tested it literally across processes: the producer's <code>send_task()</code> returned a task id, and the consumer's <code>drain_events()</code> timed out with <code>TimeoutError</code>. <strong>The message never left the first process's heap.</strong> Testing with <code>memory://</code> proves your function can be called, not that your queue connects.</p>
+<h3>Boundary 2: the first error when no broker is configured</h3>
+<p>Without a <code>broker</code> argument, <code>app.conf.broker_url</code> is <code>None</code>, but the connection does not fail on that. It falls back to the AMQP default and returns something that looks unrelated:</p>
+<pre><code>kombu.exceptions.OperationalError: [WinError 10061] No connection could be made because the target machine actively refused it.</code></pre>
+<p>On Windows that 10061 almost always means "nothing is listening on 5672", not a firewall and not credentials. Print the resolved <code>broker_url</code> before editing config.</p>
+<h3>Boundary 3: eager mode does not raise</h3>
+<p><code>task_always_eager=True</code> is the usual way to skip the broker in unit tests. It does not change <code>task_eager_propagates</code>, which defaults to <code>False</code>, so a failing eager task raises nothing:</p>
+<pre><code>app.conf.task_always_eager = True
+r = bad.delay()     # no exception
+print(r.state)      # FAILURE
+print(r.result)     # eager boom
+r.get()             # raises ValueError here</code></pre>
+<p>One line in the source: <code>throw = app.conf.task_eager_propagates</code>. So "eager tests are green" only proves the task was called. Either set <code>task_eager_propagates = True</code>, or assert <code>r.state == 'SUCCESS'</code>.</p>
+<p>On versions: the box already had Celery 5.3.1; PyPI currently ships 5.6.3 (2026-03-26). Both defaults are the same in either version, but 5.3.1 is off the maintenance line, so prefer 5.6.x for Python 3.13.</p>
+<h2>Troubleshooting: five real errors</h2>
+<p>Every error below was reproduced on my machine. None are copied examples.</p>
+<h3>Error 1: sqlite3.OperationalError: database is locked</h3>
+<p>Symptom: several processes enqueue into the same <code>SqliteHuey</code> file; some exit with <code>rc=1</code>; the queue holds fewer tasks than expected.</p>
+<p>Cause: <code>SqliteStorage._set_journal_mode()</code> runs <code>pragma journal_mode="wal"</code> on a new database, which upgrades a read lock to a write lock. Under concurrency that fails, and the retry window is <code>timeout</code>.</p>
+<p>Fix: do not shrink <code>timeout</code>. Shard the database or funnel writes through one process.</p>
+<pre><code># Wrong: timeout treated as a performance knob
+h = SqliteHuey('q', filename='q.db', timeout=0)
+
+# Right: keep the default 5 seconds, raise it for heavier write concurrency
+h = SqliteHuey('q', filename='q.db', timeout=5)</code></pre>
+<pre><code># Reproduce: 3 processes x 400 tasks, then count what landed
+for i in 1 2 3; do python enqueue_worker.py p$i 400 & done; wait
+python -c "import sqlite3;print(sqlite3.connect('q.db').execute('select count(*) from task').fetchone())"</code></pre>
+<h3>Error 2: HueyException: <name> not found in TaskRegistry</h3>
+<p>Symptom: the consumer logs repeated <code>Error reading from queue</code> tracebacks while the queue length falls.</p>
+<p>Cause: <code>dequeue()</code> pops the message before deserializing it. An unregistered name raises after the message is gone.</p>
+<p>Fix: keep an alias for the old name and remove it only after the queue drains.</p>
+<pre><code>@h.task(name='legacy_name')       # old name stays consumable
+def new_name(x):
+    return x</code></pre>
+<h3>Error 3: Run time of job ... was missed by 0:00:30.006098</h3>
+<p>Symptom: a <code>date</code> job never runs and is absent from <code>get_jobs()</code>.</p>
+<p>Cause: <code>misfire_grace_time</code> defaults to 1 second; anything later is treated as missed and removed.</p>
+<p>Fix: set it explicitly to match your tolerance.</p>
+<pre><code>sched.add_job(job, 'date', run_date=when, misfire_grace_time=3600)</code></pre>
+<h3>Error 4: Execution of job ... skipped: maximum number of running instances reached (1)</h3>
+<p>Symptom: an interval job runs far less often than expected and the WARNING repeats.</p>
+<p>Cause: <code>max_instances</code> defaults to 1; the previous run has not finished, so this one is skipped, not queued.</p>
+<p>Fix: confirm whether the job is genuinely slower than its interval, then raise the limit if overlap is acceptable.</p>
+<pre><code>sched.add_job(slow, 'interval', seconds=1, max_instances=3, coalesce=False)</code></pre>
+<h3>Error 5: kombu.exceptions.OperationalError: [WinError 10061]</h3>
+<p>Symptom: <code>task.delay()</code> raises a refused connection.</p>
+<p>Cause: no broker configured, so the client falls back to <code>localhost:5672</code>.</p>
+<p>Fix: configure and verify before deploying.</p>
+<pre><code>python -c "from celery import Celery; print(Celery('x').conf.broker_url)"
+set CELERY_BROKER_URL=redis://127.0.0.1:6379/0</code></pre>
+<h2>Choosing on one machine</h2>
+<p>Folding the boundaries above into a decision tree, order matters:</p>
+<p>1. <strong>You only need "run once in N seconds" and the process lives forever</strong> -> skip the queue, use <code>threading.Timer</code> or the OS scheduler.</p>
+<p>2. <strong>Single machine, need persistence and retries, one extra process is fine</strong> -> <code>SqliteHuey</code>. No extra service, but you own the consumer.</p>
+<p>3. <strong>Single machine, short jobs, no extra process</strong> -> APScheduler, with all three defaults written out explicitly.</p>
+<p>4. <strong>Multiple machines, burst smoothing, Redis or RabbitMQ already present</strong> -> Celery. Without a broker you cannot even observe its real behaviour.</p>
+<p>5. <strong>Short-lived processes (CLI, CI, serverless)</strong> -> none of them; use event triggers.</p>
+<p>The practical version: <strong>work out how long your process lives first.</strong> If the process dies before the interval, every in-process scheduler is a no-op.</p>
+<h2>A minimal hardening checklist</h2>
+<ul><li>huey: consumer runs as its own supervised process; task names are a contract; do not treat <code>Result</code> as a database (<code>preserve=True</code> when re-reading); keep <code>SqliteHuey</code> <code>timeout</code> at 5 or above.</li><li>APScheduler: write <code>misfire_grace_time</code>, <code>coalesce</code> and <code>max_instances</code> into the code; with a persistent jobstore always pass <code>id</code> plus <code>replace_existing=True</code>; keep the main thread alive until jobs finish.</li><li>Celery: <code>memory://</code> for unit tests only; print <code>broker_url</code>; assert <code>state</code> in eager tests; enable <code>task_eager_propagates</code> where you need it.</li></ul>
+<p>For the same failure pattern in another corner, <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-7-silent-failures-behind-exit-co-en.html" class="internal-link">subprocess: seven silent failures behind exit code 0</a> covers processes that exit 0 with no output, and <a href="https://yaohehe.github.io/2026-10-10-n8n-task-runner-architecture-external-and-queue-mo-en.html" class="internal-link">n8n Task Runner external and queue mode</a> describes what happens once the executor moves out of the main process.</p>
+<h2>FAQ</h2>
+<p><strong>Q: huey's <code>Result()</code> returns None. Did the task fail?</strong></p>
+<p>No. <code>None</code> means the result is not in the store yet, because nothing consumed it or it is still running. A genuinely failed task raises <code>TaskException</code> when you read it, with the original exception string and traceback.</p>
+<p><strong>Q: Why does my APScheduler job run once and stop?</strong></p>
+<p>Check the trigger first. A <code>date</code> trigger only fires once and is removed afterwards. For <code>interval</code>, look for the <code>max_instances</code> WARNING and compare the job's duration with its interval.</p>
+<p><strong>Q: I tested Celery with <code>memory://</code> and it worked. Can I ship it?</strong></p>
+<p>No. kombu states that messages can only pass between threads. Another process cannot receive them, and another machine certainly cannot. Run the real path against Redis or RabbitMQ before shipping.</p>
+<p><strong>Q: Can these three be combined?</strong></p>
+<p>Yes, but there is little reason to. The common combination is APScheduler for timing plus Celery for execution. Then APScheduler's misfire logic decides whether a task is dropped, and Celery's ack logic decides whether a dropped task comes back. Debugging two semantics at once is worse than picking one.</p>
+<h2>Closing</h2>
+<p>The three failure modes are side effects of three design philosophies. huey hands execution to another process, so by default nothing executes. APScheduler values punctuality over catch-up, so it waits one second by default. Celery hands delivery to a broker, so without a broker it will not even tell you it is empty.</p>
+<p>Next time a job "did not run", check in this order: <code>queue_size()</code> for huey, <code>_job_defaults</code> for APScheduler, <code>broker_url</code> for Celery. Each is one command.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

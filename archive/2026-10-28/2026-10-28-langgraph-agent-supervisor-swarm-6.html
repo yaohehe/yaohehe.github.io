@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LangGraph 多 Agent 两拓扑实测：supervisor 与 swarm 的 6 处差异 - TechPassive</title>
+  <meta name="description" content="同一件事交给两个 worker 干：LangGraph 的 supervisor 与 swarm 在 LangChain 官方 0.0.31 与 0.1.0 上表现完全不同。本机用零 Key 的脚本化假模型跑完两拓扑，实测出第二轮路由、消息保留、并行委派等 6 处差异，并复现 7 个真实报错与所在的源码行号。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>LangGraph supervisor 与 swarm 实测对照</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph</a></span><span class="tag">Multi-Agent</span><span class="tag"><a href="/2026-10-06-postgresql-17-troubleshooting-in-production-5-real-en.html" class="internal-link">Troubleshooting</a></span>
+  </div>
+  <div class="content">
+    <p><a href="/2026-10-19-langgraph-12-persistence-tested-8-real-errors-en.html" class="internal-link">LangGraph</a> 多 Agent 两拓扑实测：supervisor 与 swarm 的 6 处差异（本机零 Key 对照）</p>
+<p><strong>TL;DR</strong>：LangGraph 官方给了两个「多 Agent」库，名字听起来像是同一个东西的两种叫法，我实际测试之后的结论是：<strong>它们决定的是「下一个说话的是谁」这件事的答案来源</strong>——supervisor 由中央节点重新决策，swarm 由状态字段 <code>active_agent</code> 直接决定，而这个字段会被 checkpointer 记住。这条差别在单轮对话里几乎看不出来，<strong>在第二轮对话里会变成「你的追问根本没有重新分诊」</strong>。另外两处更隐蔽：supervisor 默认会把 worker 的中间过程从主历史里删掉；以及<strong>两种拓扑都没有真正的并行委派</strong>，但失败形态完全不同。本文所有数字来自本机实测（langgraph 1.2.18 + langgraph-supervisor 0.0.31 + langgraph-swarm 0.1.0，Python 3.13，Windows 11），不含任何联盟推广链接。</p>
+<h2>先把两句话摆正</h2>
+<p>官方文档里对两种模式的描述各只有一句话，但对错就是从这两句里分出来的。<code>docs.langchain.com/oss/python/langchain/multi-agent</code> 的 Patterns 表原文：</p>
+<ul><li>Subagents（supervisor 语义）：「A main agent coordinates subagents as tools. All routing passes through the main agent, which decides when and how to invoke each subagent.」</li><li>Handoffs（swarm 语义）：「Agents transfer control to each other via tool calls. Each agent can hand off to others or respond directly to the user.」</li></ul>
+<p>官方仓库 <code>langchain-ai/langgraph-swarm</code> 的 README 第一句更直白：「The system remembers which agent was last active, ensuring that on subsequent interactions, the conversation resumes with that agent.」</p>
+<p>一句话总结：<strong>supervisor 是「所有人都通过前台转接」，swarm 是「电话直接转到上一个人手里」</strong>。前者多一轮翻译，后者省一轮但会「粘」在最后一个专家身上。LangChain 官方博客《Benchmarking Multi-Agent Architectures》也把 supervisor 的额外成本归因于这层「translation」：子 Agent 不能直接回用户，supervisor 必须复述一遍，因此成本更高、也更容易失真。</p>
+<p>如果你已经在本站读过 <a href="https://yaohehe.github.io/2026-10-19-langgraph-12-checkpointer-8.html" class="internal-link">LangGraph 持久化那一篇</a>，可以把本文当成它的续篇：checkpointer 记住的是「状态」，而 swarm 记住的是「谁拿着话筒」。</p>
+<h2>实测方法与可复现环境</h2>
+<p>我不想为了跑一次对照就在每篇文章背后绑一张账单，所以这里用了一个零成本做法：<strong>把「模型」换成一个按脚本吐消息的 Python 对象</strong>。LangGraph 的 <code>create_react_agent</code> 支持「动态模型」——只要传入的对象是 callable、签名是 <code>(state, runtime)</code>、返回值是一个 LangChain Runnable 即可（<code>langgraph/prebuilt/chat_agent_executor.py</code> 里的 <code>_resolve_model</code>）。这样图怎么路由、工具怎么执行、状态怎么写全都照常，唯独「模型思考」这一步被换成了写死的剧本。</p>
+<p>环境安装不污染主环境，全部落到隔离目录：</p>
+<pre><code>pip install --target D:/openclaw-blog/tmp/ma-env langgraph-supervisor langgraph-swarm</code></pre>
+<p>实测拿到的版本组合（版本与发布时间取自 GitHub Releases API）：</p>
+<ul><li>langgraph <strong>1.2.18</strong>（Release 时间 2026-10-26T20:04:45Z）</li><li>langgraph-prebuilt 1.1.1 / langgraph-checkpoint 4.3.1 / langchain-core 1.7.0</li><li>langgraph-supervisor <strong>0.0.31</strong>（Release 时间 2025-11-19T18:34:43Z）</li><li>langgraph-swarm <strong>0.1.0</strong>（Release 时间 2025-12-04T19:04:25Z）</li></ul>
+<p>驱动用的假模型（<code>create_supervisor</code> 内部会对模型调 <code>bind_tools</code>，所以这个对象要同时提供返回自身的 <code>bind_tools</code>）：</p>
+<pre><code>from langchain_core.messages import AIMessage
+from langchain_core.runnables import RunnableLambda
+
+class ScriptedModel:
+    def __init__(self, script):
+        self.script = script   # 一串 AIMessage，第 n 次调用返回第 n 条
+        self.n = 0
+    def bind_tools(self, tools, **kw):
+        return self
+    def __call__(self, state, runtime=None):
+        i = self.n
+        self.n += 1
+        msg = self.script[i] if i < len(self.script) else AIMessage(content="(exhausted)")
+        return RunnableLambda(lambda _: msg)</code></pre>
+<p>用它造一个 worker 就是一行：<code>bob = create_react_agent(ScriptedModel([AIMessage(content="Bob worked")]), tools=[], name="bob")</code>。</p>
+<h2>差异一：第二轮对话谁接（最容易踩的一个）</h2>
+<p>同一件事「让 bob 干活」，两个拓扑跑完的路径完全不同。用 <code>stream_mode="updates"</code> 抓节点轨迹：</p>
+<ul><li>supervisor：<code>supervisor(agent) → supervisor → bob(agent) → bob → supervisor(agent) → supervisor</code>，<strong>6 步</strong></li><li>swarm：<code>alice(agent) → alice → bob(agent) → bob</code>，<strong>4 步</strong></li></ul>
+<p>差别不止是步数。带上 checkpointer 再问第二句「and now?」（同一个 <code>thread_id</code>）：</p>
+<ul><li>supervisor 第二个执行的节点仍然是 <strong>supervisor</strong>——追问会被重新分诊，这是预期行为。</li><li>swarm 第二个执行的节点直接是 <strong>bob</strong>——<code>get_state().values["active_agent"]</code> 显示 <code>"bob"</code>，<strong>上一轮写进去的值被保留了</strong>。</li></ul>
+<p>这件事本身是官方设计（README 原话已在上节引过），在官方文档的语境里它是优点：「后续交互可以从同一个专家继续」。但它有一个很容易被忽略的代价：<strong>用户的第二句话可能根本不属于 bob 的领域</strong>。举例：第一轮「帮我算个账」转去了财务 Agent；第二轮随口问「今天天气怎么样」，swarm 会把这句直接交给财务 Agent，而 supervisor 至少会让中央节点再看一眼。所以用了 swarm 就必须配套做两件事之一：要么在每个 Agent 的系统提示里明确「不属于你的领域要主动交回某某」，要么在应用层每次新任务开始时把 <code>active_agent</code> 重置一次。</p>
+<h2>差异二：默认配置会悄悄删掉 worker 的中间过程</h2>
+<p><code>create_supervisor</code> 有个参数 <code>output_mode</code>，默认是 <code>last_message</code>。它的作用是：worker 跑完之后，把 worker 内部的消息历史<strong>以什么粒度</strong>写回主图。</p>
+<p>我给 bob 加了一个工具，让它内部产生一个工具调用回合（一次 <code>add</code> 工具及其 ToolMessage），然后对比：</p>
+<ul><li><code>output_mode="full_history"</code>：主历史 <strong>9 条</strong>消息，bob 贡献 3 条（含中间的工具结果）</li><li><code>output_mode="last_message"</code>（默认）：主历史 <strong>7 条</strong>消息，bob 只贡献 2 条，<strong>中间那条 ToolMessage 不见了</strong></li></ul>
+<p>源码在 <code>langgraph_supervisor/supervisor.py</code> 的 <code>_make_call_agent</code>，它不是 bug，是一段写死的取舍：</p>
+<pre><code>elif output_mode == "last_message":
+    if isinstance(messages[-1], ToolMessage):
+        messages = messages[-2:]
+    else:
+        messages = messages[-1:]</code></pre>
+<p>什么时候这会让人生不如死：你的 supervisor 需要根据 worker「实际调用过什么工具、传了什么参数」来做下一步决策（比如审计、计费、把上下文递给另一个 worker），这些证据在默认配置下被删掉了，而且<strong>不报错、不告警</strong>。两条应对：显式传 <code>output_mode="full_history"</code>；或者干脆在 worker 的最后一条消息里把关键中间结果复述一遍。反过来，如果你只想要答案、想压 context，默认值反而是对的——<strong>默认值不是错，是你需要知道它存在</strong>。</p>
+<h2>差异三：并行委派——两种拓扑都不并行，但崩法完全不同</h2>
+<p>官方文档的「Choosing a pattern」表里有一列 Parallelization，Handoffs（swarm）那一格是 <code>--</code>（明确不支持），Subagents（supervisor）是有星的。我实测的结果比表格更微妙。</p>
+<p>先在 supervisor 上试：让 supervisor 在<strong>一条</strong> AIMessage 里同时发出两个 handoff 工具调用（<code>transfer_to_alice</code> 与 <code>transfer_to_bob</code>）。<code>langgraph_supervisor/handoff.py</code> 里确实有专门处理并行的分支——一旦检测到 <code>len(last_ai_message.tool_calls) > 1</code>，就用 <code>Send</code> 列表把跳转包进同一个 <code>Command</code>，注释原文是这么写的：</p>
+<pre><code># NOTE: we are using Send here to allow the ToolNode in langgraph.prebuilt
+# to handle parallel handoffs by combining all Send commands into a single command
+goto=[Send(agent_name, {**state, "messages": handoff_messages})],</code></pre>
+<p>顺着这条线索我预期两个 worker 都会跑。实际结果：<strong>6 次独立运行，6 次都只有一个 worker 真的执行了</strong>（bob 4 次、alice 2 次，谁活下来不确定），另一个 worker 既不报错也不留痕，最终历史里只有 5 条消息。我用 monkeypatch 抓了 <code>ToolNode._combine_tool_outputs</code> 的调用记录，它被执行了 <strong>2 次、每次 <code>n_input=1</code></strong>——也就是两个 handoff 工具各自产出了一条只含一个 <code>Send</code> 的父命令，<strong>没有落进同一批</strong>，源码里那条负责累加合并的分支（<code>replace(parent_command, goto=parent_command.goto + output.goto)</code>）压根没被走到。</p>
+<p>那么在 swarm 上做同样的事呢？<strong>直接抛异常</strong>，而且是个看起来跟 handoff 毫不相干的错：</p>
+<pre><code>ValueError: Found AIMessages with tool_calls that do not have a corresponding ToolMessage.
+Here are the first few of those tool calls:
+[{'name': 'transfer_to_charlie', 'args': {}, 'id': 'w2', 'type': 'tool_call'}].
+Every tool call (LLM requesting to call a tool) in the message history MUST have a
+corresponding ToolMessage (result of a tool invocation to return to the LLM) ...
+For troubleshooting, visit: https://docs.langchain.com/oss/python/langgraph/errors/INVALID_CHAT_HISTORY</code></pre>
+<p>排到这里可以给一条工程结论：<strong>真要并行就别指望这两种拓扑自动给你</strong>。需要「同时派几个 worker」的场景，用 <code>Send</code> 手工搭 fan-out / fan-in 子图，或者在 supervisor 侧强制每轮只发一个 handoff。这比依赖一条「注释里说支持、实测只跑一个」的路径可靠得多。</p>
+<h2>Troubleshooting：7 个真实报错与复现方式</h2>
+<p>下面 7 条全部在本机复现过，都给了抛出位置与绕过办法。</p>
+<p><strong>报错 1：<code>ParentCommand</code>——把带 handoff 工具的 agent 单独 invoke</strong></p>
+<p>现象：为了调试单独跑一个 worker，<code>bob.invoke(...)</code> 直接炸，异常类名是 <code>langgraph.errors.ParentCommand</code>，<code>str(e)</code> 打印出来是<strong>一整个 Command 对象的千字符 repr</strong>（含全部消息），既没有错误说明也没有修复提示。</p>
+<p>原因：<code>create_handoff_tool</code> 返回的工具本体是 <code>Command(goto=..., graph=Command.PARENT, ...)</code>，而 <code>langgraph/graph/state.py</code> 第 1762 行的处理是 <code>raise ParentCommand(command)</code>，没有做友好封装。<code>ParentCommand</code> 继承自 <code>GraphBubbleUp</code>，本来是给「子图向父图传话」用的内部信号——一旦没有父图可传，它就变成了一个没有文案的裸异常。</p>
+<p>修复：<strong>handoff 工具只能在被 <code>create_swarm</code> / <code>create_supervisor</code> 包起来的图里用</strong>。要单测某个 worker，就临时构造一个只含它的 swarm，或者把工具列表换成不含 handoff 的版本。</p>
+<p><strong>报错 2：<code>KeyError: 'charlie'</code>——给 <code>active_agent</code> 写了不存在的名字</strong></p>
+<p>现象：手动传参、<code>update_state</code>、或被带偏的模型写入了一个不在 agent 列表里的 <code>active_agent</code>，报出来的只有一句 <code>KeyError: 'charlie'</code>，定位在 <code>langgraph/graph/_branch.py</code> 第 203 行。</p>
+<p>原因：<code>create_swarm</code> 会在内部把 schema 里的 <code>active_agent: str | None</code> <strong>收窄成 <code>Literal['alice','bob'] | None</code></strong>（<code>langgraph_swarm/swarm.py</code> 的 <code>_update_state_schema_agent_names</code>），随后 <code>add_active_agent_router</code> 从 <code>START</code> 挂了一条带 <code>path_map=route_to</code> 的条件边；路由函数返回一个不在 <code>path_map</code> 里的值，就是一声不吭的 KeyError。</p>
+<p>修复：校验优先。入口处就断言 <code>active_agent in {a.name for a in agents}</code>，别指望图给你友好报错。</p>
+<p><strong>报错 3：<code>Error: transfer_to_Bob is not a valid tool</code>——工具名的大小写与空格</strong></p>
+<p>现象：模型输出 <code>transfer_to_Bob</code>，日志里出现一条 ToolMessage：<code>Error: transfer_to_Bob is not a valid tool, try one of [transfer_to_bob]</code>。<strong>不抛异常</strong>，handoff 静默失败，模型通常会重试或者直接开摆。</p>
+<p>原因：<code>create_handoff_tool</code> 里有一行归一化 <code>_normalize_agent_name</code>：<code>WHITESPACE_RE.sub("_", agent_name.strip()).lower()</code>。于是：</p>
+<ul><li><code>agent_name="Bob"</code> → 工具名 <code>transfer_to_bob</code>，而 <code>Command(goto=...)</code> 用的仍是原名 <code>"Bob"</code></li><li><code>agent_name="code reviewer"</code> → 工具名 <code>transfer_to_code_reviewer</code>，而跳转目标仍是带空格的 <code>"code reviewer"</code></li></ul>
+<p>也就是说：<strong>工具名和节点名是两套不同的字符串</strong>。修复：agent 名一律用小写加下划线的 snake_case；给 handoff 工具写 description 时把目标节点名写死进去，而不是让模型猜。</p>
+<p><strong>报错 4：<code>ValueError: Please specify a name when you create your agent</code></strong></p>
+<p>抛点 <code>langgraph_supervisor/supervisor.py:400</code>。只要传给 <code>create_supervisor</code> 的图 <code>name is None or name == "LangGraph"</code>（即 <code>compile()</code> 时没命名）就炸。修复：<code>create_react_agent(..., name="xxx")</code> 或 <code>graph.compile(name="xxx")</code>。</p>
+<p><strong>报错 5：<code>ValueError: Agent with name 'dup' already exists. Agent names must be unique.</code></strong></p>
+<p>抛点 <code>supervisor.py:406</code>，与报错 4 是同一个循环的两条支路。注意判据是<strong>名字</strong>而不是对象同源：两个用途不同但同名的 worker 也会踩。</p>
+<p><strong>报错 6：<code>ValueError: Invalid agent output mode: all_history. Needs to be one of ('full_history', 'last_message')</code></strong></p>
+<p>抛点 <code>supervisor.py:73</code>。合法值只有两个（源码注释原文：<code>full_history</code> 加整个历史 / <code>last_message</code> 只加最后一条），拼写成 <code>all_history</code>、<code>history</code> 都会被直接拒绝——这条反而是最友好的一个。</p>
+<p><strong>报错 7：<code>ValueError: Missing required key 'active_agent' in state_schema</code> 与 <code>Default active agent 'charlie' not found in agent names ['alice']</code></strong></p>
+<p>两个都在 <code>langgraph_swarm/swarm.py</code>（257 / 267 行）。第一种最常见的触发姿势是「照着 supervisor 的写法写代码」——把 <code>MessagesState</code> 直接传给 <code>create_swarm</code>；swarm 必须用自己的 <code>SwarmState</code>（或自定义 schema，但一定要带 <code>active_agent</code>）。第二种是 <code>default_active_agent</code> 与 agents 的 <code>name</code> 对不上，<strong>大小写敏感</strong>。另外 <code>agents=[]</code> 也会被直接拒绝（<code>agents list cannot be empty</code>，<code>swarm.py:261</code>）。</p>
+<p>顺带记录一条 supervisor 侧的同类报错方便搜索：一旦开始<strong>自定义 handoff 工具</strong>，就必须给<strong>所有</strong>子 agent 配齐，否则 <code>supervisor.py:167</code> 会抛 <code>ValueError: When providing custom handoff tools, you must provide them for all subagents. Missing handoff tools for agents '{'bob'}'.</code></p>
+<h2>什么时候用哪个</h2>
+<ul><li>需要中央兜底、审计、计费，或希望追问一定被重新分诊 → <strong>supervisor</strong></li><li>Agent 需要直接跟用户聊（客服转接、专家接管），且单条对话基本不跨领域 → <strong>swarm</strong>，同时补上「领域外主动交回」的提示词</li><li>两者都不提供自动并行；真要并行就用 <code>Send</code> 自己搭 fan-out / fan-in</li><li>一个不太有人提的事实：<strong><code>langchain-ai/langgraph-supervisor</code> 仓库 README 顶部现在挂着一段官方声明</strong>——「We now recommend using the <strong>supervisor pattern directly via tools</strong> rather than this library for most use cases... We're making this library compatible with LangChain 1.0 to help users upgrade their existing code.」也就是说官方推荐的新写法是「把子 agent 包成工具」，<code>create_supervisor</code> 现在更像兼容层。存量项目不必急着迁，但新项目可以直接照官方 supervisor 教程写。</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q：不用 checkpointer 的话，swarm 还会记住上一个 active agent 吗？</strong></p>
+<p>不会。<code>active_agent</code> 是图 state 的一个字段，两轮之间靠 checkpoint 存活；没有 checkpointer，每次 <code>invoke</code> 都从 <code>default_active_agent</code> 出发。上文差异一的结论正是建立在带 checkpointer 的前提上的。</p>
+<p><strong>Q：supervisor 每轮都要回中央节点，是不是一定更贵？</strong></p>
+<p>官方博客的结论是 supervisor 持续比 swarm 贵，贵在复述（translation）。但如果你本来就需要中央节点做校验或审计，这笔开销买到的是控制力，不是浪费。另外别忘了默认的 <code>output_mode</code> 会砍掉 worker 的中间过程，在压成本时反而是加分项。</p>
+<p><strong>Q：能不能两个混着用？</strong></p>
+<p>可以，而且官方也鼓励这么想：外层用 handoff 做专家切换，每个专家内部再把别的 agent 当工具调用。本站 <a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式三口径</a> 那篇讲的是同一套运行时在 streaming 上的表现，<a href="https://yaohehe.github.io/2026-10-26-langgraph-interrupt-resume.html" class="internal-link">人审中断那篇</a> 讲的是把人放进这条链路时的六条硬规则，与本拓扑问题组合着看更容易定位。</p>
+<p><strong>Q：我只想知道现在该装哪个库？</strong></p>
+<p>短期维护老项目就继续用这两个库（版本号见前文，均为发稿时 GitHub Releases 上的最新版）；新项目先看官方 supervisor 教程里「用工具包一层」的写法。两个库不冲突，但要注意它们依赖同一个 <code>langgraph</code> 版本基线。</p>
+<h2>参考来源（一手）</h2>
+<ul><li><code>docs.langchain.com/oss/python/langchain/multi-agent</code>：Patterns 表与「Choosing a pattern」星级表（Handoffs 的 Parallelization 一列为 <code>--</code>）</li><li><code>docs.langchain.com/oss/python/langchain/supervisor</code>：官方 supervisor 教程，含「If you are migrating from the langgraph-supervisor package...」迁移指引</li><li>GitHub <code>langchain-ai/langgraph-swarm</code> README：<code>active_agent</code> 跨轮保留的原文表述</li><li>GitHub <code>langchain-ai/langgraph-supervisor</code> README：顶部「不再推荐直接使用本库」的官方声明</li><li>LangChain 官方博客《Benchmarking Multi-Agent Architectures》：多 Agent 架构基准测试与成本归因</li><li>GitHub Releases API：<code>langgraph==1.2.18</code>（2026-10-26）、<code>langgraph-supervisor==0.0.31</code>（2025-11-19）、<code>langgraph-swarm==0.1.0</code>（2025-12-04）</li><li>本机源码字面量：<code>langgraph_supervisor/supervisor.py</code>（73 / 167 / 400 / 406 行）、<code>langgraph_supervisor/handoff.py</code>（Send 合并分支）、<code>langgraph_swarm/swarm.py</code>（257 / 261 / 267 行）、<code>langgraph_swarm/handoff.py</code>（<code>_normalize_agent_name</code>）、<code>langgraph/graph/state.py</code>（1762 行）、<code>langgraph/graph/_branch.py</code>（203 行）、<code>langgraph/prebuilt/tool_node.py</code>（<code>_combine_tool_outputs</code> 的合并分支）</li></ul>
+<h2>本文的边界</h2>
+<p>三条要说在前面。第一，全程没有真实 LLM：模型由脚本驱动，因此<strong>结论覆盖的是「拓扑与运行时行为」，不覆盖真实模型会不会发出并行工具调用</strong>——后者取决于模型与 provider。官方文档在 supervisor 教程里的说法是「许多 LLM 会在一次响应里发出多个工具调用，runtime 会并行执行」，与我实测到的 langgraph-supervisor 0.0.31 手牌路径的表现并不一致，这是本文最值得你自己复算的一点。第二，只测了 <code>InMemorySaver</code>，没有测 SQLite / Postgres 后端下的并发一致性。第三，全部数据在 Windows 11 + Python 3.13 上取得，未做 Linux 对照；拓扑结论与平台无关，但文中的源码行号是对着 langgraph 1.2.18 的。本文不含任何联盟推广链接。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

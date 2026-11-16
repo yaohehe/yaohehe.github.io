@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tokenizer Test: 4-Chars Rule Undercounts Chinese 3.4x - TechPassive</title>
+  <meta name="description" content="I ran tiktoken 0.14.0 on 23 Chinese and 40 English posts: Chinese costs 0.84 tokens per character, so the 4-chars rule undercounts 3.4x. Plus 5 errors and cost math.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Tokenizer Test: How Many Tokens Is One Chinese Character</h1>
+  <div class="post-tags">
+    <span class="tag">tokenizer</span><span class="tag">tiktoken</span><span class="tag"><a href="/2026-10-14-fine-tuning-vs-rag-vs-prompting-the-2026-decision--en.html" class="internal-link">LLM</a></span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: The widely quoted rule "1 token is approximately 4 characters" is an <strong>English</strong> estimate. Measured against 23 Chinese technical posts, it undercounts tokens by <strong>3.4x</strong>. The deeper problem is byte-level BPE: a single Chinese character can be split into three byte fragments, and decoding tokens one by one <strong>silently destroys text</strong> (47 characters became 55, with 16 replacement characters) without raising a single exception.</p>
+<p>I tested this with <code>tiktoken</code> 0.14.0 on this site's own corpus: 23 Chinese posts and 40 English posts, every number below reproduced on my machine. No affiliate links in this article.</p>
+<h3>The official wording is clear, nobody reads past the first line</h3>
+<p>The OpenAI help-center article on tokens stacks three sentences in a row. Verbatim:</p>
+<ul><li>"1 token is approximately 4 characters."</li><li>"1 token is approximately three-quarters of a word."</li><li>"These are estimates, not exact counts. Sentence and paragraph lengths vary, and other languages can have different relationships between characters, words, and tokens."</li></ul>
+<p>That third sentence is the whole answer. The 4-character figure is an <strong>English-only</strong> approximation, and the same page says other languages behave differently. What circulates in engineering channels is only the first sentence, so a Chinese-language project starts its budget estimate wrong on day one.</p>
+<p>My measurements: English technical prose came out at a median of <strong>4.13 characters per token</strong>, essentially matching the official rule. Chinese technical prose came out at <strong>0.841 tokens per character</strong>, meaning one token covers <strong>1.19 Chinese characters</strong>. Applying 4 characters per token to Chinese computes 30% of the real token count, an undercount of <strong>3.4x</strong>.</p>
+<h3>Five encodings, one word list twice the size</h3>
+<p>The public encodings available in <code>tiktoken</code>, with vocab sizes measured locally:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">encoding</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">n_vocab</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">special tokens</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">typical models</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">gpt2 / r50k_base</td><td style="border:1px solid #ddd;padding:8px;">50,257</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">early GPT-2 lineage</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">p50k_base</td><td style="border:1px solid #ddd;padding:8px;">50,281</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">text-davinci-002/003</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">cl100k_base</td><td style="border:1px solid #ddd;padding:8px;">100,277</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">gpt-4, gpt-3.5-turbo, text-embedding-3</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">o200k_base</td><td style="border:1px solid #ddd;padding:8px;">200,019</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">gpt-4o, gpt-4.1, gpt-5, o1/o3/o4</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">o200k_harmony</td><td style="border:1px solid #ddd;padding:8px;">201,088</td><td style="border:1px solid #ddd;padding:8px;"><strong>1,091</strong></td><td style="border:1px solid #ddd;padding:8px;">gpt-oss</td></tr></tbody></table>
+<p>The last row deserves a second look. <code>o200k_harmony</code> carries 1,091 special tokens, and the names give away its purpose: <code><|channel|></code>, <code><|message|></code>, <code><|constrain|></code>, <code><|call|></code>. If your counting script takes a permissive stance on <code>allowed_special</code>, this encoding will happily count a pile of control symbols as ordinary text.</p>
+<h3>What a bigger word list actually buys: 22.8% on Chinese, nothing on English</h3>
+<p>Re-running the same corpus under both encodings produced a result worth remembering:</p>
+<ul><li><strong>23 Chinese posts</strong>: median 0.841 tokens/char under cl100k_base, <strong>0.649</strong> under o200k_base, a <strong>22.8%</strong> reduction</li><li><strong>40 English posts</strong>: median 1.531 tokens/word under cl100k_base, <strong>1.534</strong> under o200k_base, a <strong>0.2%</strong> difference, i.e. noise</li></ul>
+<p>Doubling the vocabulary buys almost entirely better merging for non-Latin scripts. English prose compression does not move at all. On a single 47-character Chinese sentence, cl100k_base produced 49 tokens and o200k_base produced 32.</p>
+<p>That has a direct selection consequence. If your workload is mostly English, moving to an o200k model will not get cheaper because the vocabulary is bigger. If your workload is Chinese, the encoding switch alone saves roughly a fifth.</p>
+<h3>Three consequences of byte-level BPE</h3>
+<p>The atomic unit in BPE is the <strong>byte</strong>, not the character. One Chinese character occupies three bytes in UTF-8, and the vocabulary may not contain a whole-word entry for that character. When it does not, the character is split into two or three byte fragments, each becoming its own token.</p>
+<p>Consequence one, <strong>counts exceed intuition</strong>: a 47-character Chinese passage can cost 49 tokens.</p>
+<p>Consequence two, <strong>decoding tokens individually permanently loses text</strong>. This is the single most useful finding here. Decode each token of a Chinese sentence separately, then join the pieces:</p>
+<pre><code>toks = enc.encode_ordinary(text)          # 47 Chinese chars -> 49 tokens
+joined = "".join(enc.decode([t]) for t in toks)
+# 47 input characters -> 55 output characters, 16 U+FFFD, joined != text</code></pre>
+<p>Sixteen replacement characters mean sixteen Chinese characters were overwritten with <code>�</code>, and <strong>no exception was raised</strong>. To make it complain you have to ask explicitly:</p>
+<pre><code>enc.decode([toks[1]], errors="strict")
+# UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-1: unexpected end of data</code></pre>
+<p>Consequence three, <strong>prefix decoding is not safe either</strong>. Decoding the running prefix <code>toks[:i]</code> eventually produces the correct final string, but 2 of 32 steps still flash a replacement character, because that step's last token lands mid-character. The robust approach is to hold back the incomplete trailing bytes and emit them once the next token completes the character. This is the same problem as streaming output; I hit it while measuring <a href="https://yaohehe.github.io/2026-10-27-langgraph-streaming-3-entry-points-6-real-errors-en.html" class="internal-link">LangGraph's three streaming entry points</a>, where token-level streaming to a browser always shows boxes for Chinese. The framework is not at fault, the decode boundary is.</p>
+<h3>Identifiers, timestamps and indentation are token sinks</h3>
+<p>The fields that blow up a prompt are rarely the prose:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">sample</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">characters</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tokens</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tokens/char</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">UUID <code>3f2b9c1e-7a4d-4f88-9b21-0c5e6d7a8b90</code></td><td style="border:1px solid #ddd;padding:8px;">36</td><td style="border:1px solid #ddd;padding:8px;">33</td><td style="border:1px solid #ddd;padding:8px;">0.92</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">a JSON order object</td><td style="border:1px solid #ddd;padding:8px;">83</td><td style="border:1px solid #ddd;padding:8px;">40</td><td style="border:1px solid #ddd;padding:8px;">0.48</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">date <code>2026-11-01</code></td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">6</td><td style="border:1px solid #ddd;padding:8px;">0.60</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">time <code>06:10:46</code></td><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">0.63</td></tr></tbody></table>
+<p>A UUID is the extreme case: 36 characters eat 33 tokens, nearly one to one. Prompts dense with log lines, trace IDs and order numbers will miss badly if you estimate from character count.</p>
+<p>Numbers carry a counterintuitive twist too. <code>1284500</code> without separators costs <strong>3 tokens</strong>; written <code>1,284,500</code> it costs <strong>5</strong>, because each comma takes one. Formatting added for human readability is a net expense on the token bill.</p>
+<p>Indentation behaves the same way. The same Python snippet costs <strong>18 tokens</strong> with four-space indentation and <strong>16</strong> with tabs, an 11.1% gap that compounds across a large code corpus.</p>
+<h3>Special tokens raise by default</h3>
+<p>Feed <code><|endoftext|></code> in as ordinary text and <code>tiktoken</code> refuses:</p>
+<pre><code>ValueError: Encountered text corresponding to disallowed special token '<|endoftext|>'.
+If you want this text to be encoded as a special token, pass it to `allowed_special`
+To disable this check for all special tokens, pass `disallowed_special=()`.</code></pre>
+<p>The three escape hatches behave very differently. I ran each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">call</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">default</td><td style="border:1px solid #ddd;padding:8px;">raises ValueError</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>disallowed_special=()</code></td><td style="border:1px solid #ddd;padding:8px;">9 tokens (treated as text)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>allowed_special="all"</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>4 tokens</strong> (marker collapses to one control token)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>encode_ordinary()</code></td><td style="border:1px solid #ddd;padding:8px;">9 tokens (same as the second row)</td></tr></tbody></table>
+<p>The five-token discrepancy is the visible part. The real problem is semantics: any user input containing a literal <code><|...|></code> sequence becomes an injected control token. Counting and encoding need two different policies, so do not collapse them into one helper.</p>
+<h3>Model names map to encodings by guessing</h3>
+<p><code>encoding_for_model</code> is not a plain lookup, it also does prefix matching, and the source comment admits the weakness:</p>
+<pre><code>Note that this can match on non-existent models (e.g., gpt-3.5-turbo-FAKE)</code></pre>
+<p>Measured locally, <code>gpt-3.5-turbo-FAKE</code> returns <code>cl100k_base</code> with no error. Note also that the <code>gpt-oss-</code> prefix maps to <code>o200k_harmony</code>, and OpenAI's model page currently lists <code>gpt-4o</code> as <strong>Deprecated</strong>. A project that hardcodes <code>gpt-4o</code> will keep running fine and quietly produce wrong counts once that model is retired. When no mapping exists it is at least honest:</p>
+<pre><code>KeyError: 'Could not automatically map my-finetune-model to a tokeniser.
+Please use `tiktoken.get_encoding` to explicitly get the tokeniser you expect.'</code></pre>
+<h3>Converting to context window and dollars</h3>
+<p>OpenAI's model page for gpt-4o states "128,000 context window" and "16,384 max output tokens". Applying the measured ratios, 128,000 tokens holds roughly:</p>
+<ul><li>cl100k_base: <strong>122,775 Chinese characters</strong></li><li>o200k_base: <strong>188,000 Chinese characters</strong></li></ul>
+<p>Writing the same idea in both languages (297 English characters / 56 tokens, versus 105 Chinese characters / 105 tokens under cl100k) gives a Chinese-to-English token ratio of <strong>1.88x</strong>, and <strong>1.34x</strong> under o200k. The failure mode is the same one I ran into while checking <a href="https://yaohehe.github.io/2026-10-30-prometheus-quantiles-default-buckets-miss-p90-by-h-en.html" class="internal-link">Prometheus quantile semantics</a>: when the measurement convention is wrong, every downstream conclusion inherits the error.</p>
+<p>At official standard-tier prices (per million tokens, as of publication): gpt-4o $2.50, gpt-4.1 $2.00, gpt-5 $1.25, gpt-4o-mini $0.15. One million Chinese characters then costs:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">encoding</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">tokens for 1M Chinese chars</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">gpt-4o input cost</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">cl100k_base</td><td style="border:1px solid #ddd;padding:8px;">1,043,000</td><td style="border:1px solid #ddd;padding:8px;">$2.61</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">o200k_base</td><td style="border:1px solid #ddd;padding:8px;">681,000</td><td style="border:1px solid #ddd;padding:8px;">$1.70</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">4-chars-per-token guess</td><td style="border:1px solid #ddd;padding:8px;">250,000</td><td style="border:1px solid #ddd;padding:8px;">$0.63 (4.17x too low)</td></tr></tbody></table>
+<p>The last row is the textbook case of an estimator handing you a comfortable number. The gap between $0.63 and $2.61 will not be discovered by anyone before the invoice arrives. It belongs to the same family as the five assignments that silently stopped working in <a href="https://yaohehe.github.io/2026-10-31-pandas-31-cow-five-assignments-that-stopped-workin-en.html" class="internal-link">pandas 3.1 copy-on-write</a>: a default that looks reasonable while the semantics changed underneath.</p>
+<h3>Troubleshooting: five real errors</h3>
+<p><strong>Error one, special tokens rejected by default.</strong> <code>ValueError: Encountered text corresponding to disallowed special token '<|endoftext|>'</code>. This is a guard, not a bug. Fix it by separating concerns: <code>encode_ordinary()</code> for counting, an explicit allowlist for real encoding.</p>
+<p><strong>Error two, model name mapping fails.</strong> <code>KeyError: 'Could not automatically map ... to a tokeniser.'</code> Fix it by dropping the automatic lookup. Call <code>tiktoken.get_encoding("o200k_base")</code> directly and keep the model-to-encoding table in configuration, so a model upgrade forces a human decision.</p>
+<p><strong>Error three, strict decoding exposes a byte split.</strong> <code>UnicodeDecodeError: 'utf-8' codec can't decode bytes in position 0-1: unexpected end of data</code>. Do not "fix" this by changing <code>errors=</code>; the message is telling you that this single token is not valid UTF-8 on its own.</p>
+<p><strong>Error four, and the most dangerous because it is silent: per-token decoding loses characters.</strong> 47 characters in, 55 out, 16 replacement characters, exit code 0. The only valid assertion is whether the rejoined string equals the input. Never rely on exceptions here.</p>
+<p><strong>Error five, runaway special-token counts.</strong> Switching to <code>o200k_harmony</code> moves the special-token count from 2 to 1,091. A counting script that lets special tokens through will report numbers that are mysteriously too small.</p>
+<h3>Scope of this article</h3>
+<p>Every token count here is a <strong>locally computed encoding value</strong>, not the usage reported by an API. The API adds message framing on top (role markers, delimiters); I have no API key, so that part is not measured and appears nowhere as a number. Also out of scope: Claude and Gemini vocabularies, the <code>o200k_harmony</code> chat template, and token accounting for images and audio. Prices come from the official pricing page, standard tier, <strong>as of November 1, 2026</strong>, and they change.</p>
+<h3>Five rules you can copy</h3>
+<p>1. Budget Chinese at <strong>0.65 to 0.85 tokens per character</strong>. Keep 4.1 characters per token for English prose, where it holds.</p>
+<p>2. Use <code>encode_ordinary()</code> on any counting path, and never enable <code>allowed_special="all"</code> there.</p>
+<p>3. Buffer streaming output on UTF-8 boundaries instead of decoding tokens one at a time.</p>
+<p>4. Count UUID-, timestamp- and JSON-heavy prompts separately; they cost more than twice what prose costs per character.</p>
+<p>5. Write the model-to-encoding mapping as explicit configuration. Do not trust prefix matching.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

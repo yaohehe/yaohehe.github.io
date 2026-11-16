@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python subprocess: 7 Silent Failures Behind Exit Code 0 - TechPassive</title>
+  <meta name="description" content="On Windows 11 + CPython 3.13.14: kill takes unread pipe data with it, text=True decoding dies in a thread leaving stdout None, check_output drops stderr. Fixes inside.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Python subprocess: 7 Silent Failures Behind Exit Code 0</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">subprocess</span><span class="tag">debugging</span>
+  </div>
+  <div class="content">
+    <p>The hard part about launching child processes is not when they fail. It is when they do not.</p>
+<p>I ran all seven scenarios below on my own machine. Not one of them raises anything to the caller. The exit code is 0 every time, or a plausible non-zero number. And either you get no output, or you get <code>None</code>, or the process is still running after you think you killed it.</p>
+<p><strong>TL;DR</strong>: <code>subprocess</code> fails quietly. Pipes that nobody drains deadlock. Decode errors are swallowed inside an internal thread. <code>check_output()</code> does not capture stderr by default. <code>timeout</code> only kills the process you started. None of the seven require changes to your business logic — they are all calling-convention problems, and every one has a fix you can copy.</p>
+<p>No affiliate links in this article. Every number is either measured on this machine or quoted from the official documentation and the CPython source.</p>
+<h2>Environment and how to reproduce</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Item</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Value</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OS</td><td style="border:1px solid #ddd;padding:8px;">Windows 11 (<code>sys.platform</code> = <code>win32</code>, <code>os.name</code> = <code>nt</code>)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Interpreter</td><td style="border:1px solid #ddd;padding:8px;">CPython <strong>3.13.14</strong> (installed under a directory named <code>3.13.12</code>)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Stdlib</td><td style="border:1px solid #ddd;padding:8px;"><code>Lib/subprocess.py</code>, locally at <code>C:\Users\xuany\.workbuddy\binaries\python\versions\3.13.12\Lib\subprocess.py</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Official docs</td><td style="border:1px solid #ddd;padding:8px;"><code>docs.python.org/3/library/subprocess.html</code> (accessed 2026-10-29, page labelled 3.15.2)</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Windows API</td><td style="border:1px solid #ddd;padding:8px;">Microsoft Learn, <code>GenerateConsoleCtrlEvent</code> (accessed 2026-10-29)</td></tr></tbody></table>
+<p>Every claim below is labelled either <strong>measured</strong> (I ran it on the setup above) or <strong>documentation</strong> / <strong>source</strong> (quoted verbatim). Where the two disagree, I say so instead of papering over it.</p>
+<p>One pair of values worth noting up front, because trap 2 depends on it:</p>
+<pre><code>>>> import locale
+>>> locale.getencoding()                    # 'cp936'
+>>> locale.getpreferredencoding(False)      # 'utf-8'</code></pre>
+<p>Two functions, same machine, two different answers. That discrepancy is itself part of the problem.</p>
+<h2>Trap 1: `wait()` deadlocks, and `kill()` takes the unread output with it</h2>
+<p>The documentation warns about <code>Popen.wait()</code> in so many words:</p>
+<p>> This will deadlock when using <code>stdout=PIPE</code> or <code>stderr=PIPE</code> and the child process generates enough output to a pipe such that it blocks waiting for the OS pipe buffer to accept more data. Use <code>Popen.communicate()</code> when using pipes to avoid that.</p>
+<p>Measured, with a child writing 100000 bytes:</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.wait(timeout=6)
+# subprocess.TimeoutExpired: Command '[...]' timed out after 6 seconds</code></pre>
+<p>What happens after the timeout is worse. I tried four ways of reading — <code>read()</code>, <code>peek()</code>+<code>read()</code>, <code>read1()</code> and <code>communicate()</code> — and all four returned <strong>0 bytes</strong>:</p>
+<pre><code>no-wait        -> read() after kill = 0 bytes
+wait(timeout)  -> read() after kill = 0 bytes</code></pre>
+<p>To rule out "there was never any data", I read once <em></em> killing:</p>
+<pre><code>read1(4096) before kill = 4096 bytes   <-- the data really was in the pipe
+read() after kill       = 0 bytes</code></pre>
+<p>So on this machine, whatever is still sitting in the anonymous pipe when <code>TerminateProcess()</code> runs does not come back. I could not find any statement about this in the official documentation, so I am reporting the measurement only and not claiming it as a general rule.</p>
+<p><strong>Two fixes, pick one.</strong></p>
+<p>Use <code>communicate()</code> instead of <code>wait()</code>. Same timeout path, all 100000 bytes come back:</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+out, err = p.communicate(timeout=20)
+# measured: len(out) == 100000, returncode == 0</code></pre>
+<p>Or redirect to a file, and <code>wait()</code> becomes safe again:</p>
+<pre><code>with open("out.txt", "wb") as f:
+    p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*300000)"],
+                         stdout=f, stderr=subprocess.DEVNULL)
+    rc = p.wait(timeout=30)
+# measured: rc == 0, file size 300000 bytes</code></pre>
+<p><strong>The thing to remember</strong>: <code>kill()</code> is not just "end the process". It also destroys the diagnostic evidence you had not read yet. Before you use it to handle a timeout, make sure you do not need that output.</p>
+<h2>Trap 2: `text=True` does not use the encoding you think, and the decode error is swallowed</h2>
+<p>This is the quietest of the seven, because it raises nothing at all.</p>
+<p>On Windows, <code>cmd.exe</code> writes in the console code page, not UTF-8. Measured on one command:</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True)
+r.stdout
+# b'\xd6\xd0\xce\xc4\xb2\xe2\xca\xd4"\r\n'      <- GBK bytes
+r.stdout.decode("utf-8")
+# UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte</code></pre>
+<p>So what happens with <code>text=True</code>? By rights it should raise that <code>UnicodeDecodeError</code>. Measured:</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True, text=True)
+r.returncode   # 0
+r.stdout       # None
+r.stderr       # ''</code></pre>
+<p><strong>Exit code 0, <code>stdout</code> is <code>None</code>, not a single exception.</strong> The real error went to stderr, from an internal thread:</p>
+<pre><code>Exception in thread Thread-1 (_readerthread):
+  File "...\Lib\subprocess.py", line 1615, in _readerthread
+    buffer.append(fh.read())
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte</code></pre>
+<p>The reason is in the source. Lines 1614–1616 of the local <code>subprocess.py</code>:</p>
+<pre><code>def _readerthread(self, fh, buffer):
+    buffer.append(fh.read())
+    fh.close()</code></pre>
+<p>An exception in that thread never propagates back into <code>communicate()</code>, so <code>run()</code> has no idea anything happened and just sees an empty buffer. Note which codec the error names — <code>utf-8</code>, which matches <code>locale.getpreferredencoding(False)</code> (measured <code>utf-8</code> here) and <strong>not</strong> <code>locale.getencoding()</code> (measured <code>cp936</code>). The documentation agrees:</p>
+<p>> If *encoding* or *errors* are specified, or *text* (also known as *universal_newlines*) is true, the file objects *stdin*, *stdout* and *stderr* will be opened in text mode using the *encoding* and *errors* specified in the call or the defaults for <code>io.TextIOWrapper</code>.</p>
+<p><strong>Fix</strong>: always pass <code>encoding</code> and <code>errors</code> explicitly, and guard against a <code>None</code> stdout.</p>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True,
+                   text=True, encoding="gbk")
+r.stdout            # '中文测试"\n'
+
+# when you do not know what the child emits, take replacement chars over None
+r = subprocess.run(cmd, shell=True, capture_output=True,
+                   text=True, encoding="utf-8", errors="replace")
+text = (r.stdout or "")</code></pre>
+<p><code>errors="replace"</code> costs you <code>'���Ĳ���'</code>, but at least you know something went wrong. <code>None</code> lets you believe everything is fine.</p>
+<h2>Trap 3: `check_output()` puts the error message nowhere you are looking</h2>
+<pre><code>try:
+    subprocess.check_output([sys.executable, "-c",
+        "import sys;sys.stderr.write('FATAL: db down\\n');sys.exit(1)"])
+except subprocess.CalledProcessError as e:
+    print(e.output, e.stderr, e.stdout)
+# measured: b'' None b''</code></pre>
+<p><code>output</code> is empty and <code>stderr</code> is <code>None</code>. Where did <code>FATAL: db down</code> go? Straight down <strong>file descriptor</strong> 2 into the parent's own stderr — which means <code>contextlib.redirect_stderr()</code> cannot catch it (measured: empty string) and neither can your logging setup.</p>
+<p>The documentation offers one sentence: to get stderr too, merge it explicitly.</p>
+<pre><code>try:
+    subprocess.check_output(cmd, stderr=subprocess.STDOUT)
+except subprocess.CalledProcessError as e:
+    print(e.output)
+# measured: b'FATAL: db down\r\n'</code></pre>
+<h2>Trap 4: `CalledProcessError` does not tell you what the child said</h2>
+<p>Following on from trap 3: even when you catch the exception, printing it tells you nothing. Lines 145–155 of the local source:</p>
+<pre><code>def __str__(self):
+    if self.returncode and self.returncode < 0:
+        ...
+    else:
+        return "Command '%s' returned non-zero exit status %d." % (
+            self.cmd, self.returncode)</code></pre>
+<p>Measured output:</p>
+<pre><code>Command '['C:\\...\\python.exe', '-c', "import sys;sys.stderr.write('real cause\\n');sys.exit(3)"]' returned non-zero exit status 3.</code></pre>
+<p>The full command line and a number. <strong>Not one word from the child.</strong> The reason only lives in <code>e.stderr</code>:</p>
+<pre><code>except subprocess.CalledProcessError as e:
+    raise RuntimeError(f"failed rc={e.returncode}: {(e.stderr or b'').decode('utf-8','replace')}")</code></pre>
+<p>Related: the <code>died with %r</code> branch at line 148 uses <code>signal.Signals(-self.returncode)</code> and only runs when <code>returncode < 0</code> — which on Windows never happens. See trap 7.</p>
+<h2>Trap 5: `shell=True` swallows "program not found", and on Windows the shell is cmd.exe</h2>
+<p>Same command, two call styles, completely different outcomes:</p>
+<pre><code>subprocess.run(["definitely-not-a-real-command-xyz"], check=True, capture_output=True)
+# FileNotFoundError: [WinError 2] The system cannot find the file specified.
+
+r = subprocess.run("definitely-not-a-real-command-xyz", shell=True,
+                   capture_output=True, text=True, encoding="gbk", errors="replace")
+r.returncode   # 1
+r.stderr       # "'definitely-not-a-real-command-xyz' is not recognized as an internal or external command..."</code></pre>
+<p>With <code>shell=True</code>, "program does not exist" turns from an <strong>exception</strong> into <strong>exit code 1</strong>. You lose the traceback and get a number, and if you did not pass <code>check=True</code> nobody looks at that number either.</p>
+<p>Second problem: on Windows that shell is <code>cmd.exe</code>, not bash. The documentation, verbatim:</p>
+<p>> On Windows with <code>shell=True</code>, the <code>COMSPEC</code> environment variable specifies the default shell. The only time you need to specify <code>shell=True</code> on Windows is when the command you wish to execute is built into the shell (e.g. <strong>dir</strong> or <strong>copy</strong>).</p>
+<p>Measured:</p>
+<pre><code>echo $(echo hi)    -> rc=0 stdout='$(echo hi)'      <- no command substitution
+echo `echo hi`     -> rc=0 stdout='`echo hi`'       <- no backtick substitution
+echo a; echo b     -> rc=0 stdout='a; echo b'       <- semicolon is not a separator
+echo a && echo b   -> rc=0 stdout='a \nb'           <- && is a separator</code></pre>
+<p>The third one is the dangerous one: it does not raise, it just hands <code>echo b</code> to <code>echo</code> as arguments. You think two commands ran.</p>
+<p>Also note that with <code>shell=True</code> the exit code comes from the shell. From the docs:</p>
+<p>> When <code>shell=True</code>, the return code reflects the exit status of the shell itself (e.g. <code>/bin/sh</code>), which may map signals to codes such as <code>128+N</code>.</p>
+<p><strong>Fix</strong>: pass a list, not a string; leave <code>shell=False</code>. This doubles as the security advice, which the docs give its own section:</p>
+<p>> If the shell is invoked explicitly, via <code>shell=True</code>, it is the application's responsibility to ensure that all whitespace and metacharacters are quoted appropriately to avoid shell injection vulnerabilities.</p>
+<h2>Trap 6: `timeout` kills the child you started, not its children</h2>
+<p>When <code>subprocess.run(timeout=...)</code> expires, the process that gets killed is <strong>the one you launched</strong>. Anything it spawned is not on the list.</p>
+<p>Measured: the parent starts a grandchild and then sleeps; the parent is killed by <code>timeout=3</code>, and this is the grandchild afterwards:</p>
+<pre><code>grandchild PID = 12224 | marker written = True
+before killing parent: parent alive = True  | grandchild alive = True
+after killing parent:  parent alive = False | grandchild alive = True</code></pre>
+<p>The documentation takes the same line for <code>Popen.communicate()</code>:</p>
+<blockquote>The child process is not killed if the timeout expires, so in order to cleanup properly a well-behaved application should kill the child process and finish communication:</blockquote>
+<p>The recommended shape is <code>proc.kill()</code> followed by another <code>communicate()</code>. Note that <code>run()</code> behaves differently here — from the docs:</p>
+<p>> If the timeout expires, the child process will be killed and waited for. The <code>TimeoutExpired</code> exception will be re-raised after the child process has terminated.</p>
+<p><strong>Two fixes on Windows.</strong></p>
+<p>Kill the tree with an external command:</p>
+<pre><code>subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
+# measured output: SUCCESS: The process with PID 12224 (child process of PID 25320) has been terminated.</code></pre>
+<p>Or create a process group at launch and send CTRL+BREAK:</p>
+<pre><code>p = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True, bufsize=1,
+                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+...
+p.send_signal(subprocess.signal.CTRL_BREAK_EVENT)
+# measured: parent alive = False | grandchild alive = False</code></pre>
+<p>There is a detail here that is easy to get backwards. Microsoft Learn on <code>GenerateConsoleCtrlEvent</code>:</p>
+<p>> <strong>CTRL_C_EVENT</strong> 0 ... This signal cannot be limited to a specific process group. If *dwProcessGroupId* is nonzero, this function will succeed, but the CTRL+C signal will not be received by processes within the specified process group.</p>
+<p>In other words, sending <code>CTRL_C_EVENT</code> <strong>returns success</strong> while no process in the group receives anything. For a whole-group exit you have to use <code>CTRL_BREAK_EVENT</code>.</p>
+<p>One more silent failure from the same family: <code>start_new_session</code> and <code>process_group</code> are both marked <code>(POSIX only)</code> in the docs (verbatim at lines 795 and 797 of the local source), yet on Windows they <strong>neither raise nor do anything</strong>:</p>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import time;time.sleep(2)"],
+                     start_new_session=True)
+# measured: no error, returncode = 0</code></pre>
+<p>You think you isolated a process group. Nothing happened.</p>
+<h2>Trap 7: On Windows there is no "killed by signal", and `-1` is 4294967295</h2>
+<pre><code>subprocess.run([sys.executable, "-c", "import sys;sys.exit(-1)"]).returncode
+# measured: 4294967295
+subprocess.run("cmd /c exit -1", shell=True).returncode
+# measured: 4294967295</code></pre>
+<p>The documentation's definition of a negative value carries a qualifier:</p>
+<p>> A negative value <code>-N</code> indicates that the child was terminated by signal <code>N</code> (POSIX only).</p>
+<p>So on Windows, any <code>if rc < 0:</code> is dead code, and any <code>if rc == -9:</code> never matches. <code>check=True</code> only tests <code>!= 0</code>, so this kind of code looks fine while you silently lose the whole "killed by signal" semantic.</p>
+<p>Two more measured edge values: <code>sys.exit(300)</code> gives <code>returncode = 300</code> (returned as-is, not truncated to the low 8 bits), and <code>sys.exit(0)</code> of course gives 0.</p>
+<h2>Troubleshooting: six real errors and fixes you can paste</h2>
+<p>All six reproduced locally. The commands are copy-pasteable.</p>
+<h3>Error 1: `subprocess.TimeoutExpired: Command '[...]' timed out after 6 seconds`</h3>
+<pre><code>p = subprocess.Popen([sys.executable, "-c", "import sys;sys.stdout.write('x'*100000)"],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.wait(timeout=6)</code></pre>
+<p><strong>Cause</strong>: the child fills the pipe and blocks; the parent never drains it, so both sides wait for each other. The docs warn about this method verbatim (see trap 1).</p>
+<p><strong>Fix</strong>: replace <code>wait()</code> with <code>communicate()</code>, or redirect <code>stdout</code> to a file.</p>
+<h3>Error 2: `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd6 in position 0: invalid continuation byte`</h3>
+<pre><code>r = subprocess.run("cmd /c echo 中文测试", shell=True, capture_output=True, text=True)
+# returncode = 0, stdout = None, the exception only appears in the _readerthread traceback on stderr</code></pre>
+<p><strong>Cause</strong>: with <code>text=True</code> and no <code>encoding</code>, decoding uses the <code>io.TextIOWrapper</code> default (here <code>locale.getpreferredencoding(False)</code> = <code>utf-8</code>) while <code>cmd.exe</code> emits GBK bytes. The decode happens inside the reader thread at <code>subprocess.py:1615</code>, and the exception does not propagate.</p>
+<p><strong>Fix</strong>: pass <code>encoding=</code> matching the child, add <code>errors="replace"</code>, and use <code>r.stdout or ""</code> as a guard.</p>
+<h3>Error 3: `subprocess.CalledProcessError: Command '[...]' returned non-zero exit status 1.`</h3>
+<pre><code>subprocess.check_output([sys.executable, "-c",
+    "import sys;sys.stderr.write('FATAL: db down\\n');sys.exit(1)"])
+# e.output = b'', e.stderr = None</code></pre>
+<p><strong>Cause</strong>: <code>check_output()</code> captures stdout only; the child's stderr travels down fd 2 into the parent's stderr.</p>
+<p><strong>Fix</strong>: add <code>stderr=subprocess.STDOUT</code> so the message lands in <code>e.output</code>.</p>
+<h3>Error 4: `FileNotFoundError: [WinError 2] The system cannot find the file specified.`</h3>
+<pre><code>subprocess.run(["definitely-not-a-real-command-xyz"], check=True, capture_output=True)</code></pre>
+<p><strong>Cause</strong>: with <code>shell=False</code> the first element is resolved as the path to an executable.</p>
+<p><strong>Fix</strong>: this is <strong>correct behaviour</strong> — do not silence it with <code>shell=True</code>. That only converts an exception into exit code 1 (see trap 5) and makes debugging more expensive.</p>
+<h3>Error 5: the process is still running after the timeout (visible in `tasklist`)</h3>
+<pre><code>after killing parent: parent alive = False | grandchild alive = True</code></pre>
+<p><strong>Cause</strong>: <code>timeout</code> only terminates the process you started directly.</p>
+<p><strong>Fix</strong>: <code>taskkill /F /T /PID <pid></code>, or <code>CREATE_NEW_PROCESS_GROUP</code> plus <code>send_signal(CTRL_BREAK_EVENT)</code>.</p>
+<h3>Error 6: `returncode = 4294967295`</h3>
+<pre><code>subprocess.run([sys.executable, "-c", "import sys;sys.exit(-1)"]).returncode
+# 4294967295</code></pre>
+<p><strong>Cause</strong>: Windows exit codes are unsigned 32-bit; the docs mark the negative <code>-N</code> definition as <code>(POSIX only)</code>.</p>
+<p><strong>Fix</strong>: do not write <code>if rc < 0</code> to detect "killed by signal". In cross-platform code use <code>rc != 0</code> plus explicit enumeration.</p>
+<h2>A safe wrapper you can copy</h2>
+<p>Folding the seven traps into one shape:</p>
+<pre><code>import subprocess, sys
+
+def run_safe(cmd, *, timeout=30, encoding="utf-8"):
+    """Returns (ok, text). Pass cmd as a list; if you need a shell, you own the escaping."""
+    try:
+        r = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,      # never let the child wait on you
+            capture_output=True,           # goes through communicate(), not wait()
+            timeout=timeout,               # on expiry run() kills and re-raises
+            text=True,
+            encoding=encoding,
+            errors="replace",              # replacement chars beat None
+        )
+    except subprocess.TimeoutExpired as e:
+        # docs: run() kills the child and re-raises; grandchildren need their own cleanup
+        return False, f"timed out after {e.timeout}s, partial: {(e.output or b'')[:200]!r}"
+    except FileNotFoundError:
+        return False, f"program not found: {cmd[0] if isinstance(cmd, list) else cmd}"
+    out = (r.stdout or "").strip()
+    err = (r.stderr or "").strip()
+    if r.returncode != 0:
+        return False, f"rc={r.returncode} stderr={err or '(empty)'}"
+    return True, out
+
+ok, info = run_safe([sys.executable, "-c", "print('ok')"])
+print(ok, info)</code></pre>
+<p>Three invariants worth turning into review checklist items:</p>
+<p>1. <strong>Pass a list</strong>, keep <code>shell=False</code>. If you really need a shell, the string and its escaping are your responsibility.</p>
+<p>2. <strong>Always set <code>encoding</code> and <code>errors="replace"</code></strong>. Never use bare <code>text=True</code>.</p>
+<p>3. <strong>Never combine <code>wait()</code> with <code>PIPE</code></strong> — use <code>communicate()</code> or a file. If you need to clean up a process tree on timeout, write that as a separate layer.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Why can't I call <code>wait()</code> after <code>communicate()</code> times out?</strong></p>
+<p>The documentation says it outright: "After a call to <code>communicate()</code> raises <code>TimeoutExpired</code>, do not call <code>wait()</code>. Use an additional <code>communicate()</code> call to finish handling pipes and populate the <code>returncode</code> attribute." The pipes are not drained yet, so <code>wait()</code> puts you back in the mutual-wait state.</p>
+<p><strong>Q: Is <code>TimeoutExpired.output</code> a str or bytes when <code>text=True</code>?</strong></p>
+<p>Bytes. From the docs: "This is always <code>bytes</code> when any output was captured regardless of the <code>text=True</code> setting. It may remain <code>None</code> instead of <code>b''</code> when no output was observed." Confirmed by measurement: with <code>text=True</code>, <code>e.output</code> was <code>b'partial-1'</code>.</p>
+<p><strong>Q: Does <code>run()</code> actually kill the child on timeout?</strong></p>
+<p>Yes. From the docs: "the child process will be killed and waited for. The <code>TimeoutExpired</code> exception will be re-raised after the child process has terminated." Its own children are not killed (trap 6).</p>
+<p><strong>Q: Why is <code>stdout</code> still <code>None</code> even though I passed <code>capture_output=True</code>?</strong></p>
+<p>Two candidates: text-mode decoding failed and the exception was swallowed by <code>_readerthread</code> (trap 2), or the pipe data was taken by <code>kill()</code> after a timeout (trap 1). In both cases the exit code can be 0.</p>
+<p><strong>Q: Can I use <code>start_new_session</code> on Windows to detach the child?</strong></p>
+<p>No. The docs mark it <code>(POSIX only)</code> and measurement shows it neither raises nor works on Windows (trap 6). For whole-group control use <code>CREATE_NEW_PROCESS_GROUP</code> with <code>CTRL_BREAK_EVENT</code>.</p>
+<h2>Related reading</h2>
+<p>A few other posts on this site sit in the same "quiet failure" layer:</p>
+<ul><li><a href="https://yaohehe.github.io/2026-10-29-python-tarfile-5-ways-files-escape-the-destination-en.html" class="internal-link">Python tarfile extraction: five ways files escape the destination</a> — the same shape of failure: no exception, no log, exit code 0.</li><li><a href="https://yaohehe.github.io/2026-10-24-retries-that-never-fire-urllib3-280-and-tenacity-en.html" class="internal-link">Retries that never fire: urllib3 2.8.0 and tenacity</a> — the other half of failure recovery, about retries that never happen.</li><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python logging tested: 6 real errors and lost records</a> — the sibling question of where output went, this time about log records.</li></ul>
+<p>Almost nothing in this layer is "it is broken". It is "it does what the documentation says, and the documentation does not say what you assumed". Bake the three invariants above into your code and these seven traps stop coming back.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

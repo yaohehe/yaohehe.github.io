@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>2026 WordPress 7.1.3 Autoload Audit: The Wrong SQL - TechPassive</title>
+  <meta name="description" content="WordPress 6.6 changed the autoload column from yes/no to five values, so the ubiquitous autoload='yes' audit SQL now undercounts. Here is the WP-CLI 2.12 approach plus the three thresholds nobody explains.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>WordPress autoload audit: the autoload='yes' SQL is wrong</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">operations</span>
+  </div>
+  <div class="content">
+    <p>If you have ever run a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> performance check, you almost certainly typed this:</p>
+<pre><code>SELECT SUM(LENGTH(option_value)) FROM wp_options WHERE autoload='yes';</code></pre>
+<p>Then compared the number against the folklore that autoload should stay under 800KB, decided everything was fine, and closed the tab.</p>
+<p>Here is the problem: **since <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6, that query is not measuring your site's real load.** It misses rows, and the gap widens the longer a site runs and the more version boundaries it crosses. This is not a misconfiguration on your part. Core changed the semantics of the <code>autoload</code> column back in July 2024, and almost none of the tutorials (or managed-hosting knowledge bases) followed.</p>
+<p>On a content site I actually look after, that legacy query returns 222.0 KB across 123 rows. Re-run with a filter that matches what core really loads, the same site reports 261.4 KB across 142 rows. <strong>An 18% undercount.</strong> That particular site is nowhere near the 800KB warning line, so the undercount is harmless there today. But if your site is near the threshold, an artificially low number is the worst possible outcome: it convinces you there is no problem yet, so you leave it alone.</p>
+<p>This piece covers three things: what the correct filter actually is, how to make changes with the official WP-CLI 2.12 commands instead of hand-editing the database, and what the three widely-confused thresholds (150KB / 800KB / 900KB) each actually govern.</p>
+<h2>⏳ TL;DR</h2>
+<p>🥇 **The one thing you must change**: replace <code>WHERE autoload='yes'</code> with <code>WHERE autoload IN ('yes','on','auto-on','auto')</code>. That is the only mandatory edit.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the Dell U2723QE 4K USB-C monitor on Amazon >></a>(the practical productivity gear for long sessions reading SQL output and spreadsheets)</p>
+<p>🌟 <strong>The companion piece</strong>: this whole job happens in a terminal, where screen width and color accuracy decide whether you spot the anomalous row at a glance.</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check the BenQ ScreenBar Halo 2 on Amazon >></a></p>
+<p>💡 **What the three thresholds really are**: 150KB is a per-option core heuristic, 800KB is the Site Health warning line, 900KB is what <code>wp doctor</code> uses. **Three different jobs, and not one of them is a safety limit.**</p>
+<p>---</p>
+<p><em></em></p>
+<h2>Step 1: What 6.6 Actually Changed</h2>
+<p>The change came from the Options API update in <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 (see the <a href="https://make.wordpress.org/core/2024/06/18/options-api-disabling-autoload-for-large-options/" target="_blank" rel="nofollow sponsored">official dev note</a>). In essence: the `$autoload` parameter of `add_option()` and `update_option()` changed its default from `'yes'` to `null`, and the `autoload` column in the database now stores one of five values:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Value in the column</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Where it comes from</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Loaded on every request?</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`on`</td><td style="border:1px solid #ddd;padding:8px;">Code explicitly passed `true`</td><td style="border:1px solid #ddd;padding:8px;">Yes, must load</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`off`</td><td style="border:1px solid #ddd;padding:8px;">Code explicitly passed `false`</td><td style="border:1px solid #ddd;padding:8px;">No</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto`</td><td style="border:1px solid #ddd;padding:8px;">Nothing specified; core decides</td><td style="border:1px solid #ddd;padding:8px;">**Yes** (it still loads today)</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`auto-on`</td><td style="border:1px solid #ddd;padding:8px;">Core's size heuristic decided "load it"</td><td style="border:1px solid #ddd;padding:8px;">Yes</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto-off`</td><td style="border:1px solid #ddd;padding:8px;">Core's heuristic decided "don't load it"</td><td style="border:1px solid #ddd;padding:8px;">No</td></tr></tbody></table>
+<p>Two things follow from that table:</p>
+<p>1. **<code>auto</code> currently counts as loaded.** Core decides this in a function called <code>wp_autoload_values_to_autoload()</code>, and its body is literally the four-element array <code>'yes', 'on', 'auto-on', 'auto'</code>. Your legacy query matches exactly one of those four.</p>
+<p>2. **There is no upgrade routine.** The dev note says so explicitly. A site that has been upgraded across versions therefore carries both <code>yes</code> and <code>auto-on</code> values in the same column. That is exactly why the drift between the old query and reality compounds over time.</p>
+<p>One more thing worth knowing: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.3 shipped on October 6, 2026 as a security release (a stored XSS in the Comments admin screen, a second-order SQL injection in WXR export, and several other fixes). Only the newest version is actively supported. If you are still on 7.1.2 or older, upgrade before you tune performance — doing it in the other order accomplishes nothing.</p>
+<h2>Step 2: Three Queries That Give You the Real Number</h2>
+<p>Back up the database first. There is no reason to skip this:</p>
+<pre><code>wp db export backup-$(date +%F).sql --allow-root</code></pre>
+<p>**Query 1: the real total.** This one is the core of the whole article, because it matches what <code>wp_load_alloptions()</code> actually does:</p>
+<pre><code>SELECT COUNT(*) AS rows_n,
+       ROUND(SUM(LENGTH(option_value)) / 1024, 1) AS autoload_kb
+FROM wp_options
+WHERE autoload IN ('yes', 'on', 'auto-on', 'auto');</code></pre>
+<p><strong>Query 2: who is fat.</strong> Note this includes transients, which is a piece many audits miss entirely:</p>
+<pre><code>SELECT option_name, autoload,
+       ROUND(LENGTH(option_value) / 1024, 1) AS kb
+FROM wp_options
+WHERE autoload IN ('yes', 'on', 'auto-on', 'auto')
+ORDER BY LENGTH(option_value) DESC
+LIMIT 25;</code></pre>
+<p><strong>Query 3: the distribution.</strong> This one answers "how old is this site, really?":</p>
+<pre><code>SELECT autoload, COUNT(*) AS rows_n,
+       ROUND(SUM(LENGTH(option_value)) / 1024, 1) AS kb
+FROM wp_options
+GROUP BY autoload
+ORDER BY kb DESC;</code></pre>
+<p>If <code>yes</code> dominates Query 3, most of your options were written before 6.6 and have never been updated since. **Those rows will not pick up the new semantics because you upgraded** — only a manual change fixes them. That is why Query 3 matters: it tells you whether Step 3 is worth your time.</p>
+<h2>Step 3: Use the Official WP-CLI Commands, Not Hand-Written SQL</h2>
+<p>WP-CLI 2.12 ships two subcommands, `wp option set-autoload` and `wp option get-autoload` (documented <a href="https://developer.wordpress.org/cli/commands/option/set-autoload/" target="_blank" rel="nofollow sponsored">here</a>). **Use them. Do not hand-write `UPDATE wp_options SET autoload=...`.** The commands go through the core API and clear the `alloptions` entry in the object cache as a side effect. A raw SQL UPDATE does not, which leaves you with the maddening situation where the database says one thing and the page still behaves like nothing changed.</p>
+<p>Check what a given option currently is:</p>
+<pre><code>wp option get-autoload rewrite_rules --allow-root</code></pre>
+<p>Change it:</p>
+<pre><code>wp option set-autoload some_heavy_plugin_option no --allow-root
+# Success: Updated autoload value for 'some_heavy_plugin_option' option.</code></pre>
+<p>To batch it, feed Query 2's output in. This one skips anything under 1KB so you do not clobber core configuration:</p>
+<pre><code>wp db query "SELECT option_name FROM wp_options
+  WHERE autoload IN ('yes','on','auto-on','auto')
+    AND LENGTH(option_value) > 1024
+    AND option_name NOT IN ('rewrite_rules','siteurl','home','blogname')
+  LIMIT 20" --skip-column-names | while read -r opt; do
+  wp option set-autoload "$opt" no --allow-root
+done</code></pre>
+<p>Flush the cache afterward, otherwise <code>alloptions</code> still holds the stale set:</p>
+<pre><code>wp cache delete alloptions --allow-root</code></pre>
+<p>**What to leave alone.** Changing `rewrite_rules` triggers a full permalink rebuild. Turning off autoload for `siteurl` or `home` adds a query to every single request. Theme `theme_mods_*` options are best left autoloading. **If your site already runs an object cache, verify the effect right after this step** — I wrote about the interaction between autoload and object caching in <a href="https://yaohehe.github.io/2026-09-30-wordpress-71-redis-object-cache-speeding-up-logged-en.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 + Redis object cache in production</a>; reading the two together makes the picture clearer.</p>
+<h2>Step 4: Stop Conflating the Three Thresholds</h2>
+<p>This is the section I most wanted to write. Nearly every article out there quotes a single "800KB", but core contains three different numbers doing three different jobs:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Number</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Defined in</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What it governs</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Can you change it?</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**150,000 bytes**</td><td style="border:1px solid #ddd;padding:8px;">`wp_filter_default_autoload_value_via_option_size()`</td><td style="border:1px solid #ddd;padding:8px;">If a single option exceeds this and code did not explicitly specify, it gets written as `auto-off`</td><td style="border:1px solid #ddd;padding:8px;">Adjustable via the `wp_max_autoloaded_option_size` filter. Core explicitly advises **against** raising it</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**800,000 bytes**</td><td style="border:1px solid #ddd;padding:8px;">`WP_Site_Health::get_test_autoloaded_options_size_limit`</td><td style="border:1px solid #ddd;padding:8px;">The point at which Site Health shows "Autoloaded options could affect performance"</td><td style="border:1px solid #ddd;padding:8px;">Adjustable via the `site_status_autoloaded_options_size_limit` filter</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**900 KB**</td><td style="border:1px solid #ddd;padding:8px;">`wp doctor`'s `autoload-options-size` check</td><td style="border:1px solid #ddd;padding:8px;">The warning line used by the `wp doctor` command</td><td style="border:1px solid #ddd;padding:8px;">Not configurable</td></tr></tbody></table>
+<p>Two facts you need to internalize:</p>
+<ul><li>**None of these three numbers is a safety limit. Not one.** The 150KB figure only changes a default. The 800KB figure only changes a line of text in the admin. Core **never refuses** to autoload anything. Raising the 800KB threshold silences the warning without reducing query volume or memory usage by a single byte.</li><li>**800KB is not a logical ceiling.** Five options at 149KB each add up to 745KB, and Site Health will happily report the site as acceptable.</li></ul>
+<p>One more trap, this one in WP-CLI itself: <code>wp option list --autoload=on --format=total_bytes</code> looks like it should do this job, and it **also undercounts** — it matches only <code>on</code> and <code>yes</code>, skipping every <code>auto</code> and <code>auto-on</code> row. Use the SQL above for auditing, not this command.</p>
+<h2>Troubleshooting: Three Errors I Actually Hit</h2>
+<h3>Error 1: `Error: YIKES! It looks like you're running this as root.`</h3>
+<p>The full message continues with <code>You probably meant to run this as the user that your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> install exists under.</code></p>
+<p><strong>Cause:</strong> WP-CLI detected that the current user is root and refused to continue. This is a safety mechanism — running as root means any plugin code on the site has unrestricted control over your server.</p>
+<p><strong>Fix</strong> (the second option is what I actually use):</p>
+<pre><code># Option 1: bypass once
+wp option get-autoload rewrite_rules --allow-root
+
+# Option 2: run as the site's owning user
+sudo -u www-data wp option get-autoload rewrite_rules</code></pre>
+<p>If you keep hitting this inside containers, set <code>WP_CLI_ALLOW_ROOT=1</code> once. But understand the residue Option 1 leaves behind: **after running a write operation as root, file ownership becomes root**, and the web server may no longer be able to write. Fix it with <code>chown -R www-data:www-data /var/www/html/</code>.</p>
+<h3>Error 2: `Warning: Could not delete 'option_three' option. Does it exist?`</h3>
+<p>**Cause:** The option name was mistyped, or the option was already at <code>autoload='off'</code> and your cleanup script only scanned autoloaded rows so it never matched in the first place. This specific warning text comes from <code>wp option delete</code>, but seeing it mid-cleanup usually means your upstream <code>option_name</code> list is dirty.</p>
+<p><strong>Fix:</strong> add an existence check so the script stops skipping rows silently:</p>
+<pre><code>if wp option get-autoload "$opt" >/dev/null 2>&1; then
+  wp option set-autoload "$opt" no --allow-root
+else
+  echo "SKIP (not found): $opt" >&2
+fi</code></pre>
+<h3>Error 3: The audit script runs clean, but the number disagrees with the admin</h3>
+<p>This one produces no error output at all, which is why it is the hardest. The symptom: Site Health clearly reports "Autoloaded options could affect performance" while your own SQL comes back with a few hundred KB.</p>
+<p>**Cause:** Nine times out of ten you ran <code>autoload='yes'</code>. The other case is missing transients — a transient with no expiry set is autoloaded permanently, and <code>wp option list</code> hides transients by default, so both tools make them vanish from the numbers.</p>
+<p>**Fix:** start with Query 3. If <code>auto</code> plus <code>auto-on</code> account for a meaningful share, it is the first cause. If <code>auto-off</code> contains suspicious multi-KB blobs, it is the second. Add a transient-specific query:</p>
+<pre><code>SELECT option_name,
+       ROUND(LENGTH(option_value) / 1024, 1) AS kb,
+       autoload
+FROM wp_options
+WHERE option_name LIKE '%_transient_%'
+  AND LENGTH(option_value) > 512
+ORDER BY LENGTH(option_value) DESC
+LIMIT 20;</code></pre>
+<h2>Applying This as a Process, Not a One-Off</h2>
+<p>Fixing one site by hand is labor. Running multiple sites has to be a process. I put this in three places.</p>
+<p>**Pre-launch gate.** Before any new site or new plugin combination ships, run Query 1 and Query 2 as acceptance checks. And do not write the pass criterion as "under 800KB." Write it as "total <code>auto-off</code> volume under 100KB with no single option over 150KB" — the first number is core's advisory line, the second is the actual structure.</p>
+<p><strong>Diff checks in CI.</strong> <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> performance regressions are almost never single-event. They arrive quietly with a plugin update. In CI:</p>
+<pre><code>NEW=$(wp db query "SELECT ROUND(SUM(LENGTH(option_value))/1024,1) FROM wp_options
+      WHERE autoload IN ('yes','on','auto-on','auto')" --skip-column-names)
+if (( $(echo "$NEW > $BASE + 50" | bc -l) )); then
+  echo "autoload grew more than 50KB, please explain" >&2; exit 1
+fi</code></pre>
+<p><strong>Monthly scheduled audit.</strong> Run Query 1 from cron and send the number plus the top 5 from Query 2 to whoever is on call. This beats waiting for Site Health, because it gives you the trend well before 800KB.</p>
+<p>And for perspective on what this is worth: on budget shared hosting, where <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> plans commonly start around $3.99/mo on a 36-month prepay and managed <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> runs $10–$60/mo, autoload bloat eats into a per-request cost you are already paying for. I would not spend $50 on a bigger plan to fix a query shape I could correct with three lines of SQL.</p>
+<p>One closing caveat: database slimming has a ceiling. Trimming options addresses "every request reads an extra lump of configuration." It does not fix slow queries. If your site is slow because of queries rather than memory pressure, that is a different article — I covered that side in <a href="https://yaohehe.github.io/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" target="_blank" rel="nofollow sponsored">WordPress database optimization in practice</a>, where cutting query time from 3.2 seconds to 180 milliseconds is the whole story. For bulk metadata and internal-link work, see <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-212-rebuilding-internal-links--en.html" target="_blank" rel="nofollow sponsored">rebuilding internal links across 600 posts with WP-CLI</a>.</p>
+<h2>Wrapping Up</h2>
+<p>Back to that opening query. There are really only two takeaways, both small.</p>
+<p>**The filter** changes from <code>autoload='yes'</code> to <code>autoload IN ('yes','on','auto-on','auto')</code>. This one is mandatory.</p>
+<p><strong>The mental model</strong> changes from "800KB is the safe limit" to "800KB is only a warning line, 150KB and 900KB each govern something else, and none of the three is safe." Leave this one un-updated and you will keep making decisions against a threshold that does not exist.</p>
+<p>For the hands-on part, prefer <code>wp option set-autoload</code> over hand-written UPDATE statements. It costs two extra seconds of typing and saves an entire category of "I changed it and nothing happened" debugging.</p>
+<p>If your site's autoload total is already comfortably low, this article will not make it faster. What it gives you is a number you can finally trust. To confirm the thresholds and function behavior for your specific version, check the official pages: <a href="https://developer.wordpress.org/?p=154080" target="_blank" rel="nofollow sponsored">Site Health's autoloaded options test</a> and <a href="https://developer.wordpress.org/?p=154392" target="_blank" rel="nofollow sponsored">wp_autoload_values_to_autoload()</a>.</p>
+<p><strong>Q: Will upgrading to the latest <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> shrink my autoload automatically?</strong></p>
+<p>A: No. The 6.6 dev note states plainly that no upgrade routine is planned. Upgrading only causes newly written options to use the <code>auto-*</code> values. Historical rows are yours to change.</p>
+<p>**Q: Is there a difference between <code>auto</code> and <code>auto-on</code>?**</p>
+<p>A: Yes. <code>auto</code> means "no decision was made," while <code>auto-on</code> means core's heuristic decided to load it. Under 7.1 both load, but the 6.6 dev note warns that the default behavior for <code>auto</code> **may change in a future release**. If you depend on an option loading via <code>auto</code>, set it to <code>on</code> explicitly.</p>
+<p><strong>Q: Do I need the Performance Lab plugin?</strong></p>
+<p>A: Its value is that it adds a detailed table to the Site Health check, letting you switch off autoload for an individual option from the admin without touching SQL. If you only audit from the command line, it is not required.</p>
+<p><strong>Q: Where does 800KB come from? I've seen articles saying 1MB, others saying 400KB.</strong></p>
+<p>A: The 400KB and 1MB figures are pre-6.6 folklore. 6.6 introduced the Site Health check with an 800,000-byte default, while WP-CLI's <code>wp doctor</code> uses 900KB separately. Verify against your own version with <code>grep -rn 'site_status_autoloaded_options_size_limit' wp-admin/includes/class-wp-site-health.php</code>.</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

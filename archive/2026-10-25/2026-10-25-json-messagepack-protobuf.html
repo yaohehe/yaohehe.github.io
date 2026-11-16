@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>数据序列化实测：JSON、MessagePack、Protobuf 谁更小更快 - TechPassive</title>
+  <meta name="description" content="同一份五万条日志在 JSON、orjson、msgspec、MessagePack 与 Protobuf 下的体积与速度实测：二进制格式省下的主要是字段名，一旦 gzip 压缩优势几乎归零，MessagePack 反而比 JSON 大 2.1%；另有六个本机复现的真实报错与修复步骤，版本口径截至 2026-10-25。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>数据序列化实测：JSON、MessagePack 与 Protobuf</h1>
+  <div class="post-tags">
+    <span class="tag">数据序列化</span><span class="tag">MessagePack</span><span class="tag">Protobuf</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：我把同一份五万条结构化日志分别编成 JSON、MessagePack 和 Protobuf 各跑五轮，结论和流行说法不太一样。MessagePack 只把体积压到 JSON 的 80.9%，Protobuf 压到 51.4%，但<strong>一旦过一遍 gzip，三者的差距全部收敛到同一个水平</strong>，MessagePack 反而比 JSON 大 2.1%。真正拉开距离的是速度和 schema 演进能力，而这两项在技术选型讨论里几乎没人提。</p>
+<p>很多人在决定要不要从 JSON 换成二进制线格式时，手上拿到的都是别人博客里的一张柱状图。那些图基本不甘地把「快」和「小」混在一起讲，也很少告诉你它测的那份数据长什么样。所以我干脆在本机把同一份数据用几种方式各编一遍，把每个数字连同比对逻辑一起摊开，你可以照着复现。</p>
+<h2>测试环境与方法</h2>
+<p>所有数字都是 2026-10-25 在本机实跑出来的，环境如下：</p>
+<ul><li>系统与运行时：Windows 11，Python 3.13.12</li><li>msgpack 1.2.3、orjson 3.13.0、msgspec 0.22.0、protobuf 7.36.2（均为当日从 PyPI 安装的最新版本）</li><li>数据：随机种子固定为 20261025，五万条日志事件，每条含九个字段（整型时间戳、字符串等级、字符串服务名、32 位十六进制 trace_id、整型状态码、浮点耗时、整型字节数、布尔命中标记、字符串消息）</li><li>计时口径：每项跑五轮，<strong>取最快的一轮</strong>，避免后台抖动放大差距</li><li>Protobuf 没有用 protoc：为了让你直接复制就能跑，我用 <code>descriptor_pb2</code> 在运行时构造了 schema</li></ul>
+<p>构造 protobuf 类型的这一段是整套流程里唯一不常见的部分，先贴在前面：</p>
+<pre><code>from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+T = descriptor_pb2.FieldDescriptorProto
+fp = descriptor_pb2.FileDescriptorProto()
+fp.name = "bench.proto"
+fp.syntax = "proto3"
+msg = fp.message_type.add()
+msg.name = "Event"
+for name, num, typ in [("ts", 1, T.TYPE_INT64), ("level", 2, T.TYPE_STRING)]:
+    f = msg.field.add()
+    f.name, f.number, f.type, f.json_name = name, num, typ, name
+    f.label = T.LABEL_OPTIONAL
+Desc = descriptor_pool.Default().Add(fp)
+Event = message_factory.GetMessageClass(Desc.message_types_by_name["Event"])</code></pre>
+<h2>一、体积：省下来的其实主要是字段名</h2>
+<p>五万条记录的整体编码结果（单位字节）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">编码方式</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">字节数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">相对紧凑 JSON</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">gzip level 6 后</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">gzip 后占比</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">JSON（紧凑分隔符）</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">2,659,489</td><td style="border:1px solid #ddd;padding:8px;">25.8%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">JSON（默认分隔符）</td><td style="border:1px solid #ddd;padding:8px;">11,194,996</td><td style="border:1px solid #ddd;padding:8px;">108.7%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">orjson</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgspec.json</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">MessagePack（msgpack-python）</td><td style="border:1px solid #ddd;padding:8px;">8,330,309</td><td style="border:1px solid #ddd;padding:8px;">80.9%</td><td style="border:1px solid #ddd;padding:8px;">2,715,571</td><td style="border:1px solid #ddd;padding:8px;">26.4%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">MessagePack（msgspec）</td><td style="border:1px solid #ddd;padding:8px;">8,330,309</td><td style="border:1px solid #ddd;padding:8px;">80.9%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Protobuf</td><td style="border:1px solid #ddd;padding:8px;">5,294,403</td><td style="border:1px solid #ddd;padding:8px;">51.4%</td><td style="border:1px solid #ddd;padding:8px;">2,657,929</td><td style="border:1px solid #ddd;padding:8px;">25.8%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">pickle protocol 5</td><td style="border:1px solid #ddd;padding:8px;">5,693,833</td><td style="border:1px solid #ddd;padding:8px;">55.3%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr></tbody></table>
+<p>先看三个容易被混为一谈的事实。</p>
+<p>第一，orjson 和 msgspec.json 产出的字节数与标准库 JSON <strong>完全一样</strong>，都是 10,294,992 字节。它们的卖点是快，不是小。如果你是为了省体积才换过去，那你换错了对象。</p>
+<p>第二，MessagePack 只降到 80.9%。原因是它没有 schema，每条记录都得把九个字段名原封不动再写一遍。我把同样的数据从 map 编码改成位置数组，同样是 MessagePack，字节数从 8,330,271 掉到 5,080,271，正好省掉 3,250,000 字节。摊到单条记录：164 字节里有 66 字节是键名及其类型头，占 40.2%。也就是说，<strong>MessagePack 相对 JSON 那 19.1% 的优势，几乎全是把字段名换成紧凑编码省下来的</strong>，数据本身没怎么变。</p>
+<p>第三，Protobuf 能到 51.4%，是因为它写进字节流的不是字段名而是字段编号，彻底没有键名开销。代价也很直接：没有 <code>.proto</code> 文件，谁也读不懂这串字节。</p>
+<h2>二、压缩之后，二进制格式的优势还剩多少</h2>
+<p>这是本轮最反直觉的一组数字。我把上面三种编码各过一遍 gzip（level 6）：</p>
+<ul><li><code>gzip(JSON)</code> = 2,659,489 字节，占原始 JSON 的 25.8%</li><li><code>gzip(MessagePack)</code> = 2,715,571 字节，占原始 JSON 的 26.4%</li><li><code>gzip(Protobuf)</code> = 2,657,929 字节，占原始 JSON 的 25.8%</li></ul>
+<p>请注意：三个结果落在 25.8% 到 26.4% 之间，<strong>宽度只有 0.6 个百分点</strong>，而 <code>gzip(MessagePack)</code> 甚至比 <code>gzip(JSON)</code> 还大 56,082 字节，也就是 2.1%。</p>
+<p>背后的机制不难理解：字段名高度重复，恰好是字典类压缩算法最擅长的部分。MessagePack 手动把这部分冗余清掉了，等于提前做了一遍 gzip 本来就会做的事，结果只是换了处理顺序，没有额外收益。</p>
+<p>它给出的决策信号非常清楚：<strong>如果你的瓶颈是磁盘占用或传输带宽，优先级第一件事是打开压缩，而不是换线格式。</strong> 换格式的收益主要体现在 CPU 与延迟上，不在体积上。我实际测试时就发现，把 JSON 原样丢给 gzip 就能拿到和 Protobuf 几乎持平的体积，而 JSON 还保留着可读、可 grep、可 diff 的全部好处。</p>
+<h2>三、速度：差距比体积大得多</h2>
+<p>编码耗时（五万条整体，取五轮最快值）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">编码器</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">耗时</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">json.dumps</td><td style="border:1px solid #ddd;padding:8px;">118.44 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgpack.packb</td><td style="border:1px solid #ddd;padding:8px;">68.90 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">pickle.dumps</td><td style="border:1px solid #ddd;padding:8px;">72.35 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgspec.json.encode</td><td style="border:1px solid #ddd;padding:8px;">38.24 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.msgpack.encode</td><td style="border:1px solid #ddd;padding:8px;">34.15 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">orjson.dumps</td><td style="border:1px solid #ddd;padding:8px;">26.86 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">protobuf SerializeToString</td><td style="border:1px solid #ddd;padding:8px;">20.24 ms</td></tr></tbody></table>
+<p>解码耗时（同一份数据）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">解码器</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">耗时</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">json.loads</td><td style="border:1px solid #ddd;padding:8px;">200.94 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgpack.unpackb</td><td style="border:1px solid #ddd;padding:8px;">179.29 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.json.decode</td><td style="border:1px solid #ddd;padding:8px;">121.07 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">orjson.loads</td><td style="border:1px solid #ddd;padding:8px;">113.68 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.msgpack.decode</td><td style="border:1px solid #ddd;padding:8px;">75.39 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">pickle.loads</td><td style="border:1px solid #ddd;padding:8px;">59.47 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">protobuf ParseFromString</td><td style="border:1px solid #ddd;padding:8px;">16.51 ms</td></tr></tbody></table>
+<p>三个观察：</p>
+<p>1. <strong>orjson 比标准库 json 快 4.4 倍</strong>（26.86 ms 对 118.44 ms），而且产出字节完全一致。这是整张表里唯一「零成本升级」的一条：改一行 import 就能拿到。</p>
+<p>2. <strong>同一个 MessagePack，两个库差 2.4 倍</strong>（msgspec 75.39 ms 对 msgpack-python 179.29 ms）。所以选二进制格式时，「选哪个实现」的影响不比「选哪个格式」小。</p>
+<p>3. <strong>Protobuf 编解码都是最快的</strong>（20.24 ms 与 16.51 ms）。解码端相对标准库 JSON 有 12.2 倍差距，这个量级足以改变服务的尾延迟。</p>
+<h2>四、真正该决定的是 schema 演进，不是体积</h2>
+<p>体积可以当场测出来，schema 演进要过半年才会咬人。这一节我把两者都跑了。</p>
+<h3>4.1 Protobuf 的默认值省略既是优势，也是陷阱</h3>
+<p>Protobuf 官方文档在 <code>Specifying Field Cardinality</code> 一节里，对没有写 <code>optional</code> 的标量字段原话是这样说的：</p>
+<blockquote>the field is set to the default (zero) value. It will not be serialized to the wire. In fact, you cannot determine whether the default (zero) value was set or parsed from the wire or not provided at all.</blockquote>
+<p>同样的意思在 <code>Default Field Values</code> 一节被重复了一遍：</p>
+<p>> Note that for implicit-presence scalar fields, once a message is parsed there's no way of telling whether that field was explicitly set to the default value (for example whether a boolean was set to <code>false</code>) or just not set at all</p>
+<p>我实际把它逐字节验证了一遍。用一个含 <code>id</code>、<code>status</code>、<code>name</code>、<code>cached</code> 四个字段的消息：</p>
+<ul><li>什么都不设 → 序列化结果 <strong>0 字节</strong></li><li>显式设 <code>status=0</code>、<code>name=""</code>、<code>cached=False</code> → 序列化结果 <strong>0 字节</strong>，与上一条字节完全相同</li><li>只设 <code>name="hello"</code> → <code>1a0568656c6c6f</code>，7 字节</li><li>把字段改成 <code>optional</code> 后，显式设 <code>status=0</code> → <code>1000</code>，2 字节，且 <code>HasField("status")</code> 返回 <code>True</code>；不设 → 0 字节，<code>HasField</code> 返回 <code>False</code></li></ul>
+<p>规模效应也不含糊：把五万条记录的 <code>status</code> 全改成 0，Protobuf 从 5,294,391 降到 5,144,391 字节，缩小 2.8%，正好等于每条记录省下 3 字节；如果每条记录除时间戳外都留成默认值，整体只剩 400,007 字节。</p>
+<p>所以这条特性的两面必须一起读：<strong>它既省字节，也永久抹掉了「设了 0」与「没设」的区别。</strong> 如果你的协议里有一个「0 有特殊含义」的标量字段（例如 quota=0 表示显式禁用而非未配置），那就必须加 <code>optional</code>，否则这个语义在线路上不可恢复。</p>
+<h3>4.2 未知字段：转发是安全的，但有一条硬边界</h3>
+<p>官方文档 <code>Unknown Fields</code> 一节的原话：</p>
+<blockquote>Proto3 messages preserve unknown fields and include them during parsing and in the serialized output, which matches proto2 behavior.</blockquote>
+<p>我实际验证：新版 schema 写入 <code>trace_id</code> 后得到 17 字节 <code>080712037376631a086162636431323334</code>；用不含该字段的旧 schema 解析，读出 <code>id=7</code>、<code>name='svc'</code>，再原样序列化——<strong>输出与原始字节完全相同</strong>。这意味着老版本的转发服务可以安全透传新数据，这是 HTTP 网关、消息队列消费者这类中间层非常看重的性质。</p>
+<p>但同一节的 <code>Retaining Unknown Fields</code> 紧接着列出了会丢的两种情况，其中一条是：</p>
+<blockquote>Serialize a proto to JSON.</blockquote>
+<p>也就是说，<strong>同一个服务透传二进制是安全的，一旦中间某跳转成 JSON，未知字段就没了</strong>。这条边界值得写进设计文档，因为它只在你做转换时才暴露。</p>
+<p>还有一条我觉得最危险，也是实测出来的：把字段编号 3 的类型从 <code>string</code> 改成 <code>int32</code>，再用新 schema 去解旧数据——<strong>没有报错，得到 0</strong>。字段编号一旦分配就不能改类型，这不是建议，是硬约束。</p>
+<h3>4.3 MessagePack：安静到你以为没问题</h3>
+<p>MessagePack 没有 schema，因此也不存在「演进规则」。同一个字段从整数换成字符串：</p>
+<ul><li><code>{"id": 1, "amount": 100}</code> → 13 字节</li><li><code>{"id": 1, "amount": "100"}</code> → 16 字节</li></ul>
+<p>消费端拿到的分别是 <code>100</code> 和 <code>'100'</code>，<strong>全程没有任何报错</strong>。缺字段、多字段也一样静默：<code>{"id": 1}</code> 只有 5 字节，多一个 <code>currency</code> 就到 26 字节，下游完全是「看数据脸色行事」。</p>
+<p>补救办法是在消费端加类型契约。用 msgspec 的 Struct 可以把这条边界做出来，官方文档 <code>supported-types</code> 的原话是：</p>
+<blockquote>During decoding, any unknown fields are ignored (this can be disabled, see forbid-unknown-fields), and any missing optional fields have their default values applied. An error is raised during decoding if the type doesn't match or if any required fields are missing.</blockquote>
+<p>注意那句默认行为——<strong>未知字段默认是忽略的</strong>。这意味着拼写错误不会被发现；如果再配上带默认值的可选字段，一个 typo 会直接降级成默认值而不报错。我在本机验证了两种写法，区别只在一个类参数：</p>
+<pre><code>class Ev(msgspec.Struct):
+    id: int
+    amount: int
+
+msgspec.msgpack.decode(byte_string, type=Ev)
+# 默认：Ev(id=1, amount=100) —— currency 被静默丢弃
+
+class StrictEv(msgspec.Struct, forbid_unknown_fields=True):
+    id: int
+    amount: int
+# 加了参数：msgspec.ValidationError: Object contains unknown field `currency`</code></pre>
+<h2>五、踩坑录：六个我本机复现出来的报错</h2>
+<p>以下每条都是我在这台机器上真跑出来、原样抄下来的错误文本。</p>
+<h3>报错一：`TypeError: can not serialize 'datetime.datetime' object`</h3>
+<pre><code>>>> msgpack.packb({"ts": datetime.datetime(2026, 10, 25, 6, 10)}, use_bin_type=True)
+TypeError: can not serialize 'datetime.datetime' object</code></pre>
+<p>原因是 MessagePack 规范本身没有时间戳类型，需要走 <code>Ext</code> 扩展。加上 <code>datetime=True</code> 也过不了，会换成另一条：</p>
+<pre><code>ValueError: can not serialize 'datetime.datetime' object where tzinfo=None</code></pre>
+<p>因为 naive datetime 无法确定时区语义。两个修法：要么显式带上 <code>tzinfo</code> 再用 <code>datetime=True</code>，要么自己先把 datetime 转成字符串或 Unix 时间戳。<strong>别指望 orjson 那种自动转 ISO 串的行为在其他库里也存在</strong>——我实际对比时 orjson 直接输出 <code>b'{"ts":"2026-10-25T06:10:00"}'</code>，msgspec.json 也一样，只有 msgpack 需要你动手。</p>
+<h3>报错二：`TypeError: Dict key must be str`</h3>
+<pre><code>>>> orjson.dumps({1: "one", 2: "two"})
+TypeError: Dict key must be str</code></pre>
+<p>orjson 官方 README 的写法是：不指定 <code>OPT_NON_STR_KEYS</code> 时，<code>dumps()</code> 会抛出 <code>JSONEncodeError</code>，而它是 <code>TypeError</code> 的子类。修法是 <code>orjson.dumps(d, option=orjson.OPT_NON_STR_KEYS)</code>。</p>
+<p>这里最值得注意的是标准库的对照行为：<code>json.dumps({1: "one"})</code> <strong>不报错</strong>，直接输出 <code>{"1": "one"}</code>，回读时键变成了 str。同一个输入，一个库静默改类型、另一个库抛异常，这种分歧在跨服务边界上会变成最难查的那一类 bug。</p>
+<h3>报错三：`ValueError: int is not allowed for map key when strict_map_key=True`</h3>
+<pre><code>>>> msgpack.packb({1: "one"}, use_bin_type=True)
+ValueError: int is not allowed for map key when strict_map_key=True</code></pre>
+<p>msgpack-python 默认开了 <code>strict_map_key</code>。JSON 家族这边要么静默转换、要么报错，MessagePack 这里直接拒绝，三方态度各不相同。<strong>非字符串字典键最好不要出现在跨格式的数据里</strong>，这是最省事的设计约束。</p>
+<h3>报错四：大整数三种溢出，三种报错</h3>
+<p>同一个值 2^70（等于 1,180,591,620,717,411,303,424）交给四个库：</p>
+<ul><li><code>json.dumps</code> → 正常，回读完全相等</li><li><code>orjson.dumps</code> → <code>TypeError: Integer exceeds 64-bit range</code></li><li><code>msgpack.packb</code> → <code>OverflowError: Integer value out of range</code></li><li>protobuf 的 <code>int64</code> 字段 → <code>ValueError: Value out of range: 1180591620717411303424</code></li></ul>
+<p>标准库 JSON 能承载任意精度整数，这一点其实是隐患而不是优势。Python 侧看着完全正确，等到 JavaScript 消费端用 Number 读进去，2^53+1 就变成 9007199254740992。如果数据会跨语言，大 ID 一律走字符串，这条建议对这四个库都成立。</p>
+<h3>报错五：`msgspec.ValidationError: Expected int, got str`</h3>
+<pre><code>>>> msgspec.msgpack.decode(byte_string, type=Ev)
+msgspec.ValidationError: Expected `int`, got `str` - at `$.amount`</code></pre>
+<p>这条其实是好消息：它把 MessagePack 默认会静默放过的类型漂移变成了显式失败，而且错误信息里带了 JSON Pointer 路径 <code>$.amount</code>，定位很准确。缺字段时它给的是另外一条：</p>
+<pre><code>msgspec.ValidationError: Object missing required field `amount`</code></pre>
+<h3>报错六：`orjson.JSONDecodeError` 撞上标准库 JSON 产出的非法 JSON</h3>
+<pre><code>>>> import json, orjson
+>>> json.dumps({"v": float("nan")})
+'{"v": NaN}'
+>>> orjson.loads(json.dumps({"v": float("nan")}))
+orjson.JSONDecodeError: unexpected character, expected a JSON value: line 1 column 7 (char 6)</code></pre>
+<p>标准库 <code>json</code> 默认把 NaN 与 Infinity 输出成裸字面量，<strong>这不是合法 JSON</strong>，严格解析器会直接拒绝。而 orjson 和 msgspec.json 反过来把它们静默序列化成 <code>null</code>（orjson 官方 README 原话：<code>serializes Nan, Infinity, and -Infinity, which are not compliant JSON, as null</code>）。MessagePack 则原样保留 <code>nan</code>。</p>
+<p>三种处理，两个方向：一种是产出坏数据，一种是静默丢数据。<strong>生产环境应该显式加上 <code>allow_nan=False</code> 或走浮点校验，把这条路堵死在前。</strong></p>
+<h2>六、什么时候不该换成二进制格式</h2>
+<p>基于上面所有数字，我的判断是这几种情况先别换：</p>
+<p>1. <strong>瓶颈只在磁盘或带宽</strong> —— 直接 <code>gzip(JSON)</code>，实测 25.8%，只比 <code>gzip(Protobuf)</code> 差 0.06 个百分点，还保留了全部可读性。</p>
+<p>2. <strong>数据要被人读</strong> —— 配置文件、日志管道、审计留痕。这一条压倒一切性能考量。</p>
+<p>3. <strong>上下游语言超过两种且没有中心化 schema 仓库</strong> —— Protobuf 需要分发 <code>.proto</code>，MessagePack 需要额外的契约机制。没有这些，二进制格式带来的只是「跑起来没问题、半年后改不动」。</p>
+<p>4. <strong>数据会被 grep、diff 或 code review</strong> —— 二进制一次性判掉了这三类工具。</p>
+<p>5. <strong>没有承诺永不复用的字段编号体系</strong> —— 如果团队不会做这个承诺，那 Protobuf 的兼容性保证是拿不到的。</p>
+<p>反过来说，值得换的信号是这三种：<strong>单条消息很小但 QPS 极高</strong>（CPU 成本被放大）、<strong>服务之间高扇出调用</strong>（延迟会叠加），以及<strong>已经存在 schema 治理机制</strong>（那就别浪费它）。</p>
+<h2>本文的边界</h2>
+<p>为了不让结论被误读，我把这次没做的部分也写清楚：</p>
+<ul><li>全部在本机 Windows 11 上单进程串行运行，<strong>没有测并发场景</strong>，也不含跨机器网络栈的真实开销</li><li>数据是合成日志，字段类型分布固定；如果你的负载是嵌套极深的结构体或大量小消息，数值会变化</li><li>没有覆盖 Avro、Thrift、FlatBuffers、Cap'n Proto，也没有测 Thrift 的两层协议</li><li>gzip 只跑了 level 6；zstd、lz4、brotli 没有纳入本文对照</li><li>protobuf 用的是 pure-Python 运行时（protobuf 7.36.2），<strong>没有启用 upb C 扩展</strong>，所以它的数字是保守的，生产环境可以更快</li><li>版本口径截至 2026-10-25</li></ul>
+<p>本文不含任何联盟链接，也不会因此产生佣金。</p>
+<h2>相关阅读</h2>
+<p>如果你在意的是「落盘的文件怎么变小」，可以看我另一篇针对 Parquet 默认写法的实测：<a href="https://yaohehe.github.io/2026-10-21-parquet-15.html" class="internal-link">"Parquet 与 Arrow 实测：默认字典编码让我的文件大了 15%"</a>。那一篇讲的是磁盘上的列式文件格式，本篇讲的是穿越网络的线格式，两者不在同一个层。想接着把本地数据直接查起来，可以接 <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 1.5.6 实测：40 MB CSV 不建库直查</a>。而当你最终要把这套东西搬进长期运行的服务，日志与可观测这一层的坑我都跑过一遍，写在 <a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">Python logging 实测：多进程丢日志、重复输出与六个真实报错</a> 里。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

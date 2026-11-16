@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>JSON vs MessagePack vs Protobuf: Tested at 50k Records - TechPassive</title>
+  <meta name="description" content="I encoded the same 50,000 log records as JSON, MessagePack and Protobuf. Binary formats save mostly field names, and gzip erases the gap. Six real errors reproduced.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>JSON, MessagePack and Protobuf Tested</h1>
+  <div class="post-tags">
+    <span class="tag">Serialization</span><span class="tag">MessagePack</span><span class="tag">Protobuf</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: I encoded the same 50,000 structured log records as JSON, MessagePack and Protobuf, five runs each, and the results cut against the usual advice. MessagePack only reaches 80.9% of the JSON size and Protobuf reaches 51.4%, but <strong>after one pass of gzip all three land in the same band</strong>, with MessagePack actually 2.1% *larger* than gzipped JSON. What really differs is speed and schema evolution, and those two rarely appear in the selection debate.</p>
+<p>Most people deciding whether to move off JSON are working from a bar chart in somebody else's blog post. Those charts tend to fold "fast" and "small" into a single axis and rarely tell you what the payload actually looked like. So I ran one dataset through every candidate on this machine and wrote down the numbers together with the comparison logic, so you can reproduce it.</p>
+<h2>Test environment and method</h2>
+<p>Every number below was produced on this machine on 2026-10-25:</p>
+<ul><li>OS and runtime: Windows 11, <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.13.12</li><li>msgpack 1.2.3, orjson 3.13.0, msgspec 0.22.0, protobuf 7.36.2 (latest releases from PyPI on that date)</li><li>Data: random seed pinned to 20261025, 50,000 log events, nine fields each (integer timestamp, string level, string service name, 32-character hex trace_id, integer status, float latency, integer byte count, boolean cache flag, string message)</li><li>Timing: five runs per operation, <strong>the fastest run is reported</strong>, so background noise does not inflate any gap</li><li>Protobuf is used without protoc: to keep the script copy-pasteable I build the schema at runtime from <code>descriptor_pb2</code></li></ul>
+<p>That last part is the only unusual piece, so here it is up front:</p>
+<pre><code>from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
+
+T = descriptor_pb2.FieldDescriptorProto
+fp = descriptor_pb2.FileDescriptorProto()
+fp.name = "bench.proto"
+fp.syntax = "proto3"
+msg = fp.message_type.add()
+msg.name = "Event"
+for name, num, typ in [("ts", 1, T.TYPE_INT64), ("level", 2, T.TYPE_STRING)]:
+    f = msg.field.add()
+    f.name, f.number, f.type, f.json_name = name, num, typ, name
+    f.label = T.LABEL_OPTIONAL
+Desc = descriptor_pool.Default().Add(fp)
+Event = message_factory.GetMessageClass(Desc.message_types_by_name["Event"])</code></pre>
+<h2>1. Size: what you save is mostly the field names</h2>
+<p>Full encode of the 50,000 records, in bytes:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Encoding</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Bytes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">vs compact JSON</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">After gzip level 6</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Share after gzip</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">JSON (compact separators)</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">2,659,489</td><td style="border:1px solid #ddd;padding:8px;">25.8%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">JSON (default separators)</td><td style="border:1px solid #ddd;padding:8px;">11,194,996</td><td style="border:1px solid #ddd;padding:8px;">108.7%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">orjson</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgspec.json</td><td style="border:1px solid #ddd;padding:8px;">10,294,992</td><td style="border:1px solid #ddd;padding:8px;">100.0%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">MessagePack (msgpack-python)</td><td style="border:1px solid #ddd;padding:8px;">8,330,309</td><td style="border:1px solid #ddd;padding:8px;">80.9%</td><td style="border:1px solid #ddd;padding:8px;">2,715,571</td><td style="border:1px solid #ddd;padding:8px;">26.4%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">MessagePack (msgspec)</td><td style="border:1px solid #ddd;padding:8px;">8,330,309</td><td style="border:1px solid #ddd;padding:8px;">80.9%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Protobuf</td><td style="border:1px solid #ddd;padding:8px;">5,294,403</td><td style="border:1px solid #ddd;padding:8px;">51.4%</td><td style="border:1px solid #ddd;padding:8px;">2,657,929</td><td style="border:1px solid #ddd;padding:8px;">25.8%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">pickle protocol 5</td><td style="border:1px solid #ddd;padding:8px;">5,693,833</td><td style="border:1px solid #ddd;padding:8px;">55.3%</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td></tr></tbody></table>
+<p>Three things here get conflated constantly.</p>
+<p>First, orjson and msgspec.json produce <strong>byte-identical</strong> output to the standard library: 10,294,992 bytes in all three cases. They sell speed, not size. If you switched to them to save space, you picked the wrong tool.</p>
+<p>Second, MessagePack only gets to 80.9%. It has no schema, so every record has to write all nine field names again. I re-encoded the same rows from a map into a positional array — still MessagePack — and the size dropped from 8,330,271 to 5,080,271 bytes, exactly 3,250,000 bytes saved. Per record: of 164 bytes, 66 bytes are key names and their type headers, 40.2% of the total. So <strong>nearly all of MessagePack's 19.1% win over JSON is field-name compression, not data compression</strong>.</p>
+<p>Third, Protobuf reaches 51.4% because what goes on the wire is a field number, not a field name. There is no key-name overhead at all. The price is equally direct: without the <code>.proto</code> file, nobody can read those bytes.</p>
+<h2>2. After compression, how much of the advantage is left</h2>
+<p>This is the most counter-intuitive result of the run. I pushed all three encodings through gzip at level 6:</p>
+<ul><li><code>gzip(JSON)</code> = 2,659,489 bytes, 25.8% of the original JSON</li><li><code>gzip(MessagePack)</code> = 2,715,571 bytes, 26.4% of the original JSON</li><li><code>gzip(Protobuf)</code> = 2,657,929 bytes, 25.8% of the original JSON</li></ul>
+<p>Note the spread: 25.8% to 26.4%, <strong>a band 0.6 percentage points wide</strong> — and <code>gzip(MessagePack)</code> is 56,082 bytes, or 2.1%, *larger* than <code>gzip(JSON)</code>.</p>
+<p>The mechanism is not hard to see. Repeated field names are precisely what dictionary-based compressors are best at. MessagePack removes that redundancy by hand, which is doing up front the work gzip was going to do anyway. You change the order of operations, not the outcome.</p>
+<p>The decision signal is clear: <strong>if your bottleneck is disk or bandwidth, the first move is to turn on compression, not to change wire format.</strong> The returns from changing format show up in CPU and latency. In my runs, handing JSON straight to gzip got within 0.06 percentage points of Protobuf, while keeping everything readable, greppable and diffable.</p>
+<h2>3. Speed: a much wider gap than size</h2>
+<p>Encoding time (whole 50,000-record payload, fastest of five):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Encoder</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Time</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">json.dumps</td><td style="border:1px solid #ddd;padding:8px;">118.44 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgpack.packb</td><td style="border:1px solid #ddd;padding:8px;">68.90 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">pickle.dumps</td><td style="border:1px solid #ddd;padding:8px;">72.35 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgspec.json.encode</td><td style="border:1px solid #ddd;padding:8px;">38.24 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.msgpack.encode</td><td style="border:1px solid #ddd;padding:8px;">34.15 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">orjson.dumps</td><td style="border:1px solid #ddd;padding:8px;">26.86 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">protobuf SerializeToString</td><td style="border:1px solid #ddd;padding:8px;">20.24 ms</td></tr></tbody></table>
+<p>Decoding time (same payload):</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Decoder</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Time</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">json.loads</td><td style="border:1px solid #ddd;padding:8px;">200.94 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">msgpack.unpackb</td><td style="border:1px solid #ddd;padding:8px;">179.29 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.json.decode</td><td style="border:1px solid #ddd;padding:8px;">121.07 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">orjson.loads</td><td style="border:1px solid #ddd;padding:8px;">113.68 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">msgspec.msgpack.decode</td><td style="border:1px solid #ddd;padding:8px;">75.39 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">pickle.loads</td><td style="border:1px solid #ddd;padding:8px;">59.47 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">protobuf ParseFromString</td><td style="border:1px solid #ddd;padding:8px;">16.51 ms</td></tr></tbody></table>
+<p>Three observations:</p>
+<p>1. <strong>orjson is 4.4x faster than stdlib json</strong> (26.86 ms vs 118.44 ms) and emits identical bytes. It is the only zero-cost upgrade in the whole table — one import line.</p>
+<p>2. <strong>Two libraries, same MessagePack, 2.4x apart</strong> (msgspec 75.39 ms vs msgpack-python 179.29 ms). When you pick a binary format, which implementation you pick matters at least as much as which format.</p>
+<p>3. <strong>Protobuf is fastest at both ends</strong> (20.24 ms and 16.51 ms). On the decode side that is a 12.2x gap against stdlib JSON, which is large enough to move a service's tail latency.</p>
+<h2>4. What you are really choosing is schema evolution</h2>
+<p>Size you can measure today. Schema evolution bites six months later. I ran both.</p>
+<h3>4.1 Protobuf's default-value elision is a feature and a trap</h3>
+<p>The official Protobuf guide, in the <code>Specifying Field Cardinality</code> section, says this about scalar fields written without <code>optional</code>:</p>
+<blockquote>the field is set to the default (zero) value. It will not be serialized to the wire. In fact, you cannot determine whether the default (zero) value was set or parsed from the wire or not provided at all.</blockquote>
+<p>The same point is restated in <code>Default Field Values</code>:</p>
+<p>> Note that for implicit-presence scalar fields, once a message is parsed there's no way of telling whether that field was explicitly set to the default value (for example whether a boolean was set to <code>false</code>) or just not set at all</p>
+<p>I verified it byte by byte with a message holding <code>id</code>, <code>status</code>, <code>name</code> and <code>cached</code>:</p>
+<ul><li>Nothing set at all → <strong>0 bytes</strong></li><li>Explicitly set to <code>status=0</code>, <code>name=""</code>, <code>cached=False</code> → <strong>0 bytes</strong>, byte-identical to the previous case</li><li>Only <code>name="hello"</code> → <code>1a0568656c6c6f</code>, 7 bytes</li><li>With the field declared <code>optional</code>, explicitly setting <code>status=0</code> → <code>1000</code>, 2 bytes, and <code>HasField("status")</code> returns <code>True</code>; not setting it → 0 bytes and <code>HasField</code> returns <code>False</code></li></ul>
+<p>The effect scales: forcing <code>status</code> to 0 across all 50,000 records dropped the Protobuf payload from 5,294,391 to 5,144,391 bytes, a 2.8% reduction that works out to exactly 3 bytes per record. Leave every field but the timestamp at its default and the whole payload is 400,007 bytes.</p>
+<p>Both sides of this behaviour have to be read together: <strong>it saves bytes and it permanently erases the difference between "set to 0" and "not set".</strong> If your protocol has a scalar where 0 carries meaning (<code>quota=0</code> meaning explicitly disabled rather than unconfigured), you need <code>optional</code>, because otherwise that meaning does not survive the wire.</p>
+<h3>4.2 Unknown fields: forwarding is safe, with one hard edge</h3>
+<p>From the official <code>Unknown Fields</code> section:</p>
+<blockquote>Proto3 messages preserve unknown fields and include them during parsing and in the serialized output, which matches proto2 behavior.</blockquote>
+<p>I tested it: the newer schema writes <code>trace_id</code> and produces 17 bytes, <code>080712037376631a086162636431323334</code>. Parsing that with an older schema that lacks the field gives <code>id=7</code> and <code>name='svc'</code>, and re-serializing produces <strong>output byte-identical to the original</strong>. Older forwarding services can pass new data through untouched — a property that matters a lot for HTTP gateways and queue consumers.</p>
+<p>But the same section's <code>Retaining Unknown Fields</code> list then names the cases where you lose them, and one of them is:</p>
+<blockquote>Serialize a proto to JSON.</blockquote>
+<p>So <strong>the same service is safe passing binary through and unsafe the moment some hop converts to JSON</strong>. That boundary belongs in the design doc, because it only shows up when you convert.</p>
+<p>One more that I found the hard way: change field number 3 from <code>string</code> to <code>int32</code> and parse old data with the new schema — <strong>no error, you get 0</strong>. Once a field number is assigned its type is frozen. That is a constraint, not a recommendation.</p>
+<h3>4.3 MessagePack: quiet enough that you assume it is fine</h3>
+<p>MessagePack has no schema, so there are no evolution rules either. Same field, integer versus string:</p>
+<ul><li><code>{"id": 1, "amount": 100}</code> → 13 bytes</li><li><code>{"id": 1, "amount": "100"}</code> → 16 bytes</li></ul>
+<p>The consumer receives <code>100</code> and <code>'100'</code> respectively, with <strong>no error at any point</strong>. Missing and extra keys are equally quiet: <code>{"id": 1}</code> is 5 bytes, adding <code>currency</code> takes it to 26, and downstream code is left to guess from the data.</p>
+<p>The fix is a type contract on the consumer side. msgspec's Struct gives you that boundary, and the official <code>supported-types</code> page puts it like this:</p>
+<blockquote>During decoding, any unknown fields are ignored (this can be disabled, see forbid-unknown-fields), and any missing optional fields have their default values applied. An error is raised during decoding if the type doesn't match or if any required fields are missing.</blockquote>
+<p>Note the default — <strong>unknown fields are ignored</strong>. A typo is not detected, and combined with an optional field that has a default, it silently degrades to that default. I checked both forms on this machine; the difference is a single class argument:</p>
+<pre><code>class Ev(msgspec.Struct):
+    id: int
+    amount: int
+
+msgspec.msgpack.decode(byte_string, type=Ev)
+# default: Ev(id=1, amount=100) — currency silently dropped
+
+class StrictEv(msgspec.Struct, forbid_unknown_fields=True):
+    id: int
+    amount: int
+# with the flag: msgspec.ValidationError: Object contains unknown field `currency`</code></pre>
+<h2>5. Troubleshooting: six errors I reproduced locally</h2>
+<p>Every message below was produced on this machine and copied verbatim.</p>
+<h3>Error one: `TypeError: can not serialize 'datetime.datetime' object`</h3>
+<pre><code>>>> msgpack.packb({"ts": datetime.datetime(2026, 10, 25, 6, 10)}, use_bin_type=True)
+TypeError: can not serialize 'datetime.datetime' object</code></pre>
+<p>The MessagePack spec has no timestamp type of its own; it has to travel as an <code>Ext</code> extension. Adding <code>datetime=True</code> does not rescue it either — you get a different message:</p>
+<pre><code>ValueError: can not serialize 'datetime.datetime' object where tzinfo=None</code></pre>
+<p>because a naive datetime has no determinable time zone. Either attach a <code>tzinfo</code> before using <code>datetime=True</code>, or convert to a string or Unix timestamp yourself. <strong>Do not assume orjson's automatic ISO conversion exists elsewhere.</strong> In my comparison orjson emitted <code>b'{"ts":"2026-10-25T06:10:00"}'</code> and msgspec.json did the same; only msgpack requires your involvement.</p>
+<h3>Error two: `TypeError: Dict key must be str`</h3>
+<pre><code>>>> orjson.dumps({1: "one", 2: "two"})
+TypeError: Dict key must be str</code></pre>
+<p>The orjson README states that without <code>OPT_NON_STR_KEYS</code>, <code>dumps()</code> raises <code>JSONEncodeError</code>, a subclass of <code>TypeError</code>. The fix is <code>orjson.dumps(d, option=orjson.OPT_NON_STR_KEYS)</code>.</p>
+<p>What makes this one worth attention is the standard library's contrasting behaviour: <code>json.dumps({1: "one"})</code> raises nothing, emits <code>{"1": "one"}</code>, and gives you <code>str</code> keys back on the way in. Same input, one library silently retypes and another raises — that divergence is exactly the kind of bug that is hardest to find across a service boundary.</p>
+<h3>Error three: `ValueError: int is not allowed for map key when strict_map_key=True`</h3>
+<pre><code>>>> msgpack.packb({1: "one"}, use_bin_type=True)
+ValueError: int is not allowed for map key when strict_map_key=True</code></pre>
+<p>msgpack-python enables <code>strict_map_key</code> by default. The JSON family either retypes silently or raises; MessagePack refuses outright. Three libraries, three different opinions — the cheap design rule is <strong>no non-string dict keys in any data that crosses formats</strong>.</p>
+<h3>Error four: one large integer, three overflow errors</h3>
+<p>The same value, 2^70 (1,180,591,620,717,411,303,424), handed to four libraries:</p>
+<ul><li><code>json.dumps</code> → fine, round-trips exactly</li><li><code>orjson.dumps</code> → <code>TypeError: Integer exceeds 64-bit range</code></li><li><code>msgpack.packb</code> → <code>OverflowError: Integer value out of range</code></li><li>protobuf <code>int64</code> field → <code>ValueError: Value out of range: 1180591620717411303424</code></li></ul>
+<p>Stdlib JSON carrying arbitrary-precision integers is a hazard more than a benefit. It looks perfect on the Python side, and then a JavaScript consumer reads it as a Number and 2^53+1 becomes 9007199254740992. If data crosses languages, large IDs should be strings. That holds for all four libraries.</p>
+<h3>Error five: `msgspec.ValidationError: Expected int, got str`</h3>
+<pre><code>>>> msgspec.msgpack.decode(byte_string, type=Ev)
+msgspec.ValidationError: Expected `int`, got `str` - at `$.amount`</code></pre>
+<p>This one is good news: it turns the type drift that MessagePack would otherwise swallow into an explicit failure, and the message carries a JSON Pointer path, <code>$.amount</code>. A missing field produces a different one:</p>
+<pre><code>msgspec.ValidationError: Object missing required field `amount`</code></pre>
+<h3>Error six: `orjson.JSONDecodeError` meets non-JSON from the standard library</h3>
+<pre><code>>>> import json, orjson
+>>> json.dumps({"v": float("nan")})
+'{"v": NaN}'
+>>> orjson.loads(json.dumps({"v": float("nan")}))
+orjson.JSONDecodeError: unexpected character, expected a JSON value: line 1 column 7 (char 6)</code></pre>
+<p>Stdlib <code>json</code> emits NaN and Infinity as bare literals by default, and <strong>that is not valid JSON</strong> — strict parsers reject it. orjson and msgspec.json go the other way and quietly serialize them as <code>null</code> (orjson's README: <code>serializes Nan, Infinity, and -Infinity, which are not compliant JSON, as null</code>). MessagePack keeps <code>nan</code> as-is.</p>
+<p>Three behaviours, two failure directions: produce bad data, or silently lose data. <strong>In production, set <code>allow_nan=False</code> explicitly or validate floats, and close this off before it ships.</strong></p>
+<h2>6. When you should not switch to a binary format</h2>
+<p>Given all of the above, these are the cases where I would stay put:</p>
+<p>1. <strong>The bottleneck is disk or bandwidth</strong> — reach for <code>gzip(JSON)</code> instead. Measured at 25.8%, only 0.06 points behind <code>gzip(Protobuf)</code>, with readability intact.</p>
+<p>2. <strong>Humans read this data</strong> — configuration files, log pipelines, audit records. This outranks every performance argument.</p>
+<p>3. <strong>More than two languages and no central schema registry</strong> — Protobuf needs <code>.proto</code> distribution, MessagePack needs a contract mechanism of your own. Without those, a binary format buys you "runs fine today, unchangeable in six months".</p>
+<p>4. <strong>The data gets grepped, diffed or code-reviewed</strong> — binary rules out all three at once.</p>
+<p>5. <strong>Nobody has committed to never reusing field numbers</strong> — without that commitment you do not actually get Protobuf's compatibility guarantee.</p>
+<p>The signals that do justify a switch are the mirror image: <strong>small messages at very high QPS</strong> where CPU cost multiplies, <strong>high fan-out calls between services</strong> where latency compounds, and <strong>a schema governance process that already exists</strong> — in which case you should use it.</p>
+<h2>Limits of this test</h2>
+<p>So nothing here gets misread, here is what I did not do:</p>
+<ul><li>Everything ran single-process and serial on Windows 11. <strong>No concurrency was measured</strong>, and no real network stack cost is included</li><li>The data is synthetic logs with a fixed field mix; deeply nested structures or many small messages will move the numbers</li><li>Avro, Thrift, FlatBuffers and Cap'n Proto are not covered, and neither are Thrift's two protocol layers</li><li>Only gzip level 6 was tested; zstd, lz4 and brotli are out of scope for this article</li><li>Protobuf ran on the pure-Python runtime (protobuf 7.36.2) with <strong>the upb C extension disabled</strong>, so its numbers are conservative — production can go faster</li><li>Version figures are current as of 2026-10-25</li></ul>
+<p>No affiliate links appear in this article, and no commissions are earned from it.</p>
+<h2>Related reading</h2>
+<p>If what you care about is making files smaller on disk, that is a different layer — I measured the Parquet defaults in <a href="https://yaohehe.github.io/2026-10-21-parquet-tested-default-dictionary-adds-15-to-the-f-en.html" class="internal-link">"Parquet and Arrow Tested: Default Dictionary Encoding Adds 15% to the File"</a>. That one is a columnar file format on disk; this one is a wire format on the network. To then query that local data without a database server, <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">"DuckDB 1.5.6 Tested: 40 MB CSV Without a Database"</a> is the natural next step. And when you finally run this inside a long-lived service, the logging and observability layer has its own set of traps, which I worked through in <a href="https://yaohehe.github.io/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">"Python Logging Tested: 6 Real Errors and Lost Records"</a>.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

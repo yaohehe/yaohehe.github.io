@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pandas 3.1 CoW: Five Assignments That Stopped Working - TechPassive</title>
+  <meta name="description" content="Copy-on-Write runs the show. Chained assignment, inplace on a column and writable to_numpy arrays went quiet. I tested 2.3.1 against 3.1.0: 11 gaps, four real errors.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>pandas 3.1 CoW: Five Assignments That Stopped Working</h1>
+  <div class="post-tags">
+    <span class="tag">pandas</span><span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">data analysis</span>
+  </div>
+  <div class="content">
+    <p>You upgrade a dependency, the test suite stays green, nothing in the logs looks wrong, and the next morning the <code>total</code> column in the report still holds yesterday's numbers. In pandas 3.x this failure mode arrives in batches, because Copy-on-Write (CoW) went from an opt-in future behaviour to the only behaviour.</p>
+<p>The official migration guide states it plainly: <code>Copy-on-Write is the default and only mode in pandas 3.0.</code> The line that actually breaks code is the next one: <code>Chained assignment will never work</code>. That is not a style recommendation. It means the statement no longer updates anything, and says so only through a warning.</p>
+<p>I tested this the boring way. One Windows 11 machine, one CPython 3.13.14, pandas 2.3.1 and 3.1.0 installed into two separate directories, the same 20-case script executed against both, outputs compared line by line. Every number below comes from that run. Where I did not execute something myself, I say "the docs state" instead of "I measured".</p>
+<h2>Five things that changed, up front</h2>
+<p>If you only remember five lines:</p>
+<p>1. <code>df["col"][mask] = x</code> never updates the frame on 3.x. It emits a <code>ChainedAssignmentError</code> warning, not an exception, so scripts keep exiting 0.</p>
+<p>2. <code>inplace=True</code> applied to a selected column, for example <code>df["col"].replace(1, 5, inplace=True)</code>, also never updates the frame. Its return value changed too: <code>None</code> on 2.x, a Series on 3.x.</p>
+<p>3. <code>Series.to_numpy()</code>, <code>.values</code> and <code>np.asarray(series)</code> now hand back read-only arrays. Writing to one raises <code>ValueError: assignment destination is read-only</code>.</p>
+<p>4. <code>pd.Series(numpy_array)</code> copies by default, so mutating the numpy array no longer touches the Series. Sharing requires an explicit <code>copy=False</code>.</p>
+<p>5. The <code>SettingWithCopyWarning</code> class has been deleted, so <code>except pd.errors.SettingWithCopyWarning</code> and <code>hasattr</code> probes take a different branch than they used to.</p>
+<p>Three more default changes ride along with 3.0 and are not strictly CoW: string columns now infer as <code>str</code> instead of <code>object</code>, datetime parsing defaults to microsecond resolution instead of nanosecond, and casting those datetimes to integers now yields numbers 1000x smaller. I cover those separately, because they are harder to spot than the CoW rules.</p>
+<h2>What I ran, and on what</h2>
+<ul><li>Versions: pandas <code>3.1.0</code> (released 2026-10-22) against <code>2.3.1</code>, numpy <code>2.5.4</code> against <code>2.3.1</code>, CPython <code>3.13.14</code>, Windows 11.</li><li>Where the version numbers come from: both GitHub Releases and PyPI. 3.1.0 is the current stable release; 3.0.0 shipped 2026-01-21, followed by six patch releases through 3.0.6.</li><li>Install method: <code>pip install --target tmp/pd31 pandas==3.1.0</code> into an isolated directory, switched with <code>PYTHONPATH</code>. The main environment was untouched.</li><li>Judgement rule: each case prints what the data became and what was raised or warned, and I compare only those two things.</li></ul>
+<p>Worth noting for upgrade planning: pandas 3.0 requires <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> 3.11 or newer and numpy 1.26 or newer, and <code>pytz</code> is no longer a required dependency.</p>
+<h2>One: the five writes that no longer write</h2>
+<h3>1. Chained assignment, from "sometimes works" to "never works"</h3>
+<p>This is the one that bites hardest. On 2.x, <code>df["foo"][df["bar"] > 5] = 100</code> genuinely works in most cases and merely emits a <code>FutureWarning</code> about the future.</p>
+<p>On 2.3.1 the statement turned <code>foo</code> into <code>[1, 2, 100]</code>, exactly as intended. On 3.1.0 the same line left <code>foo</code> at <code>[1, 2, 3]</code> and emitted:</p>
+<pre><code>ChainedAssignmentError: A value is being set on a copy of a DataFrame or Series
+through chained assignment. Such chained assignment never works to update the
+original DataFrame or Series, because the intermediate object on which we are
+setting values always behaves as a copy.</code></pre>
+<p>That is a warning, not an exception. Under the default warning filters it prints once, <code>try/except</code> will not catch it, and the process still exits 0. Batch jobs are where this hides.</p>
+<p>One nuance that is easy to get wrong: <code>df.loc[mask]["foo"] = 100</code> and <code>df[mask]["foo"] = 100</code> already failed on 2.3.1, where they emitted <code>SettingWithCopyWarning</code>. Their failure on 3.x is not new, only the warning type changed. The pattern that actually moved from working to not working is <code>df["col"][mask] = x</code>.</p>
+<p>The fix is a single index step:</p>
+<pre><code>df.loc[df["bar"] > 5, "foo"] = 100</code></pre>
+<p>On 3.1.0 that produced <code>[1, 2, 100]</code> with no warning.</p>
+<h3>2. inplace on a column: no effect, and the return value changed</h3>
+<p><code>df["foo"].replace(1, 5, inplace=True)</code> turned <code>df</code> into <code>[5, 2, 3]</code> on 2.3.1 and returned <code>None</code>. On 3.1.0 <code>df</code> stayed <code>[1, 2, 3]</code> and the return value became a Series. The guide's wording is <code>Updating a column selected from a DataFrame with an inplace method will also not work anymore.</code>, filed under chained assignment.</p>
+<p><code>df["a"].fillna(0, inplace=True)</code> behaves the same way: <code>None</code> on 2.3.1, a Series plus a warning on 3.1.0.</p>
+<p>There is a nastier change hiding behind this one. The 3.0 release notes state that <code>replace</code>, <code>fillna</code>, <code>ffill</code>, <code>bfill</code>, <code>interpolate</code>, <code>where</code>, <code>mask</code> and <code>clip</code> now return <code>self</code> rather than <code>None</code> when <code>inplace=True</code>. I measured <code>df.replace({"foo": {1: 5}}, inplace=True)</code>: <code>None</code> on 2.3.1, and on 3.1.0 the returned object satisfies <code>is df</code>.</p>
+<p>So this old guard silently stops working:</p>
+<pre><code>if df.fillna(0, inplace=True) is None:
+    ...  # never true on 3.x</code></pre>
+<p>Nothing raises. The branch simply never runs again.</p>
+<h3>3. attrs on a selected column do not persist</h3>
+<p><code>attrs</code> is the supported place to hang metadata on a pandas object, and plenty of pipelines store units, source names or upstream table ids there. The migration guide has one short line for it: <code>Attributes set on a selected column do not persist</code>, because selecting a column now returns a fresh Series each time instead of a cached one.</p>
+<p>Measured: after <code>df["foo"].attrs["unit"] = "kg"</code>, reading <code>df["foo"].attrs</code> gives <code>{'unit': 'kg'}</code> on 2.3.1 and <code>{}</code> on 3.1.0. No warning at all, because syntactically you did mutate an object. That object just stops existing immediately afterwards.</p>
+<p>Put the metadata on the parent <code>DataFrame.attrs</code>, or store it in a column.</p>
+<h3>4. to_numpy returns a read-only array</h3>
+<p>This is the friendliest of the five, because it fails loudly.</p>
+<p>On 2.3.1, <code>pd.Series([1, 2, 3]).to_numpy()</code> had <code>writeable</code> set to True, and writing through it changed the Series to <code>[99, 2, 3]</code>, which is the classic form of the old bug. On 3.1.0 <code>writeable</code> is False and the write raises:</p>
+<pre><code>ValueError: assignment destination is read-only</code></pre>
+<p><code>.values</code> and <code>np.asarray(series)</code> behave identically on 3.1.0; all three are read-only.</p>
+<p>The guide also documents an escape hatch: <code>You can also make the array writeable again if you don't care about the pandas object anymore.</code> I followed it. Setting <code>arr.flags.writeable = True</code> and writing did change the Series, and <code>np.shares_memory</code> still reported True. In other words, flipping that flag brings back exactly the bug CoW was protecting you from. Copy the array instead.</p>
+<h3>5. Constructors copy the numpy array by default</h3>
+<p><code>The Series and DataFrame constructors now copies a NumPy array by default when not otherwise specified.</code></p>
+<p>Measured: with <code>a = np.array([1, 2, 3])</code>, <code>s = pd.Series(a)</code>, then <code>a[0] = 99</code>, the Series became <code>[99, 2, 3]</code> on 2.3.1 and stayed <code>[1, 2, 3]</code> on 3.1.0.</p>
+<p>Keeping the share requires <code>pd.Series(a, copy=False)</code>, which on 3.1.0 still shares: after mutating the array the Series read <code>[99, 77, 3]</code>. The flip side matters for memory: if your code relied on sharing to avoid a duplicate buffer, upgrading now costs you one extra copy, and large arrays will show it.</p>
+<h2>Two: what "copy on write" actually saves</h2>
+<p>CoW means share by default and copy at the moment of writing. It is neither "always copy" nor "never copy", and <code>np.shares_memory</code> gives you a direct measurement.</p>
+<p>Take a 1,000-row, 4-column frame and slice it with <code>v = df[:]</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Check</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pandas 2.3.1</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pandas 3.1.0</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Shares memory right after slicing</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Still shares after writing <code>v.iloc[0, 0]</code></td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Parent object mutated</td><td style="border:1px solid #ddd;padding:8px;"><strong>True</strong></td><td style="border:1px solid #ddd;padding:8px;">False</td></tr></tbody></table>
+<p>Those three cells describe CoW exactly: slicing is lazy, the copy happens on write, and the parent survives. The 2.3.1 column reads True/True, which is the old behaviour, where writing to a slice reached back into the parent.</p>
+<p>The copy is not free, and the cost is measurable. On 1,000,000 rows by 4 float64 columns, about 32 MB:</p>
+<ul><li>write on a single-owner object: <code>0.000249 s</code></li><li>write while a live parent reference exists, forcing a copy: <code>0.004095 s</code>, about <strong>16.4x</strong> slower</li></ul>
+<p>On the same frame, <code>df.copy()</code> costs <code>0.007724 s</code> while <code>df[:]</code> costs <code>0.000081 s</code>, which is <strong>98.9%</strong> less time. That is the concrete value behind the guide's statement that <code>the SettingWithCopyWarning is removed, and defensive .copy() calls to silence the warning are no longer needed.</code> Every remaining defensive <code>.copy()</code> is now pure waste.</p>
+<p>The cost cuts the other way as well. If you deliberately keep many references to one buffer for performance, CoW makes you pay a full copy on the first write, and that copy is implicit, so it never shows up as an explicit call in a profile.</p>
+<h2>Three: three things that broke differently</h2>
+<p>None of these are CoW, but all shipped with 3.0 and none of them raise.</p>
+<h3>1. String columns default to str instead of object</h3>
+<p><code>Starting with pandas 3.0, a dedicated string data type is enabled by default (backed by PyArrow under the hood, if installed, otherwise falling back to being backed by NumPy object-dtype).</code></p>
+<p>Measured: <code>pd.Series(["a", "b"]).dtype</code> is <code>object</code> on 2.3.1 and <code>str</code> on 3.1.0. Any <code>if df["col"].dtype == object:</code> check silently takes the else branch, and I confirmed that comparison now returns <code>False</code>.</p>
+<p>The new dtype holds only strings and missing values, so mixed writes fail:</p>
+<pre><code>TypeError: Invalid value '1' for dtype 'str'. Value should be a string or
+missing value, got 'int' instead.</code></pre>
+<p>On 2.3.1 the same operation quietly produced <code>[1, 'b']</code>, a column holding two types, which only surfaces later in a <code>sum()</code> or a sort. Trading silence for an exception is the right direction, but only if your cleaning code was not counting on stuffing integers in there.</p>
+<h3>2. Datetime parsing defaults to microseconds</h3>
+<p><code>The new default resolution when parsing strings is microseconds, falling back to nanoseconds when the precision of the string requires it.</code></p>
+<p>Measured: <code>pd.to_datetime(["2026-01-01 00:00:00.123456"]).dtype</code> is <code>datetime64[ns]</code> on 2.3.1 and <code>datetime64[us]</code> on 3.1.0.</p>
+<h3>3. Casting to int gives numbers 1000x smaller</h3>
+<p>This is the only change in the whole set that produces wrong values without any error, and the release notes flag it explicitly: <code>One big exception is converting to integers, which will give integers 1000x smaller.</code></p>
+<p>Same timestamp, <code>2026-01-01 00:00:00.123456</code>:</p>
+<ul><li>2.3.1: <code>astype("int64")</code> gives <code>1767225600123456000</code></li><li>3.1.0: <code>astype("int64")</code> gives <code>1767225600123456</code></li></ul>
+<p>A factor of <strong>1000</strong>. If you store timestamps as integers, use them as cache keys, or exchange them with another system, this silently produces misaligned data while both sides keep running. The documented advice is to avoid <code>astype("int64")</code>, or pin the unit first with <code>as_unit()</code>.</p>
+<h2>Four: how to find these before you upgrade</h2>
+<p>The documented path is to move to 2.3 first, clean up the warnings, then go to 3.0. I verified half of that: on 2.3.1 the chained assignment does emit a <code>FutureWarning</code> whose text begins <code>ChainedAssignmentError: behaviour will change in pandas 3.0!</code>. So a warning-as-error run on 2.3 is worth doing:</p>
+<pre><code>python -W error::FutureWarning -m pytest</code></pre>
+<p>The boundary deserves stating: I verified only that 2.3.1 warns about chained assignment. I did not verify that this covers all 11 differences I recorded. <code>attrs</code>, constructor copying and the <code>inplace</code> return value emit no warning at all on 2.3.1, because they change at the moment of upgrade. No pre-flight check catches those. Reading the migration guide and auditing by hand is the only route.</p>
+<p>Do not count on <code>pd.options.mode.copy_on_write</code> either. On 3.1.0 both <code>True</code> and <code>"warn"</code> are accepted, and both raise a <code>Pandas4Warning</code>:</p>
+<pre><code>The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be
+disabled (it is always enabled with pandas >= 3.0), and setting the option ...</code></pre>
+<p>The option takes your value and does nothing with it. Config that accepts but ignores is the worst kind, because it sends your debugging in the wrong direction: you believe you turned CoW off.</p>
+<h2>Troubleshooting: four errors I reproduced</h2>
+<p>All four were reproduced locally on 3.1.0. The text below is verbatim.</p>
+<h3>Error one: assignment destination is read-only</h3>
+<p>Symptom: treating the result of <code>to_numpy()</code> as a writable buffer.</p>
+<pre><code>ValueError: assignment destination is read-only</code></pre>
+<p>Cause: under CoW the backing array of a pandas object is exposed read-only, so nobody can reach another object's data through it.</p>
+<p>Fix: <code>arr = s.to_numpy().copy()</code> when you need to write, and <code>.copy()</code> is the only correct move when handing an array to another library. Do not set <code>arr.flags.writeable = True</code>; I measured that it also mutates the original Series.</p>
+<h3>Error two: Invalid value '1' for dtype 'str'</h3>
+<p>Symptom: writing a number into a string column, or using a sentinel other than missing for gaps.</p>
+<pre><code>TypeError: Invalid value '1' for dtype 'str'. Value should be a string or
+missing value, got 'int' instead.</code></pre>
+<p>Cause: since 3.0 the string dtype accepts only strings and missing values.</p>
+<p>Fix: convert explicitly with <code>str(x)</code> before writing, or declare <code>dtype=object</code> at construction to keep the old behaviour, knowing that you give up the memory and speed benefit of the new dtype.</p>
+<h3>Error three: module 'pandas.errors' has no attribute 'SettingWithCopyWarning'</h3>
+<p>Symptom: legacy code containing <code>except pd.errors.SettingWithCopyWarning:</code> or a <code>hasattr</code> probe.</p>
+<pre><code>AttributeError: module 'pandas.errors' has no attribute 'SettingWithCopyWarning'</code></pre>
+<p>Cause: the warning class was removed along with the behaviour, on the stated grounds that it now consistently never works.</p>
+<p>Fix: delete the compatibility branch. If you genuinely support both 2.x and 3.x, branch on the version rather than <code>hasattr</code>, because <code>hasattr</code> returns True on 2.3.1, so one code path runs on both versions with two different meanings.</p>
+<h3>Error four: chained assignment warns instead of failing</h3>
+<p>Symptom: a batch job exits 0 and the data is unchanged.</p>
+<pre><code>ChainedAssignmentError: A value is being set on a copy of a DataFrame or Series
+through chained assignment. Such chained assignment never works to update ...</code></pre>
+<p>Cause: two indexing steps, where the first returns a copy.</p>
+<p>Fix: collapse them into one <code>loc</code>. I would also add <code>python -W error::pandas.errors.ChainedAssignmentError</code> to CI and make it a hard failure, since the statement can never work again; failing early beats failing silently.</p>
+<h2>Six: what this article does not cover</h2>
+<p>Boundaries, so that "I did not test it" is not read as "it does not exist":</p>
+<ul><li>No PyArrow-backed string dtype. There is no pyarrow on this machine, so 3.1.0 fell back to the NumPy object backend. Memory use and <code>.str</code> access speed will differ with pyarrow installed, and I have no data for that.</li><li>No IO layer. I did not run a single <code>read_csv</code> or <code>read_excel</code> case, so dtype inference changes at the reader level are outside this test.</li><li>No concurrency. Whether CoW reference counting adds overhead under threads or processes needs a separate experiment.</li><li>No 1.x to 3.x jump. The documented route goes through 2.3, and I only tested 2.3.1 to 3.1.0.</li><li>No <code>offsets.Day</code> semantics. I read the release note about <code>Day</code> moving from a fixed 24 hours to a calendar day, but did not measure it.</li></ul>
+<p>If your codebase carries a pile of <code>.copy()</code> calls, or a set of "select a column, then assign" blocks, run the command in section four first, then audit by hand the three places that never warn: <code>attrs</code>, constructor copying, and the <code>inplace</code> return value.</p>
+<p>This flavour of bug is not unique to pandas. When I wrote about <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">DuckDB 1.5's CSV sniffer</a> and <a href="https://yaohehe.github.io/2026-10-21-parquet-tested-default-dictionary-adds-15-to-the-f-en.html" class="internal-link">Parquet's default dictionary encoding</a>, the pattern was identical: the tool ships a default, the docs mention it, and nobody tells you it changes your results. The <a href="https://yaohehe.github.io/2026-10-28-json-vs-orjson-vs-msgspec-nine-defaults-tested-en.html" class="internal-link">nine defaults in json, orjson and msgspec</a> piece sits on the same shelf and reads well next to this one.</p>
+<p>No affiliate links and no commission relationship in this article. Every number comes from my own run on this machine or from the official documentation quoted above.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

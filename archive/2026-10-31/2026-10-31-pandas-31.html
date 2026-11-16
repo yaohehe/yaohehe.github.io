@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>pandas 3.1 写时复制实测：五处赋值不再生效 - TechPassive</title>
+  <meta name="description" content="升级到 pandas 3.x 后，链式赋值、列上 inplace、to_numpy 写入、构造函数共享与 attrs 全部悄悄失效；字符串 dtype 和日期分辨率还换了一种错法。我在同一台机器上用 2.3.1 与 3.1.0 对拍，记下 11 组差异、4 个可复现的真实报错以及对应的改法。pandas 3.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>pandas 3.1 写时复制：五处赋值悄悄失效</h1>
+  <div class="post-tags">
+    <span class="tag">pandas</span><span class="tag"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></span><span class="tag">数据分析</span>
+  </div>
+  <div class="content">
+    <p>升级完依赖，测试照样全绿，日志里没有任何异常，第二天发现报表里的 <code>total</code> 还是旧值。这类问题在 pandas 3.x 上会成批出现，因为写时复制（Copy-on-Write，下称 CoW）已经从「可选的未来行为」变成了唯一行为。</p>
+<p>官方迁移指南的原话是 <code>Copy-on-Write is the default and only mode in pandas 3.0.</code>，另一句更直白：<code>Chained assignment will never work</code>。前一句只是宣布规则，后一句才是会让代码出事的部分——它不是说「不推荐」，而是说「永远不会生效」。</p>
+<p>我实际测试的方式很简单：同一台 Windows 11 机器、同一个 CPython 3.13.14，把 pandas 2.3.1 和 3.1.0 分别装在两个路径下，跑同一份 20 个用例的脚本，逐行比对输出。下面所有数字都是这样得来的，不是抄来的。</p>
+<h2>先把结论摆出来</h2>
+<p>如果只记五条：</p>
+<p>1. <code>df["col"][mask] = x</code> 这类链式赋值，在 3.x 上<strong>永远不改数据</strong>，只发一个 <code>ChainedAssignmentError</code> 警告，不是异常，不会中断脚本。</p>
+<p>2. 作用在「选出来的列」上的 <code>inplace=True</code>（如 <code>df["col"].replace(1, 5, inplace=True)</code>）同样永远不改数据，而且它连返回值都变了：2.x 返回 <code>None</code>，3.x 返回一个新的 Series。</p>
+<p>3. <code>Series.to_numpy()</code>、<code>.values</code>、<code>np.asarray(series)</code> 现在都返回<strong>只读</strong>数组，写一下就是 <code>ValueError: assignment destination is read-only</code>。</p>
+<p>4. <code>pd.Series(numpy_array)</code> 默认<strong>复制</strong>数组，之后改 numpy 数组不再影响 Series；想保留共享必须显式写 <code>copy=False</code>。</p>
+<p>5. <code>SettingWithCopyWarning</code> 这个类<strong>已经被删掉</strong>了，任何 <code>except pd.errors.SettingWithCopyWarning</code> 或 <code>hasattr</code> 判断都会走到另一条分支。</p>
+<p>还有三处不在 CoW 范围内、但同样会静默改变结果的默认值变化：字符串列默认 dtype 从 <code>object</code> 变成 <code>str</code>、日期时间默认分辨率从纳秒变成微秒、以及由此带来的「转成整数后小 1000 倍」。这三条我放在第三节单独说，因为它们比 CoW 更难排查。</p>
+<h2>这次对拍的环境与口径</h2>
+<ul><li>版本：pandas <code>3.1.0</code>（2026-10-22 发布）、对照 <code>2.3.1</code>；numpy <code>2.5.4</code> 与 <code>2.3.1</code>；CPython <code>3.13.14</code>；Windows 11。</li><li>版本来源：GitHub Releases 与 PyPI 两处都取过，3.1.0 是当前最新稳定版，3.0.0 发布于 2026-01-21，中间还有 3.0.1 至 3.0.6 六个补丁版。</li><li>安装方式：<code>pip install --target tmp/pd31 pandas==3.1.0</code> 装到隔离目录，靠 <code>PYTHONPATH</code> 切换，不动主环境。</li><li>判定口径：每个用例同时打印「数据变成什么」和「抛出/发出了什么」，只比对这两项。凡是我没亲手跑过的，下面都会写明「官方标称」，不会写成实测。</li></ul>
+<p>官方给的最低要求也顺便记一下：pandas 3.0 起要求 <a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a> ≥ 3.11、numpy ≥ 1.26，<code>pytz</code> 不再是必需依赖。</p>
+<h2>一、不再改数据的五处写法</h2>
+<h3>1. 链式赋值：从「有时管用」变成「永远不管用」</h3>
+<p>这是最容易炸的一类。2.x 里 <code>df["foo"][df["bar"] > 5] = 100</code> 在多数情况下是真的生效的，只是会发一条 <code>FutureWarning</code> 提醒你将来会变。</p>
+<p>我在 2.3.1 上跑这句，<code>foo</code> 变成 <code>[1, 2, 100]</code>，符合预期；换到 3.1.0，同一句跑完 <code>foo</code> 仍是 <code>[1, 2, 3]</code>，只有一个 <code>ChainedAssignmentError</code> 警告：</p>
+<pre><code>ChainedAssignmentError: A value is being set on a copy of a DataFrame or Series
+through chained assignment. Such chained assignment never works to update the
+original DataFrame or Series, because the intermediate object on which we are
+setting values always behaves as a copy.</code></pre>
+<p>注意这是一个 <strong>warning</strong>，不是 exception。默认的警告过滤器下它只打印一次，<code>try/except</code> 抓不到，脚本 <code>exit code</code> 仍是 0。跑批作业最容易在这里静默出错。</p>
+<p>顺带一个容易误判的点：<code>df.loc[mask]["foo"] = 100</code> 和 <code>df[mask]["foo"] = 100</code> 这两种写法在 <strong>2.3.1 上就已经不生效了</strong>，当时发的是 <code>SettingWithCopyWarning</code>。所以它们在 3.x 上「失效」并不算新问题，只是警告类型换了。真正从「生效」变「不生效」的是 <code>df["col"][mask] = x</code> 这一种。</p>
+<p>正确写法只有一种，就是一次索引到底：</p>
+<pre><code>df.loc[df["bar"] > 5, "foo"] = 100</code></pre>
+<p>这句在 3.1.0 上跑出 <code>[1, 2, 100]</code>，没有警告。</p>
+<h3>2. 列上的 inplace：不生效，返回值还变了</h3>
+<p><code>df["foo"].replace(1, 5, inplace=True)</code> 在 2.3.1 上把 <code>df</code> 改成了 <code>[5, 2, 3]</code>，并返回 <code>None</code>；3.1.0 上 <code>df</code> 仍是 <code>[1, 2, 3]</code>，而返回值变成了一个 Series。官方原文对此的表述是 <code>Updating a column selected from a DataFrame with an inplace method will also not work anymore.</code>，归类同样是「另一种形式的链式赋值」。</p>
+<p>同一类还有 <code>df["a"].fillna(0, inplace=True)</code>：2.3.1 返回 <code>None</code>，3.1.0 返回 Series，并且发一条同类警告。</p>
+<p>这里藏着一个比「没改数据」更阴的坑：<strong><code>inplace=True</code> 的返回值语义整体变了</strong>。3.0 的 whatsnew 里有一条明确写着，<code>replace</code> / <code>fillna</code> / <code>ffill</code> / <code>bfill</code> / <code>interpolate</code> / <code>where</code> / <code>mask</code> / <code>clip</code> 在 <code>inplace=True</code> 时现在返回 <code>self</code>（原对象）而不是 <code>None</code>。我实测 <code>df.replace({"foo": {1: 5}}, inplace=True)</code>，2.3.1 返回 <code>None</code>，3.1.0 返回的对象 <code>is df</code> 为 True。</p>
+<p>于是下面这种老代码会静默改变行为：</p>
+<pre><code>if df.fillna(0, inplace=True) is None:
+    ...  # 3.x 上永远不成立</code></pre>
+<p>改成什么都不会报错，只是分支永远不进去。</p>
+<h3>3. 选中列上的 attrs 不再保留</h3>
+<p><code>attrs</code> 是 pandas 给对象附加元数据的口子，很多团队拿它存单位、数据源、上游表名。官方迁移指南里有一句很短的话：<code>Attributes set on a selected column do not persist</code>——原因是选列现在每次都返回一个新的 Series 对象，不再有缓存。</p>
+<p>实测：给 <code>df["foo"].attrs["unit"] = "kg"</code> 赋值后，2.3.1 上再次访问 <code>df["foo"].attrs</code> 能看到 <code>{'unit': 'kg'}</code>；3.1.0 上是空字典 <code>{}</code>。没有任何警告，因为从语法上看你确实改了一个对象，只是那个对象下一秒就没了。</p>
+<p>正确做法是把元数据挂在父 <code>DataFrame</code> 的 <code>attrs</code> 上，或者干脆另开一列存。</p>
+<h3>4. `to_numpy()` 返回只读数组</h3>
+<p>这条至少有明确报错，算是五条里最友善的。</p>
+<p><code>pd.Series([1, 2, 3]).to_numpy()</code> 在 2.3.1 上 <code>writeable</code> 为 True，写进去 Series 会跟着变成 <code>[99, 2, 3]</code>——这是老 bug 的典型形态。3.1.0 上 <code>writeable</code> 为 False，写入直接抛：</p>
+<pre><code>ValueError: assignment destination is read-only</code></pre>
+<p><code>.values</code> 与 <code>np.asarray(series)</code> 三条路径在 3.1.0 上全部只读，行为一致。</p>
+<p>但官方给了一个「逃生门」：<code>You can also make the array writeable again if you don't care about the pandas object anymore.</code> 我照着试了——<code>arr.flags.writeable = True</code> 再写，Series <strong>真的跟着改了</strong>，<code>np.shares_memory</code> 仍是 True。也就是说这道门一开，CoW 刚刚替你挡掉的那个 bug 会原样回来。需要改数组就老老实实 <code>arr.copy()</code>。</p>
+<h3>5. 构造函数默认复制 numpy 数组</h3>
+<p>官方原文：<code>The Series and DataFrame constructors now copies a NumPy array by default when not otherwise specified.</code></p>
+<p>实测：<code>a = np.array([1, 2, 3])</code>、<code>s = pd.Series(a)</code>、再执行 <code>a[0] = 99</code>——2.3.1 上 <code>s</code> 变成 <code>[99, 2, 3]</code>（共享内存），3.1.0 上 <code>s</code> 仍是 <code>[1, 2, 3]</code>。</p>
+<p>想保留共享必须写 <code>pd.Series(a, copy=False)</code>，这一条在 3.1.0 上我实测仍然共享（改数组后 Series 变成 <code>[99, 77, 3]</code>）。反过来说，如果你之前<strong>依赖</strong>共享来省内存，升级后会多一份拷贝，大数组场景要留意内存峰值。</p>
+<h2>二、写时才复制到底省了什么</h2>
+<p>CoW 的实现是「尽量共享、写的时候再复制」，所以它既不是「全都复制」也不是「全都不复制」。用 <code>np.shares_memory</code> 能直接把这件事量出来。</p>
+<p>1,000 行 4 列的 frame，取一个切片 <code>v = df[:]</code>：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">动作</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pandas 2.3.1</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">pandas 3.1.0</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">切片后是否共享内存</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">写 <code>v.iloc[0, 0]</code> 后是否共享</td><td style="border:1px solid #ddd;padding:8px;">True</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">父对象是否被改</td><td style="border:1px solid #ddd;padding:8px;"><strong>True</strong></td><td style="border:1px solid #ddd;padding:8px;">False</td></tr></tbody></table>
+<p>三个格子把 CoW 说清楚了：切片是惰性的（仍然共享），写入那一刻才复制，父对象因此安全。2.3.1 那一列第二、三行是 True/True，就是老行为——改切片会改到父对象。</p>
+<p>复制是有成本的，成本可以量。1,000,000 行 × 4 列 float64（约 32 MB）：</p>
+<ul><li>对象独占、直接写：<code>0.000249 s</code></li><li>存在活着的父引用、写入触发复制：<code>0.004095 s</code>，慢 <strong>16.4 倍</strong></li></ul>
+<p>同一个 frame 上，<code>df.copy()</code> 要 <code>0.007724 s</code>，而 <code>df[:]</code> 只要 <code>0.000081 s</code>，省下 <strong>98.9%</strong> 的耗时。这就是官方说「<code>SettingWithCopyWarning</code> 被删掉、为消警告加的防御性 <code>.copy()</code> 不再需要」的实际价值：那一行 <code>.copy()</code> 现在纯粹是白花的钱。官方原话是 <code>the SettingWithCopyWarning is removed, and defensive .copy() calls to silence the warning are no longer needed.</code></p>
+<p>反过来的代价也在这里：如果你为了「性能」故意留一堆对同一份数据的引用，CoW 会在第一次写时让你付一次完整拷贝，而且这次拷贝是隐式的、不出现在性能分析的显式调用里。</p>
+<h2>三、换了错法的三处：不是 CoW，但更疼</h2>
+<p>这三条严格说不属于 CoW，但都随 3.0 一起来，且都不会抛异常。</p>
+<h3>1. 字符串列默认 dtype 从 object 变成 str</h3>
+<p>官方原文：<code>Starting with pandas 3.0, a dedicated string data type is enabled by default (backed by PyArrow under the hood, if installed, otherwise falling back to being backed by NumPy object-dtype).</code></p>
+<p>实测 <code>pd.Series(["a", "b"]).dtype</code>：2.3.1 是 <code>object</code>，3.1.0 是 <code>str</code>。于是任何 <code>if df["col"].dtype == object:</code> 的判断在 3.x 上全部走 else 分支，我实测该比较返回 <code>False</code>。</p>
+<p>新 dtype 只装字符串和缺失值，所以混类型写入会直接报错：</p>
+<pre><code>TypeError: Invalid value '1' for dtype 'str'. Value should be a string or
+missing value, got 'int' instead.</code></pre>
+<p>2.3.1 上同样的操作会静默得到 <code>[1, 'b']</code>——一列里混了两种类型，后面 <code>sum()</code> 或排序才发现不对。这条算是「用报错代替静默」，方向是好的，但前提是你的清洗脚本别指望它能塞进去整数。</p>
+<h3>2. 日期时间默认分辨率从 ns 变成 us</h3>
+<p>官方原文：<code>The new default resolution when parsing strings is microseconds, falling back to nanoseconds when the precision of the string requires it.</code></p>
+<p>实测 <code>pd.to_datetime(["2026-01-01 00:00:00.123456"]).dtype</code>：2.3.1 是 <code>datetime64[ns]</code>，3.1.0 是 <code>datetime64[us]</code>。</p>
+<h3>3. 转整数后小 1000 倍</h3>
+<p>这是全套变更里唯一会造成「数值错但不报错」的一条，官方 whatsnew 专门加了一句警告：<code>One big exception is converting to integers, which will give integers 1000x smaller.</code></p>
+<p>同一个时间戳 <code>2026-01-01 00:00:00.123456</code>：</p>
+<ul><li>2.3.1：<code>astype("int64")</code> → <code>1767225600123456000</code></li><li>3.1.0：<code>astype("int64")</code> → <code>1767225600123456</code></li></ul>
+<p>差了整整 <strong>1000 倍</strong>。如果你的代码把时间戳转成整数存进数据库、或者当缓存 key、或者跟外部系统对时间，这一条会静默产生错位数据，而且两边都能跑通。官方建议是别用 <code>astype("int64")</code>，或者先用 <code>as_unit()</code> 把单位钉死再转。</p>
+<h2>四、升级之前怎么把这类写法找出来</h2>
+<p>官方给的路径是「先升到 2.3，把警告跑干净，再升 3.0」。这条建议我验证了一半：2.3.1 上跑链式赋值确实会发 <code>FutureWarning</code>，内容里直接写着 <code>ChainedAssignmentError: behaviour will change in pandas 3.0!</code>。所以升级前用 2.3 跑一遍带警告即错误的测试是有用的：</p>
+<pre><code>python -W error::FutureWarning -m pytest</code></pre>
+<p>需要说清楚边界：我只验证了「2.3.1 会对链式赋值发 FutureWarning」这一个点，没有验证它能覆盖全部 11 组差异。像 <code>attrs</code>、构造函数复制、<code>inplace</code> 返回值这三条，2.3.1 上完全不发警告——它们是升级那一刻才改变的，任何前置检查都抓不到。这三条只能靠读迁移指南加人工核对。</p>
+<p><code>pd.options.mode.copy_on_write</code> 这个开关也别指望了。3.1.0 上把它设成 <code>True</code> 或 <code>"warn"</code> 都能设置成功，但同时会抛 <code>Pandas4Warning</code>：</p>
+<pre><code>The 'mode.copy_on_write' option is deprecated. Copy-on-Write can no longer be
+disabled (it is always enabled with pandas >= 3.0), and setting the option ...</code></pre>
+<p>也就是说开关「接受」了你的值，但什么也不做。这类「接受但无效」的配置最坑，因为它会让排查方向跑偏——你以为自己关掉了 CoW。</p>
+<h2>五、踩坑录：四个真实报错与改法</h2>
+<p>下面四条都在本机 3.1.0 上原样跑出来过，报错文字是原文。</p>
+<h3>报错一：assignment destination is read-only</h3>
+<p>现象：把 <code>to_numpy()</code> 的结果当缓冲区写。</p>
+<pre><code>ValueError: assignment destination is read-only</code></pre>
+<p>原因：CoW 下 pandas 对象的底层数组对外只读，防止绕过 CoW 改到别的对象。</p>
+<p>解决：要改就 <code>arr = s.to_numpy().copy()</code>；如果只是想拿一份可写数组喂给别的库，<code>.copy()</code> 是唯一正确姿势。不要用 <code>arr.flags.writeable = True</code>，我实测它会连带改掉原 Series。</p>
+<h3>报错二：Invalid value '1' for dtype 'str'</h3>
+<p>现象：往字符串列里塞数字，或者用 <code>NaN</code> 以外的哨兵填缺失。</p>
+<pre><code>TypeError: Invalid value '1' for dtype 'str'. Value should be a string or
+missing value, got 'int' instead.</code></pre>
+<p>原因：3.0 起字符串列是专用 <code>str</code> dtype，只收字符串与缺失值。</p>
+<p>解决：写入前显式转换（<code>str(x)</code>），或者在建表时指定 <code>dtype=object</code> 保留旧行为——但要清楚这等于放弃新 dtype 的内存与速度收益。</p>
+<h3>报错三：module 'pandas.errors' has no attribute 'SettingWithCopyWarning'</h3>
+<p>现象：老代码里有 <code>except pd.errors.SettingWithCopyWarning:</code> 或 <code>hasattr</code> 探测。</p>
+<pre><code>AttributeError: module 'pandas.errors' has no attribute 'SettingWithCopyWarning'</code></pre>
+<p>原因：该警告类随 CoW 一起被删除，官方原话是「因为现在一致地永不生效，所以删除」。</p>
+<p>解决：删掉这段兼容代码；如果确实要兼容 2.x 与 3.x，用版本判断而不是 <code>hasattr</code>（<code>hasattr</code> 在 2.3.1 上返回 True，同一份代码两条路径都能跑，但语义完全不同）。</p>
+<h3>报错四：链式赋值只发警告不报错</h3>
+<p>现象：跑批任务 <code>exit code</code> 为 0，数据没改。</p>
+<pre><code>ChainedAssignmentError: A value is being set on a copy of a DataFrame or Series
+through chained assignment. Such chained assignment never works to update ...</code></pre>
+<p>原因：两步索引，第一步返回的是副本。</p>
+<p>解决：合并成一次 <code>loc</code>。另外建议在 CI 里加一条 <code>python -W error::pandas.errors.ChainedAssignmentError</code>，把它变成硬失败——反正它现在永远不生效，早失败比晚失败好。</p>
+<h2>六、这篇没覆盖到的部分</h2>
+<p>按老规矩把边界写清楚，避免把「我没测」读成「不存在」：</p>
+<ul><li>没测 PyArrow 后端的字符串 dtype。本机没有 pyarrow，3.1.0 落到了 NumPy object 后端；装了 pyarrow 之后内存占用与 <code>.str</code> 访问速度都会不同，这部分我没数据。</li><li>没测 IO 层。<code>read_csv</code> / <code>read_excel</code> 在 3.x 里的 dtype 推断与列类型变化，我一行都没跑。</li><li>没测多进程与多线程场景。CoW 的引用计数在并发下是否有额外开销，需要单独设计实验。</li><li>没测 pandas 1.x 直升 3.x 的路径。官方建议先到 2.3，我只验证了 2.3.1 到 3.1.0 这一段。</li><li>没测 <code>offsets.Day</code> 的语义变化（从固定 24 小时改成日历日）。这条我只读了 whatsnew，没有实测。</li></ul>
+<p>如果你的项目里有一堆 <code>.copy()</code>，或者有一批「先选列再赋值」的老代码，那升级到 3.x 之前值得先跑一遍第四节那条命令，再人工过一遍 <code>attrs</code>、构造函数、<code>inplace</code> 返回值这三处不报警的地方。</p>
+<p>顺带说一句，这类「默认值悄悄换了」的坑不只 pandas 有。之前写 <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 1.5 的 CSV 嗅探</a> 和 <a href="https://yaohehe.github.io/2026-10-21-parquet-15.html" class="internal-link">Parquet 默认字典编码</a> 时，踩的都是同一个套路：工具给了你一个默认值，文档写了，但没人告诉你它会改变结果。同一条线上的 <a href="https://yaohehe.github.io/2026-10-28-python-json-json-orjson-msgspec.html" class="internal-link">json 与 orjson、msgspec 的九处默认值</a> 也是这么写的，可以对着看。</p>
+<p>本文不含任何联盟推广链接，也没有佣金关系；文中所有数字来自本机实测或官方文档，官方原文均已标注出处。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

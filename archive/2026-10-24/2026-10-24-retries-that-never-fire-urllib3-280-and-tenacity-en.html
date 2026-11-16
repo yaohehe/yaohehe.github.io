@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Retries That Never Fire: urllib3 2.8.0 and tenacity - TechPassive</title>
+  <meta name="description" content="A counting server on localhost: urllib3's allowlist, status_forcelist, backoff_factor, requests' default adapter, tenacity's reraise. Six errors, all measured.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Retries That Never Fire: urllib3 2.8.0 and tenacity 9.2.1</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python</a></span><span class="tag">requests</span><span class="tag">Retry</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: Every number in this article was measured on my own machine. I stood up an HTTP server on 127.0.0.1 that counts how many requests it receives, then changed one setting at a time and read the counter. The short version: <strong>plain <code>requests</code> never retries</strong>, even once. Configuring <code>Retry(3)</code> does not mean it will retry. Even when it does retry, <code>backoff_factor</code> defaults to 0, so four requests go out within a few milliseconds. And tenacity, one layer up, silently replaces your original exception with <code>RetryError</code>, which means <code>except ValueError</code> never fires. Configure both layers and the retry counts <strong>multiply</strong>.</p>
+<h2>Environment and how to reproduce it</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Component</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Source</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="/2026-10-23-python-logging-6.html" class="internal-link">Python</a></td><td style="border:1px solid #ddd;padding:8px;">3.13.14</td><td style="border:1px solid #ddd;padding:8px;">local <code>sys.version</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">requests</td><td style="border:1px solid #ddd;padding:8px;">2.34.2</td><td style="border:1px solid #ddd;padding:8px;">PyPI upload 2026-05-14</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">urllib3</td><td style="border:1px solid #ddd;padding:8px;">2.8.0</td><td style="border:1px solid #ddd;padding:8px;">PyPI upload 2026-09-15</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">tenacity</td><td style="border:1px solid #ddd;padding:8px;">9.2.1</td><td style="border:1px solid #ddd;padding:8px;">PyPI upload 2026-10-07</td></tr></tbody></table>
+<p>Pin them first, so "works on my version" is not a variable:</p>
+<pre><code>python -m pip install "requests==2.34.2" "urllib3==2.8.0" "tenacity==9.2.1"
+python - <<'PY'
+import sys, requests, urllib3, importlib.metadata as md
+print(sys.version.split()[0], requests.__version__, urllib3.__version__, md.version('tenacity'))
+PY</code></pre>
+<p>Every "the server saw N requests" figure below comes from this minimal server. It increments a counter on each business request and exposes <code>/__count</code> so you can read it at any time.</p>
+<pre><code>import json, threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+STATE = {'count': 0, 'status': 503, 'retry_after': None}
+
+class H(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    def log_message(self, *a): pass
+    def _send(self, code, body=b'{}'):
+        self.send_response(code)
+        if STATE['retry_after'] is not None:
+            self.send_header('Retry-After', str(STATE['retry_after']))
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers(); self.wfile.write(body)
+    def do_GET(self):
+        if self.path == '/__count':
+            self._send(200, json.dumps({'count': STATE['count']}).encode()); return
+        STATE['count'] += 1
+        self._send(STATE['status'])
+    do_POST = do_GET
+
+class Quiet(ThreadingHTTPServer):
+    def handle_error(self, *a): pass   # hang-up scenarios spam tracebacks
+
+srv = Quiet(('127.0.0.1', 0), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+print('http://127.0.0.1:%d' % srv.server_address[1])</code></pre>
+<h2>Layer 1: urllib3 2.8.0 — four switches, four different jobs</h2>
+<p>Almost every "I configured retries and nothing happened" report comes from this layer. <code>Retry</code> is not a single "try three times" knob. It is four independent conditions, and failing any one of them means no retry at all.</p>
+<h3>Switch 1: the method allowlist — POST is never retried by default</h3>
+<p>The default allowlist is right there in the source:</p>
+<pre><code>from urllib3.util.retry import Retry
+print(Retry.DEFAULT_ALLOWED_METHODS)
+# frozenset({'DELETE', 'GET', 'HEAD', 'OPTIONS', 'PUT', 'TRACE'})</code></pre>
+<p>The official <code>urllib3.util.Retry</code> reference says of <code>allowed_methods</code>: "By default, we only retry on methods which are considered to be idempotent." <strong>POST is not in that set.</strong></p>
+<p>Measured, same <code>Retry</code> object, only the HTTP method changes:</p>
+<pre><code>from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+import requests
+
+def sess(retry):
+    s = requests.Session()
+    s.mount('http://', HTTPAdapter(max_retries=retry))
+    return s
+
+r = Retry(total=3, status_forcelist=[503], backoff_factor=0)
+sess(r).get(BASE + '/api')    # server counter = 4, raises RetryError
+sess(r).post(BASE + '/api')   # server counter = 1, quietly returns <Response [503]></code></pre>
+<p>One line of configuration: GET goes out 4 times, POST goes out once, and the POST call <strong>raises nothing</strong>. If you assumed "I configured retries, so my write endpoint is safe," this is the hole. The write went out, the server answered 503, and your code received what looks like a perfectly normal <code>Response</code>.</p>
+<p>To open it up, declare <code>allowed_methods=None</code> explicitly (the docs say "Set to a None value to retry on any verb"). Measured: POST then also goes out 4 times. But that pulls non-idempotent requests into retry territory, so confirm the endpoint really is idempotent first.</p>
+<h3>Switch 2: status_forcelist — without it, only 429/503/413 with a Retry-After header</h3>
+<p><code>Retry.is_retry()</code> has exactly two paths:</p>
+<pre><code>def is_retry(self, method, status_code, has_retry_after=False):
+    if not self._is_method_retryable(method):
+        return False
+    if self.status_forcelist and status_code in self.status_forcelist:
+        return True
+    return bool(self.total and self.respect_retry_after_header
+                and has_retry_after
+                and (status_code in self.RETRY_AFTER_STATUS_CODES))</code></pre>
+<p>And <code>Retry.RETRY_AFTER_STATUS_CODES = frozenset({413, 429, 503})</code>. So "not setting <code>status_forcelist</code>" really means: <strong>only 429, 503 and 413 get retried, and only when the response carries a <code>Retry-After</code> header.</strong></p>
+<p>Three runs, identical config (<code>Retry(total=3, backoff_factor=0)</code>), only the server response changes:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Server response</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Server count</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Elapsed</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Outcome</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">503 with <code>Retry-After: 1</code></td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">3.009 s</td><td style="border:1px solid #ddd;padding:8px;">retried 3 times, 1 s each per the header, then returned 503</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">503, no <code>Retry-After</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.003 s</td><td style="border:1px solid #ddd;padding:8px;">returned after a single try</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">500 with <code>Retry-After: 1</code></td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.002 s</td><td style="border:1px solid #ddd;padding:8px;">returned after a single try (500 is not one of the three)</td></tr></tbody></table>
+<p>Rows two and three are the ones that bite. 500, 502 and 504 — the most common server-side failures — <strong>are not retried under the default configuration</strong>, no matter how loudly your logs insist you set <code>total=3</code>.</p>
+<h3>Switch 3: backoff_factor defaults to 0 — retrying with zero backoff</h3>
+<p><code>Retry.__init__</code> declares <code>backoff_factor: float = 0</code>, and the docs are blunt about it: "By default, backoff is disabled (factor set to 0)."</p>
+<p>The formula lives in <code>get_backoff_time()</code>, and note the short-circuit that skips the first two waits:</p>
+<pre><code>if consecutive_errors_len <= 1:
+    return 0
+backoff_value = self.backoff_factor * (2 ** (consecutive_errors_len - 1))
+if self.backoff_jitter != 0.0:
+    backoff_value += random.random() * self.backoff_jitter
+return float(max(0, min(self.backoff_max, backoff_value)))</code></pre>
+<p>Measured with <code>backoff_factor=0.1</code>, the wait <strong>before</strong> retries 1 through 4:</p>
+<pre><code>r = Retry(total=10, status_forcelist=[503], backoff_factor=0.1)
+for i in range(1, 5):
+    r = r.increment(method='GET', url='/api')
+    print(round(r.get_backoff_time(), 4))
+# 0  0.2  0.4  0.8      <- matches the docs' example [0.0s, 0.2s, 0.4s, 0.8s]</code></pre>
+<p>Set the factor to 0, the default, and all four numbers are 0. A real run at <code>backoff_factor=0.2</code>: 4 requests, 1.208 s wall clock (0 + 0.4 + 0.8). At the default it is 0.005 s for all four.</p>
+<p><code>backoff_max</code> defaults to 120 seconds and clips anything above it. Measured with <code>backoff_factor=10</code>: <code>[0, 0, 20, 40, 80, 120, 120, 120, ...]</code>.</p>
+<h3>Switch 4: requests' default adapter is `Retry(0, read=False)`</h3>
+<p>This is the cut furthest upstream. From <code>requests/adapters.py</code>:</p>
+<pre><code>if max_retries == DEFAULT_RETRIES:
+    self.max_retries = Retry(0, read=False)
+else:
+    self.max_retries = Retry.from_int(max_retries)</code></pre>
+<p>So unless you pass <code>max_retries</code> explicitly, what you get is <code>Retry(0, read=False)</code>. The official requests API documentation says the same thing in prose: "By default, Requests does not retry failed connections."</p>
+<p>Two measurements:</p>
+<ul><li>Server accepts the connection and hangs up immediately (a read error): the default session connects <strong>once</strong> and raises <code>ConnectionError</code>. With <code>Retry(total=3)</code> it connects <strong>4 times</strong>.</li><li>Top-level <code>requests.get(...)</code> does not use an adapter you mounted on some other session — it builds a fresh session every call. Measured on the same URL: the session version fires 4 requests and raises <code>RetryError</code>; <code>requests.get</code> fires 1 and quietly returns 503.</li></ul>
+<pre><code>s = requests.Session()
+s.mount('http://', HTTPAdapter(max_retries=Retry(total=3, status_forcelist=[503])))
+s.get(BASE + '/api')          # 4 requests, RetryError
+requests.get(BASE + '/api')   # 1 request, returns 503 (top-level API uses the default adapter)</code></pre>
+<h2>Layer 2: tenacity 9.2.1 — three defaults that change your meaning</h2>
+<h3>reraise=False: your `except ValueError` can never fire</h3>
+<p>The official tenacity docs put it like this: "Normally when your function fails its final time ... a RetryError is raised. The exception your code encountered will be shown somewhere in the middle of the stack trace." The default is <code>reraise=False</code>.</p>
+<p>Measured:</p>
+<pre><code>import tenacity as T
+
+@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0))
+def boom():
+    raise ValueError('the original error')
+
+try:
+    boom()
+except ValueError:
+    print('caught it')        # never runs
+except Exception as e:
+    print(type(e).__name__)   # RetryError
+    print(str(e)[:80])
+    # RetryError[<Future at 0x... state=finished raised ValueError>]</code></pre>
+<p>Three calls, as configured. But what propagates is <code>RetryError</code>, and <code>isinstance(e, ValueError)</code> is <code>False</code>. Add <code>reraise=True</code> and <code>ValueError</code> comes out intact.</p>
+<p>What makes this one expensive is that it never raises a flag. The retry logic looks like it works; your error-handling branch just becomes dead code.</p>
+<h3>A bare @retry: infinite retries with zero wait</h3>
+<pre><code>import tenacity as T
+r = T.Retrying()
+print(r.stop, r.wait, r.retry)
+# <tenacity.stop._stop_never> <tenacity.wait.wait_none> <tenacity.retry.retry_if_exception_type></code></pre>
+<p>The docs describe a bare <code>@retry</code> as: "The default behavior is to retry forever without waiting when an exception is raised."</p>
+<p>I ran it on a background thread for 3 seconds and counted <strong>115,689 calls</strong>, at zero interval. That is not a retry policy; it is a self-inflicted load test against your own downstream. Every bare <code>@retry</code> needs at least a <code>stop=</code>.</p>
+<h3>wait_exponential's default max is effectively no max at all</h3>
+<p><code>wait_exponential.__init__</code> is <code>(multiplier=1, max=_utils.MAX_WAIT, exp_base=2, min=0)</code>, and <code>tenacity._utils.MAX_WAIT = 4.611686018427388e+18</code> seconds.</p>
+<pre><code>w = T.wait_exponential(multiplier=1)
+print([round(w(St(i)), 3) for i in range(1, 21)])
+# [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096, 8192,
+#  16384, 32768, 65536, 131072, 262144, 524288]</code></pre>
+<p>Retry number 20 waits <strong>524288 seconds, which is 6.07 days</strong>. Add <code>max=10</code> and it becomes <code>[1, 2, 4, 8, 10.0, 10.0, 10.0]</code>.</p>
+<p>Its own docstring draws the boundary too: "The intervals are fixed (i.e. there is no jitter), so this strategy is suitable for balancing retries against latency ... but *not* suitable for resolving contention between multiple processes for a shared resource. Use <code>wait_random_exponential</code> for the latter case." In other words, <strong>plain exponential backoff synchronises every client onto the same retry instants</strong>. You need <code>wait_random_exponential</code> to get jitter.</p>
+<h3>The pipe operator is OR, the ampersand is AND</h3>
+<p>In the source, <code>stop_base.__or__</code> returns <code>stop_any</code> and <code>__and__</code> returns <code>stop_all</code>:</p>
+<pre><code>def __or__(self, other): return stop_any(self, other)   # any(...)
+def __and__(self, other): return stop_all(self, other)  # all(...)</code></pre>
+<p>The docs' own example, <code>stop_after_delay(10) | stop_after_attempt(5)</code>, is annotated "Stopping after 10 seconds or 5 retries" — whichever comes first. Measured with <code>stop_after_attempt(5)</code> and <code>stop_after_delay(0.3)</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Combination</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">At attempt 3 (0.3 s elapsed)</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">At attempt 5 (0.5 s elapsed)</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">pipe, OR (<code>stop_any</code>)</td><td style="border:1px solid #ddd;padding:8px;">True, stop</td><td style="border:1px solid #ddd;padding:8px;">True, stop</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ampersand, AND (<code>stop_all</code>)</td><td style="border:1px solid #ddd;padding:8px;">False, keep going</td><td style="border:1px solid #ddd;padding:8px;">True, stop</td></tr></tbody></table>
+<p>Think twice before writing the ampersand: it means both conditions must hold before stopping, so the real attempt count can run well past the number you wrote.</p>
+<h2>Stacking both layers: retry counts multiply</h2>
+<p>Wrap tenacity around requests, <code>stop=stop_after_attempt(3)</code> outside, <code>Retry(total=3, status_forcelist=[503], backoff_factor=0)</code> inside:</p>
+<pre><code>sess = requests.Session()
+sess.mount('http://', HTTPAdapter(max_retries=Retry(total=3, status_forcelist=[503], backoff_factor=0)))
+
+@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0), reraise=True)
+def nested():
+    return sess.get(BASE + '/api', timeout=2)</code></pre>
+<p>Measured: tenacity calls the function <strong>3 times</strong>; the server receives <strong>12</strong> HTTP requests. <code>3 x (1 + 3) = 12</code>.</p>
+<p>Both numbers in your code are 3. What actually goes out is 12. Multiply by N concurrent clients doing the same thing and you have the arithmetic behind a retry storm. <strong>Keep one retry layer per call path</strong>; delete the other or set it to 0 explicitly.</p>
+<h2>Troubleshooting: six real errors and their fixes</h2>
+<h3>Error 1: `requests.exceptions.RetryError: ... Max retries exceeded with url: /api (Caused by ResponseError('too many 503 error responses'))`</h3>
+<ul><li><strong>Symptom</strong>: after adding <code>status_forcelist=[503]</code>, four requests go out within milliseconds and then <code>RetryError</code> is raised.</li><li><strong>Cause</strong>: this is retries <strong>working</strong>, not failing. The actual defect is the speed — <code>backoff_factor</code> defaults to 0, so all four requests land in 0.005 s.</li><li><strong>Fix</strong>: add backoff, and add an overall cap.</li></ul>
+<pre><code>Retry(total=3, status_forcelist=[500, 502, 503, 504],
+      backoff_factor=0.5, backoff_max=8,
+      allowed_methods=frozenset(['GET', 'POST']))   # POST must be named explicitly</code></pre>
+<h3>Error 2: `requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))`</h3>
+<ul><li><strong>Symptom</strong>: the server hangs up on you and the client fails on the first try, with no retry at all.</li><li><strong>Cause</strong>: the default adapter is <code>Retry(0, read=False)</code>. <code>read=False</code> makes read errors re-raise immediately; they never enter the retry path.</li><li><strong>Fix</strong>: mount an adapter explicitly. Measured: switching to <code>Retry(total=3)</code> took the connection count from 1 to 4.</li></ul>
+<pre><code>s = requests.Session()
+s.mount('http://', HTTPAdapter(max_retries=Retry(total=3)))
+s.mount('https://', HTTPAdapter(max_retries=Retry(total=3)))</code></pre>
+<p>And the one-line check that tells you what you actually have:</p>
+<pre><code>print(requests.Session().get_adapter('https://x/').max_retries)
+# Retry(total=0, connect=None, read=False, redirect=None, status=None)</code></pre>
+<h3>Error 3: `requests.exceptions.JSONDecodeError: Expecting value: line 1 column 1 (char 0)`</h3>
+<ul><li><strong>Symptom</strong>: <code>r.json()</code> blows up with a completely unrelated message and sends the investigation sideways.</li><li><strong>Cause</strong>: the upstream returned an HTML 503 page. Under the default configuration a 503 is not retried, so requests hands it back as an ordinary response and <code>.json()</code> is where it finally breaks.</li><li><strong>Fix</strong>: do both — add 5xx to <code>status_forcelist</code>, and check the status code in your own code.</li></ul>
+<pre><code>r = sess.get(url, timeout=5)
+if r.status_code >= 500:          # do not wait for .json() to tell you
+    raise RuntimeError(f'upstream 5xx: {r.status_code}')
+data = r.json()</code></pre>
+<h3>Error 4: `tenacity.RetryError[<Future at 0x... state=finished raised ValueError>]`</h3>
+<ul><li><strong>Symptom</strong>: the function really did retry three times, but the <code>except ValueError</code> branch never runs and the log holds nothing but a <code>RetryError</code>.</li><li><strong>Cause</strong>: <code>reraise=False</code> by default. tenacity wraps the final attempt in <code>RetryError</code> — the source builds <code>retry_exc = self.retry_error_cls(fut)</code> and only calls <code>retry_exc.reraise()</code> when <code>self.reraise</code> is true.</li><li><strong>Fix</strong>: <code>reraise=True</code>. Measured: with it, <code>ValueError</code> propagates as itself.</li></ul>
+<pre><code>@T.retry(stop=T.stop_after_attempt(3), wait=T.wait_fixed(0), reraise=True)
+def boom(): ...</code></pre>
+<h3>Error 5: `requests.exceptions.InvalidHeader: Invalid Retry-After header: soon-ish`</h3>
+<ul><li><strong>Symptom</strong>: upstream sends a non-standard <code>Retry-After</code> (neither integer seconds nor a valid HTTP date) and the call raises <code>InvalidHeader</code> without a single retry.</li><li><strong>Cause</strong>: <code>Retry.parse_retry_after()</code> first matches <code>^\s<em>[0-9]+\s</em>$</code>; if that fails it hands the value to <code>email.utils.parsedate_tz</code>, and if that fails too it does <code>raise InvalidHeader</code>. That is correct per spec — but it knocks out the retry you were counting on.</li><li><strong>Fix</strong>: stop deferring to <code>Retry-After</code> and use your own backoff.</li></ul>
+<pre><code>Retry(total=3, status_forcelist=[429, 503], respect_retry_after_header=False,
+      backoff_factor=0.5, backoff_max=8)</code></pre>
+<p>Worth knowing: <code>Retry-After</code> is capped. <code>DEFAULT_RETRY_AFTER_MAX = 21600</code> (six hours), and the source does <code>if seconds > self.retry_after_max: seconds = self.retry_after_max</code>. An absurd upstream value will not put you to sleep forever, but six hours is still six hours.</p>
+<h3>Error 6: the program just hangs — wait_exponential with no max</h3>
+<ul><li><strong>Symptom</strong>: retry logic appears to freeze. CPU idle, logs stop.</li><li><strong>Cause</strong>: <code>wait_exponential(multiplier=1)</code> defaults <code>max</code> to 4.61e18 seconds, which is no cap at all. Measured: retry 20 waits 524288 seconds (6.07 days).</li><li><strong>Fix</strong>: always pass <code>max</code> explicitly, and add <code>stop_after_delay</code> as a backstop.</li></ul>
+<pre><code>@T.retry(wait=T.wait_exponential(multiplier=1, max=10),
+         stop=(T.stop_after_attempt(5) | T.stop_after_delay(30)),   # note: OR
+         reraise=True)
+def call(): ...</code></pre>
+<h2>A configuration you can copy</h2>
+<pre><code>import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+import tenacity as T
+
+# Transport layer: decides whether THIS connection or THIS response gets another go
+RETRY = Retry(
+    total=3,
+    connect=3,
+    read=2,
+    status=3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=frozenset(['GET', 'POST']),   # POST must be named explicitly
+    backoff_factor=0.5,
+    backoff_max=8,
+    backoff_jitter=0.3,                            # spread the retry instants
+    respect_retry_after_header=True,
+    raise_on_status=False,                         # return the response; let the caller judge
+)
+
+session = requests.Session()
+session.mount('http://', HTTPAdapter(max_retries=RETRY, pool_maxsize=20))
+session.mount('https://', HTTPAdapter(max_retries=RETRY, pool_maxsize=20))
+
+# Application layer: decides whether the WHOLE operation runs again. Needs stop and max.
+@T.retry(
+    wait=T.wait_random_exponential(multiplier=1, max=10),   # exponential, with jitter
+    stop=(T.stop_after_attempt(3) | T.stop_after_delay(30)),
+    retry=T.retry_if_exception_type((requests.Timeout, requests.ConnectionError)),
+    reraise=True,
+)
+def fetch(url):
+    r = session.get(url, timeout=(3.0, 10.0))
+    if r.status_code >= 500:
+        raise requests.HTTPError(f'upstream 5xx: {r.status_code}', response=r)
+    return r.json()</code></pre>
+<p>The split is deliberate. The transport layer owns the single request; the application layer owns the whole operation, and it retries only <strong>transient</strong> failures — timeouts and connection errors. Business-level 5xx is raised so the caller can decide. Retry both layers indiscriminately, as I measured, and you get 12 requests.</p>
+<h2>A four-step checklist</h2>
+<p>1. <strong>Look at the Retry object you actually have</strong>: <code>Session().get_adapter(url).max_retries</code>. The default reads <code>Retry(total=0, connect=None, read=False, ...)</code>, which means no retries.</p>
+<p>2. <strong>Check whether the method is on the allowlist</strong>: POST is not there by default, so either name it in <code>allowed_methods</code> or set <code>allowed_methods=None</code>.</p>
+<p>3. <strong>Check whether <code>status_forcelist</code> is set at all</strong>: without it, only 429/503/413 carrying a <code>Retry-After</code> header are retried.</p>
+<p>4. <strong>Check whether <code>backoff_factor</code> is 0</strong>: if it is, you have retry with zero backoff, which amplifies load instead of spreading it.</p>
+<h2>FAQ</h2>
+<p><strong>Q: I set <code>max_retries=3</code> and the server still only saw one request. Why?</strong></p>
+<p>A: Three candidates, most likely first: the method is POST, which is not on the default allowlist; the status code is not in <code>status_forcelist</code> and there is no <code>Retry-After</code> header; or you called top-level <code>requests.get()</code> instead of a session with an adapter mounted. All three measured as "one request, no exception."</p>
+<p><strong>Q: Does <code>total=3</code> mean 3 requests or 4?</strong></p>
+<p>A: 4. <code>total</code> counts <strong>retries</strong>, not attempts; the first try is not included. Measured server count: 4.</p>
+<p><strong>Q: Can I keep only one of the two retry layers?</strong></p>
+<p>A: You should. Keep the transport layer and you cover connections and status codes, but not "the whole operation failed." Keep the application layer and the semantics are explicit and controllable, though each retry rebuilds the request. <strong>Retry both indiscriminately and it is 3 x 4 = 12 requests, measured.</strong></p>
+<p><strong>Q: When does <code>stop_after_delay</code> start counting?</strong></p>
+<p>A: From the moment the <code>Retrying</code> object calls <code>begin()</code>, and it includes the time spent waiting between retries. It shares one budget with <code>wait</code> — which is exactly why combining <code>stop_after_attempt</code> and <code>stop_after_delay</code> with a pipe makes sense.</p>
+<p><strong>Q: Do retries actually raise my success rate?</strong></p>
+<p>A: Only for transient failures. Against sustained 5xx, exhausted quota, or bad arguments, retries just multiply the same failure by N and hold your connection pool hostage. The test is simple: will this error still be there in 200 milliseconds?</p>
+<h2>Related reading</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-23-python-logging-tested-6-real-errors-and-lost-recor-en.html" class="internal-link">Python logging, tested: lost records, duplicate output and 6 real errors</a> — whether the log lines your retries emit actually reach disk is a separate failure surface.</li><li><a href="https://yaohehe.github.io/2026-10-21-pep-440-pinning-digits-after-and-a-false-pip-claim-en.html" class="internal-link">PEP 440 pinning: one digit after the tilde, and a false claim from pip</a> — the same "the default is not what you assumed" thread, one layer down in dependency resolution.</li><li><a href="https://yaohehe.github.io/2026-10-10-n8n-task-runner-architecture-external-and-queue-mo-en.html" class="internal-link">n8n Task Runner: external and queue modes, five real error root causes</a> — timeouts and retries in another shape, inside a self-hosted service.</li></ul>
+<p>Every figure here was measured locally (Python 3.13.14 / requests 2.34.2 / urllib3 2.8.0 / tenacity 9.2.1) against a counting server on the loopback address. No third-party production endpoint was involved, and this page carries no affiliate links. Source excerpts come from the packages installed on this machine; the documentation positions come from the requests API reference, the <code>urllib3.util.Retry</code> reference page, and the official tenacity documentation, fetched 2026-10-24. Behaviour changes between versions, so re-run the counting script above in your own environment before relying on any of it.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

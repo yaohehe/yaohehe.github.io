@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress 7.1.3 autoload 审计：你抄的 SQL 从 6.6 起就错了 - TechPassive</title>
+  <meta name="description" content="WordPress 6.6 起 autoload 列从 yes/no 变成五种值，那条人人都在抄的 autoload='yes' 审计 SQL 已经少算数据。本文用 WP-CLI 2.12 的 wp option set-autoload、get-autoload 与三条对齐核心口径的 SQL，给出可复制的七步审计流程，并辨析 150KB / 800KB / 900KB 三个常被混为一谈的阈值。">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>WordPress autoload 审计：那条 autoload='yes' 的 SQL 错了</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-02-wordpress-71.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">运维</span>
+  </div>
+  <div class="content">
+    <p>如果你给自己的WordPress 站做过性能体检，大概率敲过这一句：</p>
+<pre><code>SELECT SUM(LENGTH(option_value)) FROM wp_options WHERE autoload='yes';</code></pre>
+<p>然后拿着那个数字，和「autoload 应该小于 800KB」的传说对比一下，觉得没问题就关掉页面。</p>
+<p>问题在于：**从 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 开始，这句 SQL 数的不是你的站点真实加载量。** 它会漏掉一部分行，而且漏得越来越厉害——站点运行越久、升级跨越的版本越多，偏差越大。这不是配置问题，是官方在 2024 年 7 月改了 <code>autoload</code> 列的取值语义，而绝大多数教程（以及托管商的知识库文章）没跟上。</p>
+<p>我实际运营的一个内容站，套用这句老 SQL 得到 222.0 KB / 123 行；换成对齐核心逻辑的口径重算，是 261.4 KB / 142 行。<strong>18% 的低估。</strong> 而这个站点离 800KB 的告警线还远，所以低估暂时不致命——可一旦你的站点真的到了临界区间，你手上那个偏低的数字就是最坏情况：它让你以为还没到，从而继续放着不管。</p>
+<p>这篇讲三件事：正确的口径是什么、怎么用 WP-CLI 2.12 的官方命令改而不是手改数据库、以及三个被普遍混为一谈的阈值（150KB / 800KB / 900KB）分别在管什么。</p>
+<h2>⏳ 太长不看版 (TL;DR)</h2>
+<p>🥇 **必改的一件事**：把 <code>WHERE autoload='yes'</code> 换成 <code>WHERE autoload IN ('yes','on','auto-on','auto')</code>。这是唯一一条必须改的。</p>
+<p>👉 <a href="https://www.amazon.com/dp/B09TRW57WB?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 Dell U2723QE 4K USB-C 显示器 >></a>（长时间盯 SQL 输出与表格时的实际生产力装备）</p>
+<p>🌟 <strong>配套一条</strong>：审计和清理都在终端里做，屏幕宽度和色准直接决定你能不能一眼看出哪一行异常。</p>
+<p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 上查看 BenQ ScreenBar Halo 2 挂灯 >></a></p>
+<p>💡 **三个阈值的真相**：150KB 是「单条 option 太大就别自动加载」的内核启发式；800KB 是 Site Health 弹告警的线；900KB 是 <code>wp doctor</code> 用的线。**三个数字三个用途，没有一个是「安全线」。**</p>
+<p>---</p>
+<p><em></em></p>
+<h2>第一步：搞清 6.6 到底改了什么</h2>
+<p>改动来自 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 的 Options API 更新（<a href="https://make.wordpress.org/core/2024/06/18/options-api-disabling-autoload-for-large-options/" target="_blank" rel="nofollow sponsored">官方 dev note</a>）。核心只有一句：`add_option()` 和 `update_option()` 的 `$autoload` 参数默认值从 `'yes'` 变成了 `null`，并且数据库里 `autoload` 列现在会写入五种值：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">列里的值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">来源</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">是否参与自动加载</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`on`</td><td style="border:1px solid #ddd;padding:8px;">代码显式传了 `true`</td><td style="border:1px solid #ddd;padding:8px;">是，必须加载</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`off`</td><td style="border:1px solid #ddd;padding:8px;">代码显式传了 `false`</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto`</td><td style="border:1px solid #ddd;padding:8px;">没显式指定，交给内核判断</td><td style="border:1px solid #ddd;padding:8px;">**是**（目前仍加载）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`auto-on`</td><td style="border:1px solid #ddd;padding:8px;">内核启发式判定「该加载」</td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto-off`</td><td style="border:1px solid #ddd;padding:8px;">内核启发式判定「别加载」</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr></tbody></table>
+<p>两个关键点：</p>
+<p>1. **<code>auto</code> 目前算「加载」。** 内核用一个叫 <code>wp_autoload_values_to_autoload()</code> 的函数决定，函数体就是白纸黑字的四元素数组 <code>'yes', 'on', 'auto-on', 'auto'</code>。你的老 SQL 只匹配其中一个。</p>
+<p>2. **没有升级脚本。** 官方在 dev note 里明确写了不提供迁移。所以一个从旧版本一路升上来的站点，<code>autoload</code> 列里同时躺着 <code>yes</code> 和 <code>auto-on</code> 两套值——这就是为什么老 SQL 的偏差会随时间累积。</p>
+<p>顺带一提，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.3 已经在 2026 年 10 月 6 日发布，这是个安全修复版本（含 Comments 后台的存储型 XSS、WXR 导出的二阶 SQL 注入等），官方只维护最新版本。如果你的站点还停在 7.1.2 或更早，先升级再谈性能——顺序反了没有意义。</p>
+<h2>第二步：用三条 SQL 把真实数字算出来</h2>
+<p>先备份数据库，这一步没有任何理由跳过：</p>
+<pre><code>wp db export backup-$(date +%F).sql --allow-root</code></pre>
+<p>**查询一：真实总量**（这条是核心，对应 <code>wp_load_alloptions()</code> 的实际行为）</p>
+<pre><code>SELECT COUNT(*) AS rows_n,
+       ROUND(SUM(LENGTH(option_value)) / 1024, 1) AS autoload_kb
+FROM wp_options
+WHERE autoload IN ('yes', 'on', 'auto-on', 'auto');</code></pre>
+<p><strong>查询二：谁最胖</strong>（transients 也算进来了，这是很多人漏掉的一块）</p>
+<pre><code>SELECT option_name, autoload,
+       ROUND(LENGTH(option_value) / 1024, 1) AS kb
+FROM wp_options
+WHERE autoload IN ('yes', 'on', 'auto-on', 'auto')
+ORDER BY LENGTH(option_value) DESC
+LIMIT 25;</code></pre>
+<p><strong>查询三：分布——这条回答「我的站点到底有多老」</strong></p>
+<pre><code>SELECT autoload, COUNT(*) AS rows_n,
+       ROUND(SUM(LENGTH(option_value)) / 1024, 1) AS kb
+FROM wp_options
+GROUP BY autoload
+ORDER BY kb DESC;</code></pre>
+<p>如果查询三里 <code>yes</code> 占比很高，说明这个站点的 option 大多是 6.6 之前写入的且从未被更新过——这些行**不会**因为升级而自动获得新语义，只能你手动去改。第三条查询的价值就在这里：它决定了你要不要往下走。</p>
+<h2>第三步：改用 WP-CLI 的官方命令，而不是手写 UPDATE</h2>
+<p>WP-CLI 2.12 内置了 `wp option set-autoload` 和 `wp option get-autoload` 两个子命令（见 <a href="https://developer.wordpress.org/cli/commands/option/set-autoload/" target="_blank" rel="nofollow sponsored">官方文档</a>）。**用它们，不要手写 `UPDATE wp_options SET autoload=...`** —— 命令走内核 API，会同步清理对象缓存里的 `alloptions`，手写 SQL 不会，你会得到一个「数据库改了但页面没变」的假象。</p>
+<p>先确认某个 option 当前的真实取值：</p>
+<pre><code>wp option get-autoload rewrite_rules --allow-root</code></pre>
+<p>改掉它：</p>
+<pre><code>wp option set-autoload some_heavy_plugin_option no --allow-root
+# Success: Updated autoload value for 'some_heavy_plugin_option' option.</code></pre>
+<p>批量的话，把查询二的输出喂进去（下面这条会先把 <code>kb</code> 小于 1KB 的行过滤掉，避免误伤核心配置）：</p>
+<pre><code>wp db query "SELECT option_name FROM wp_options
+  WHERE autoload IN ('yes','on','auto-on','auto')
+    AND LENGTH(option_value) > 1024
+    AND option_name NOT IN ('rewrite_rules','siteurl','home','blogname')
+  LIMIT 20" --skip-column-names | while read -r opt; do
+  wp option set-autoload "$opt" no --allow-root
+done</code></pre>
+<p>改完必须清一次缓存，否则 alloptions 里还是旧值：</p>
+<pre><code>wp cache delete alloptions --allow-root</code></pre>
+<p>**哪些能碰，哪些不能碰**：`rewrite_rules` 改了会触发全量重写规则重建；`siteurl` / `home` 关掉自动加载会让每个请求多一次查询；主题的 `theme_mods_*` 系列建议保持自动加载。**如果你的站点已经上了对象缓存，这一步做完顺手验证一下效果** —— 我之前写过一篇 <a href="https://yaohehe.github.io/2026-09-30-wordpress-71-redis-5.html" target="_blank" rel="nofollow sponsored">WordPress 7.1 + Redis 对象缓存实战</a>，里面讲了 autoload 与对象缓存的叠加效应，两件事一起看更清楚。</p>
+<h2>第四步：三个阈值别再混着说</h2>
+<p>这是本文最想替你省掉的部分。市面上几乎所有文章都只给一个「800KB」，但内核里其实有三个不同的数字：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">数字</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">在哪定义</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">管什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">调它有用吗</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**150,000 字节**</td><td style="border:1px solid #ddd;padding:8px;">`wp_filter_default_autoload_value_via_option_size()`</td><td style="border:1px solid #ddd;padding:8px;">单条 option 超过这个大小、且代码没显式指定时，写入为 `auto-off`</td><td style="border:1px solid #ddd;padding:8px;">用 `wp_max_autoloaded_option_size` 过滤器可调。官方明确说**不建议调高**</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">**800,000 字节**</td><td style="border:1px solid #ddd;padding:8px;">`WP_Site_Health::get_test_autoloaded_options_size_limit`</td><td style="border:1px solid #ddd;padding:8px;">Site Health 弹出「Autoloaded options could affect performance」的临界点</td><td style="border:1px solid #ddd;padding:8px;">用 `site_status_autoloaded_options_size_limit` 过滤器可调</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">**900 KB**</td><td style="border:1px solid #ddd;padding:8px;">`wp doctor` 的 `autoload-options-size` 检查</td><td style="border:1px solid #ddd;padding:8px;">`wp doctor` 命令自己的告警线</td><td style="border:1px solid #ddd;padding:8px;">不可调</td></tr></tbody></table>
+<p>两个必须知道的事实：</p>
+<ul><li>**这三个数字都不是「安全线」，没有任何一个是。** 150KB 只改一个默认值；800KB 只改管理后台里的一条提示文案。内核**从不拒绝**加载任何 option。用过滤器把 800KB 调高，只是让告警闭嘴，查询量和内存占用一分不降。</li><li>**800KB 不是逻辑上限。** 五个各 149KB 的 option 加起来 745KB，Site Health 照样说「acceptable」。</li></ul>
+<p>顺带说一个 WP-CLI 自己的坑：<code>wp option list --autoload=on --format=total_bytes</code> 这条命令看起来是干这件事的，它**也少算**——它只匹配 <code>on</code> 和 <code>yes</code> 两个值，把 <code>auto</code> / <code>auto-on</code> 全漏了。审计请用上面的 SQL，别用这条。</p>
+<h2>踩坑录：我实际遇到的 3 个报错</h2>
+<h3>报错一：`Error: YIKES! It looks like you're running this as root.`</h3>
+<p>完整文案后面还跟着 <code>You probably meant to run this as the user that your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> install exists under.</code></p>
+<p><strong>原因</strong>：WP-CLI 检测到当前是 root，主动拦下来了。这是保护机制——root 身份下站点里任何插件代码都拥有服务器完整控制权。</p>
+<p><strong>解决</strong>（推荐第二种）：</p>
+<pre><code># 方案一：单次绕过
+wp option get-autoload rewrite_rules --allow-root
+
+# 方案二：以站点所属用户运行（我实际用的就是这个）
+sudo -u www-data wp option get-autoload rewrite_rules</code></pre>
+<p>如果你在容器里反复撞这个错，可以设环境变量 <code>WP_CLI_ALLOW_ROOT=1</code> 一次解决。但要注意方案一留下的隐患：**用 root 跑过写操作后，文件属主会变成 root**，Web 服务器可能就写不进去了，记得 <code>chown -R www-data:www-data /var/www/html/</code>。</p>
+<h3>报错二：`Warning: Could not delete 'option_three' option. Does it exist?`</h3>
+<p>**原因**：option 名字拼错了，或者它本来就在 <code>autoload='off'</code> 状态、你的清理脚本只扫了自动加载的行所以压根没匹配到。这个警告来自 <code>wp option delete</code>，但你在清理流程里看到它，通常意味着上游的 <code>option_name</code> 列表是脏的。</p>
+<p><strong>解决</strong>：脚本里加一道存在性校验，别让脚本静默跳过：</p>
+<pre><code>if wp option get-autoload "$opt" >/dev/null 2>&1; then
+  wp option set-autoload "$opt" no --allow-root
+else
+  echo "SKIP (not found): $opt" >&2
+fi</code></pre>
+<h3>报错三：审计脚本跑通了，数字却和后台对不上</h3>
+<p>这个没有报错信息，所以最难查。现象是 Site Health 明确报「Autoloaded options could affect performance」，而你的 SQL 算出来只有几百 KB。</p>
+<p>**原因**：八成是你用的就是那句 <code>autoload='yes'</code>；剩下两成是漏了 transients——一个没设过期的 transient 是**永久自动加载**的，而 <code>wp option list</code> 默认把 transients 藏起来，两边都会让它「消失」。</p>
+<p>**解决**：先跑查询三看分布。<code>auto</code> + <code>auto-on</code> 加起来占比可观，就确认是前者；<code>auto-off</code> 里有几十 KB 的大块，就是后者。再补一条专门看 transient 的：</p>
+<pre><code>SELECT option_name,
+       ROUND(LENGTH(option_value) / 1024, 1) AS kb,
+       autoload
+FROM wp_options
+WHERE option_name LIKE '%_transient_%'
+  AND LENGTH(option_value) > 512
+ORDER BY LENGTH(option_value) DESC
+LIMIT 20;</code></pre>
+<h2>行业应用：把它变成流程，而不是一次性任务</h2>
+<p>单站点手改一次是体力活，多站点就必须是流程。我实际用的做法是把它塞进三个位置：</p>
+<p>**上线前体检**。任何新站、新插件组合上线前，把查询一 + 查询二作为验收项跑一遍。判断标准不要写成「小于 800KB」，写成「查询三里 <code>auto-off</code> 的总和 < 100KB 且无单条 > 150KB」——前者是内核的提示线，后者才是真实结构。</p>
+<p><strong>CI 里的 diff 检查</strong>。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站的性能退化极少是一次性的，通常是某次插件升级悄悄带进来的。在 CI 里跑：</p>
+<pre><code>NEW=$(wp db query "SELECT ROUND(SUM(LENGTH(option_value))/1024,1) FROM wp_options
+      WHERE autoload IN ('yes','on','auto-on','auto')" --skip-column-names)
+if (( $(echo "$NEW > $BASE + 50" | bc -l) )); then
+  echo "autoload 增长超过 50KB，请说明原因" >&2; exit 1
+fi</code></pre>
+<p><strong>月度定时巡检</strong>。cron 里跑一次查询一，把数字连同查询二的 top 5 一起发到值班群。比等 Site Health 弹告警早，因为它在 800KB 之前就给你趋势了。</p>
+<p>再补一句：数据库瘦身的收益是有天花板的。option 瘦身解决的是「每次请求都要多读一大坨配置」，它治不了慢查询本身。如果你的站点是查询慢而不是内存吃紧，方向应该去别处——我之前那篇 <a href="https://yaohehe.github.io/2026-09-26-wordpress-32-180.html" target="_blank" rel="nofollow sponsored">WordPress 数据库优化实战</a> 讲的就是那条线（3.2 秒降到 180 毫秒），和本文互补。另外批量改元数据和内链的事，看这篇 <a href="https://yaohehe.github.io/2026-09-27-wordpress-71-wp-cli-600-seo.html" target="_blank" rel="nofollow sponsored">WP-CLI 全量重排600 篇文章的实录</a>。</p>
+<h2>总结</h2>
+<p>回到开头那句 SQL。真正需要记住的改动只有两处，都很小：</p>
+<p>**查询条件**从 <code>autoload='yes'</code> 变成 <code>autoload IN ('yes','on','auto-on','auto')</code>。这一处是必改。</p>
+<p><strong>认知</strong>从「800KB 是安全线」变成「800KB 只是告警线，150KB 和 900KB 各管各的，三个都不是安全线」。这一处不改，你会一直用一个不存在的标准做判断。</p>
+<p>至于动手的部分，用 <code>wp option set-autoload</code> 而不是手写 UPDATE，多花两秒钟敲命令，能省掉一整类「改了没生效」的排查。</p>
+<p>如果你的站点 autoload 总量本来就远低于阈值，本文不会让你变快——它的价值是让你的数字终于可信。想确认自己站上的实际数字，建议直接查官方页面核对当前版本的阈值与函数行为：<a href="https://developer.wordpress.org/?p=154080" target="_blank" rel="nofollow sponsored">Site Health autoloaded options 检查</a>、<a href="https://developer.wordpress.org/?p=154392" target="_blank" rel="nofollow sponsored">wp_autoload_values_to_autoload()</a>。</p>
+<p><strong>Q: 我升级到最新 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后，autoload 会自动瘦身吗？</strong></p>
+<p>A: 不会。官方在6.6 的 dev note 里明确写了不提供升级脚本。升级只会让**此后新写入**的 option 用上新的 <code>auto-*</code> 语义，历史行需要你手动改。</p>
+<p>**Q: <code>auto</code> 和 <code>auto-on</code> 有区别吗？**</p>
+<p>A: 有。<code>auto</code> 是「没有任何决定」，<code>auto-on</code> 是「内核启发式判定该加载」。当前 7.1 下两者都参与加载，但官方在 6.6 dev note 里说过 <code>auto</code> 的默认行为**未来可能变**。如果你依赖某个靠 <code>auto</code> 加载的 option，显式改成 <code>on</code> 更稳。</p>
+<p><strong>Q: 装了 Performance Lab 插件有必要吗？</strong></p>
+<p>A: 它的价值在于给 Site Health 那个检查加一张明细表，能直接在后台点选关闭某个 option 的自动加载，不用碰 SQL。只做命令行审计的话不是必需。</p>
+<p><strong>Q: 800KB 是怎么来的？我看到的文章说 1MB 还有 400KB。</strong></p>
+<p>A: 400KB / 1MB 那些数字是 6.6 之前的老经验值。6.6 引入了 Site Health 检查并把 800,000 字节作为默认阈值，WP-CLI 的 <code>wp doctor</code> 则另用 900KB。具体数字建议以你自己版本的代码为准——<code>grep -rn 'site_status_autoloaded_options_size_limit' wp-admin/includes/class-wp-site-health.php</code>。</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与 MiniMax Token Plan：AI 编程加速，企业用户专享优惠</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token 套餐</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

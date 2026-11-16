@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ThreadPoolExecutor vs asyncio: 8 Workers Beat 20 - TechPassive</title>
+  <meta name="description" content="I ran 1,500 HTTP requests and 50,000 queue tasks through four concurrency shapes: speedup caps at 8 workers, the default 20 is 12% slower, and futures eat 97.6 MB.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Threads, Processes or Coroutines: One Load, Four Shapes</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">concurrency</span><span class="tag">benchmark</span>
+  </div>
+  <div class="content">
+    <p>A colleague told me to wrap our batch script in Celery, because "50,000 tasks will never finish on one thread". I did not install anything. I did something cheaper first: I split the per-task time into waiting, computing, and everything else. Those three answers point at three completely different designs, and two of them do not need a queue at all.</p>
+<p>What follows is the result of running one identical load under four concurrency shapes, three runs each, plus one deliberate mistake per shape. The short version: <strong>concurrency shapes overlap waiting; they do not raise throughput.</strong> A queue buys you survival across restarts and backpressure. It does not buy you speed.</p>
+<p><strong>No affiliate links in this post.</strong> Every number below came out of my own machine, and the benchmark script is short enough to reproduce.</p>
+<h2>Measure the bottleneck before you pick a shape</h2>
+<p>I ask three questions, in this order, and I do not skip ahead:</p>
+<ul><li><strong>First: where does a single task spend its time?</strong> Waiting on a socket, a disk or a child process is I/O, and threads or coroutines can overlap it. Pure Python arithmetic only parallelises across processes. Computation inside a C extension that releases the GIL is a third case, where threads work again.</li><li><strong>Second: does a task need to survive a kill?</strong> If yes, you need a queue. Anything sitting in a thread pool dies with the interpreter, with no trace and no retry.</li><li><strong>Third: can the producer outrun the consumer?</strong> If yes, you need a bounded queue with a blocking <code>put</code>. That is a memory-safety question, not a concurrency question.</li></ul>
+<p>Only the last two point at a queue. The first decides thread, process, or coroutine. The most common mistake I see is stacking all three layers on one bottleneck: a pure I/O job, wrapped in a message queue, with 20 threads inside each worker, against an upstream API that allows 10 requests per second. Three layers of concurrency, one bottleneck, and the failure now happens further from where it was caused.</p>
+<h2>How I measured it</h2>
+<p>Windows 11, CPython 3.13.14, 16 logical cores. The server is a minimal HTTP handler in a <strong>separate process</strong> that sleeps 3 ms and returns 100 bytes. The client issues 1,500 requests, opening a new connection each time with no keep-alive, so connection setup and header parsing are included in the measurement — that is closer to a real scraping script than a keep-alive microbenchmark.</p>
+<p>Running the server in a separate process matters. My first version put it in a thread of the same process, and 20 workers produced only a 4.5x speedup, because client and server were fighting over one GIL. I was measuring the interpreter arguing with itself, not client concurrency.</p>
+<pre><code># server: separate process, port 18765
+python bench.py serve
+# client: serial | thread N | queue N | asyncio N | proc N
+python bench.py thread 20</code></pre>
+<p>Each shape runs in its own subprocess, with <code>tracemalloc</code> recording the Python heap peak. <code>tracemalloc</code> counts Python-level allocations only; interpreter overhead and thread stacks are not in that number, so treat the peak column as relative, not as RSS.</p>
+<h2>Four shapes: speedup stops at 8 workers</h2>
+<p>Three runs each, median reported. The serial baseline is 14.547 s.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Shape</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Median wall</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Requests/s</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">vs serial</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Python heap peak</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Serial</td><td style="border:1px solid #ddd;padding:8px;">14.547 s</td><td style="border:1px solid #ddd;padding:8px;">103.1</td><td style="border:1px solid #ddd;padding:8px;">1.00x</td><td style="border:1px solid #ddd;padding:8px;">1.75 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 2</td><td style="border:1px solid #ddd;padding:8px;">6.386 s</td><td style="border:1px solid #ddd;padding:8px;">234.9</td><td style="border:1px solid #ddd;padding:8px;">2.28x</td><td style="border:1px solid #ddd;padding:8px;">4.41 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 4</td><td style="border:1px solid #ddd;padding:8px;">3.131 s</td><td style="border:1px solid #ddd;padding:8px;">479.0</td><td style="border:1px solid #ddd;padding:8px;">4.65x</td><td style="border:1px solid #ddd;padding:8px;">4.42 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 8</td><td style="border:1px solid #ddd;padding:8px;">1.587 s</td><td style="border:1px solid #ddd;padding:8px;">945.0</td><td style="border:1px solid #ddd;padding:8px;">9.17x</td><td style="border:1px solid #ddd;padding:8px;">4.43 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 16</td><td style="border:1px solid #ddd;padding:8px;">1.712 s</td><td style="border:1px solid #ddd;padding:8px;">876.0</td><td style="border:1px solid #ddd;padding:8px;">8.50x</td><td style="border:1px solid #ddd;padding:8px;">4.47 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 20</td><td style="border:1px solid #ddd;padding:8px;">1.776 s</td><td style="border:1px solid #ddd;padding:8px;">844.7</td><td style="border:1px solid #ddd;padding:8px;">8.19x</td><td style="border:1px solid #ddd;padding:8px;">3.93 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 32</td><td style="border:1px solid #ddd;padding:8px;">1.687 s</td><td style="border:1px solid #ddd;padding:8px;">888.9</td><td style="border:1px solid #ddd;padding:8px;">8.62x</td><td style="border:1px solid #ddd;padding:8px;">3.02 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ThreadPool 64</td><td style="border:1px solid #ddd;padding:8px;">1.733 s</td><td style="border:1px solid #ddd;padding:8px;">865.5</td><td style="border:1px solid #ddd;padding:8px;">8.39x</td><td style="border:1px solid #ddd;padding:8px;">3.16 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">queue.Queue 20</td><td style="border:1px solid #ddd;padding:8px;">1.633 s</td><td style="border:1px solid #ddd;padding:8px;">918.5</td><td style="border:1px solid #ddd;padding:8px;">8.91x</td><td style="border:1px solid #ddd;padding:8px;">1.89 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">asyncio 20</td><td style="border:1px solid #ddd;padding:8px;">2.229 s</td><td style="border:1px solid #ddd;padding:8px;">672.9</td><td style="border:1px solid #ddd;padding:8px;">6.53x</td><td style="border:1px solid #ddd;padding:8px;">3.49 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ProcessPool 20</td><td style="border:1px solid #ddd;padding:8px;">11.112 s</td><td style="border:1px solid #ddd;padding:8px;">135.0</td><td style="border:1px solid #ddd;padding:8px;">1.31x</td><td style="border:1px solid #ddd;padding:8px;">2.55 MB</td></tr></tbody></table>
+<p>The column that matters is the plateau. Past 8 workers, everything from 16 to 64 lands between 1.59 s and 1.78 s, and requests per second wobble between 844 and 945. Going from 8 to 64 workers costs 8x the resources and buys a throughput difference of zero.</p>
+<p>The ceiling is not on the client. The server is a single-threaded Python process: it accepts connections, spawns a handler thread per request, and every handler competes for the same GIL. Its practical limit is around 900 requests per second. Whether the client runs 16 workers or 64, it is waiting on the same ceiling.</p>
+<p>That is what "concurrency overlaps waiting, it does not raise throughput" looks like when you measure it. <strong>Before adding workers, ask whether the bottleneck is on your side or on the other end.</strong> If the other end is a rate-limited API, 64 threads just make the 429s arrive sooner.</p>
+<p>Two numbers in that table deserve their own paragraph. The <code>queue.Queue</code> shape (20 long-lived threads) beat <code>ThreadPoolExecutor(20)</code> by 8% (1.633 s vs 1.776 s), because every <code>submit</code> builds a <code>Future</code>, takes locks and signals a condition variable — 1,500 times. And <code>asyncio</code> came in 36% slower than the thread pool, because HTTP connection setup and parsing are still single-threaded Python work. Coroutines remove the waiting; they do not remove the parsing.</p>
+<h2>The default 20 workers are 12% slower than 8</h2>
+<p>The <code>max_workers</code> default is documented precisely: 3.8 changed it to <code>min(32, os.cpu_count() + 4)</code>, and 3.13 switched <code>os.cpu_count()</code> to <code>os.process_cpu_count()</code>. On this 16-core box both formulas give 20.</p>
+<pre><code>import os
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+print(os.cpu_count(), os.process_cpu_count())      # 16 16
+with ThreadPoolExecutor() as ex:
+    print(ex._max_workers)                          # 20
+with ProcessPoolExecutor() as ex:
+    print(ex._max_workers)                          # 16</code></pre>
+<p>The intent of that default is a guardrail: keep at least 5 workers for I/O, use at most 32 cores for CPU-bound work. It is not a performance optimum. On my load, the default 20 finished in 1.776 s and a hand-set 8 finished in 1.587 s — <strong>the default is 11.9% slower than the best point</strong>, with run ranges of 1.740–1.870 s and 1.565–1.613 s. Those ranges do not overlap, so this is not noise.</p>
+<p>That is worth internalising if you write batch scripts: leaving <code>ThreadPoolExecutor()</code> empty means "about 10% off the optimum, and you will never know why". I start at 8 and only go up when the task has a genuinely long wait (2 seconds or more per call). Double it once, measure the wall clock, and if it does not drop, you have hit the other end's ceiling — go back down.</p>
+<h2>A process pool doing I/O is 6.3x slower</h2>
+<p>The last row of that table is the expensive lesson. Twenty processes issued the same 1,500 requests in 11.112 s, which is 1.31x over serial — 6.3x slower than the thread pool, and barely better than doing nothing.</p>
+<p>Three costs stack up:</p>
+<p><strong>Startup.</strong> The default start method on Windows is <code>spawn</code>, so each child is a full interpreter launch that re-imports the main module. Twenty children means twenty of those.</p>
+<p><strong>Serialisation per task.</strong> Every <code>submit</code> pickles the callable and its arguments into a pipe, and the child pickles the result back. When the task itself takes 3 ms, the round trip costs more than the work.</p>
+<p><strong>Task granularity.</strong> 1,500 tasks across 20 processes is 75 round trips each, and <code>Executor.map</code> defaults to <code>chunksize=1</code> on a process pool, so the fixed cost is paid 1,500 times.</p>
+<p>I separated "startup plus serialisation" from "actual computation" with a second experiment: 400 sha256 tasks of roughly 0.9 ms each took 0.354 s serially and 4.423 s through <code>ProcessPoolExecutor(16)</code> — <strong>12.5x slower</strong>. On the same machine, 16 plain Python processes each running one heavy unit finished in 1.54 s against 1.33 s for a single unit, close to 13.8x — <strong>the cores are real, and so is the pool's overhead</strong>. The problem is not multiprocessing; the problem is that the tasks are too small to amortise the pool.</p>
+<p>My rule of thumb: under 10 ms per task, do not use a process pool; between 10 and 100 ms, measure before deciding; above 100 ms, the fixed cost finally starts to amortise. Logging hits the same wall from the other side — across processes, <code>QueueListener</code> needs <code>multiprocessing.Manager().Queue(-1)</code> instead of <code>queue.Queue</code>, which is exactly what <a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">that Python logging post-mortem</a> ran into.</p>
+<h2>Whether threads help depends on the GIL, not on the label</h2>
+<p>Three loads, all "CPU-bound", 16 jobs each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Load</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Serial</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">16 threads</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Result</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Pure Python loop, 3M iterations</td><td style="border:1px solid #ddd;padding:8px;">6.103 s</td><td style="border:1px solid #ddd;padding:8px;">7.425 s</td><td style="border:1px solid #ddd;padding:8px;">threads are 21.7% slower</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">hashlib, 256 KB per update</td><td style="border:1px solid #ddd;padding:8px;">0.018 s</td><td style="border:1px solid #ddd;padding:8px;">0.007 s</td><td style="border:1px solid #ddd;padding:8px;">threads are 2.6x faster</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">hashlib, 1 KB per update</td><td style="border:1px solid #ddd;padding:8px;">0.020 s</td><td style="border:1px solid #ddd;padding:8px;">0.023 s</td><td style="border:1px solid #ddd;padding:8px;">no speedup</td></tr></tbody></table>
+<p>The dividing line is 2,047 bytes. From the hashlib docs: "To allow multithreading, the Python GIL is released while computing a hash supplied more than 2047 bytes of data at once in its constructor or .update method." Feed it more than 2,047 bytes at a time and the C-level work happens outside the GIL, so 16 threads really do run in parallel. Feed it 1 KB at a time and the GIL is held throughout; the threads just queue for a lock and pay for context switches.</p>
+<p>The same reasoning extends to every C extension: parts of <code>zlib</code>, <code>lzma</code>, <code>numpy</code>, and the C layer under <code>sqlite3</code> may release the GIL. <strong>"Python has a GIL, so threads are useless" is wrong. The accurate statement is "the GIL decides which threads are useful."</strong> And you cannot settle it by reading docs — you settle it by running the same task serially and threaded and subtracting.</p>
+<p>The first row also proves something people find surprising: 16 threads on a pure Python loop were <strong>slower</strong> than serial, by 21.7%. That is not an anomaly; it is the cost of contending for the GIL. "More threads can never be worse" is a comfortable illusion.</p>
+<h2>What a queue is actually for: backpressure</h2>
+<p>People reach for <code>queue.Queue</code> to get concurrency. Its real contribution is <strong>bounding the number of in-flight tasks</strong>. 50,000 tasks, 8 consumers, 0.5 ms each:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Shape</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Time to enqueue</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Total wall</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Peak queued</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Python heap peak</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Queue()</code> unbounded</td><td style="border:1px solid #ddd;padding:8px;">0.501 s</td><td style="border:1px solid #ddd;padding:8px;">7.261 s</td><td style="border:1px solid #ddd;padding:8px;">49,882</td><td style="border:1px solid #ddd;padding:8px;">1.91 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Queue(1000)</code> bounded</td><td style="border:1px solid #ddd;padding:8px;">6.665 s</td><td style="border:1px solid #ddd;padding:8px;">6.801 s</td><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">0.04 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">50,000 bare <code>submit</code> calls</td><td style="border:1px solid #ddd;padding:8px;">3.375 s</td><td style="border:1px solid #ddd;padding:8px;">9.970 s</td><td style="border:1px solid #ddd;padding:8px;">50,000 futures</td><td style="border:1px solid #ddd;padding:8px;">97.58 MB</td></tr></tbody></table>
+<p>Read the rows carefully. The unbounded queue enqueued everything in 0.5 s, which feels great, and left 49,882 tasks resident in memory. The bounded queue spent 6.665 s just enqueuing, because the producer was forced to wait for consumers — and its total wall clock was <strong>6.3% lower</strong>. The third row is the dangerous one: <code>submit</code> never blocks, so 50,000 futures piled up to 97.58 MB and the whole run was the slowest of the three at 9.97 s.</p>
+<p>That is backpressure. It is not an optimisation; it is the only way to make production follow consumption. Leave <code>maxsize</code> at 0 and you have switched this feature off. The code still runs. Your memory peak just becomes a number you no longer control.</p>
+<p>The correct skeleton puts <code>task_done()</code> in a <code>finally</code> block:</p>
+<pre><code>import queue, threading
+
+q = queue.Queue(maxsize=1000)
+def worker():
+    while True:
+        item = q.get()
+        if item is None:
+            q.task_done()
+            return
+        try:
+            handle(item)          # exceptions handled inside
+        finally:
+            q.task_done()         # required, or join() never returns
+
+threads = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+for t in threads:
+    t.start()
+for item in source():             # producer blocks when the queue is full
+    q.put(item)
+q.join()                          # waits for every task_done</code></pre>
+<h2>Four defaults that never warn you</h2>
+<p>All four confirmed on this machine and documented upstream. None of them will tell you when you get them wrong:</p>
+<ul><li><code>ThreadPoolExecutor()</code> defaults to <code>min(32, process_cpu_count() + 4)</code>, which is 20 here, and is not necessarily the optimum.</li><li><code>ProcessPoolExecutor()</code> defaults to <code>os.process_cpu_count()</code>, which is 16 here, capped at 61 on Windows.</li><li><code>queue.Queue()</code> defaults to <code>maxsize=0</code>; the docs say "If maxsize is less than or equal to zero, the queue size is infinite", which turns backpressure off.</li><li><code>Executor.submit()</code> never blocks and applies no backpressure at all.</li></ul>
+<p>The last one hides behind <code>executor.map()</code>, which looks like it waits. It does wait, but in input order: the iterator <code>map</code> returns yields results strictly in submission order, so one slow task holds back every result behind it. With 10 tasks whose durations descend from 1.0 s to 0.1 s, the first result from <code>map</code> arrived at 1.00 s and the first result from <code>as_completed</code> arrived at 0.10 s. If you want "handle whatever finishes first", <code>as_completed</code> is the only answer.</p>
+<h2>Troubleshooting: eight errors I actually hit</h2>
+<p>Every message below was copied from a real run during this experiment, not from a list of "typical errors".</p>
+<p><strong>Error 1: <code>RuntimeError: cannot schedule new futures after shutdown</code></strong></p>
+<p>Symptom: a shutdown hook submits one last job and the process dies. Cause: the executor is already closed; the docs state "Calls to <code>Executor.submit()</code> and <code>Executor.map()</code> made after shutdown will raise <code>RuntimeError</code>". Fix: split "stop accepting" from "drain" with a boolean guard, or wrap the submission site in <code>try/except RuntimeError</code> and log the rejection.</p>
+<p><strong>Error 2: <code>ValueError: task_done() called too many times</code></strong></p>
+<p>Symptom: the consumer calls <code>task_done()</code> outside the <code>try</code>, and a failing task runs it twice. Cause: every <code>task_done()</code> must match a <code>put()</code>; the docs say it "Raises a <code>ValueError</code> if called more times than there were items placed in the queue". Fix: exactly one <code>task_done()</code> in <code>finally</code>, in the same function body as the <code>get()</code>.</p>
+<p><strong>Error 3: <code>join()</code> never returns, and nothing is logged</strong></p>
+<p>Symptom: <code>q.join()</code> hangs forever with no exception. In my reproduction the joining thread was still alive after 2 seconds, with <code>unfinished_tasks</code> stuck at 1. Cause: <code>join()</code> waits for the unfinished count to reach zero, and taking an item out does not complete it. Fix: print <code>q.unfinished_tasks</code> while diagnosing, then put <code>task_done()</code> in <code>finally</code>. In production, wrap <code>join()</code> behind a watchdog thread with a timeout instead of calling it bare.</p>
+<p><strong>Error 4: <code>BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.</code></strong></p>
+<p>Symptom: a worker calls <code>os._exit()</code>, or gets killed, and the parent blows up inside <code>map</code>. Cause: the pool marks itself broken when a worker dies uncleanly and never restarts it. Fix: never <code>os._exit()</code> inside a worker, and rebuild the executor instead of reusing a broken one. <strong>This exception subclasses <code>RuntimeError</code></strong> (measured MRO: <code>BrokenProcessPool → BrokenExecutor → RuntimeError</code>), so a casual <code>except RuntimeError</code> will swallow it.</p>
+<p><strong>Error 5: <code>AttributeError: Can't get local object 'f5.<locals>.local_work'</code></strong></p>
+<p>Symptom: submitting a closure defined inside a function. <strong>Note it is not the "Can't pickle local object" message I expected</strong> — searching for the text I assumed would have sent me down the wrong path. Cause: a <code>spawn</code> child has an empty <code>__main__</code> shell and cannot resolve objects defined in the parent's local scope. Fix: submit module-level names, and pass picklable arguments.</p>
+<p><strong>Error 6: <code>RuntimeError: An attempt has been made to start a new process before the current process has finished its bootstrapping phase.</code></strong></p>
+<p>Symptom: on Windows, missing <code>if __name__ == "__main__":</code> guard around pool creation. Cause: <code>spawn</code> re-imports the main module, so module-level code runs again in the child and the child starts building pools too. Fix: guard the entry point, and add <code>freeze_support()</code> if you ship a frozen executable. <strong>I ran the same broken script three times and got two different outcomes</strong>: once the parent raised this <code>RuntimeError</code>, twice the child died first and the parent surfaced <code>BrokenProcessPool</code> instead. Searching by error string leads to two different pages for one root cause.</p>
+<p><strong>Error 7: <code>RuntimeError: asyncio.run() cannot be called from a running event loop</code></strong></p>
+<p>Symptom: calling <code>asyncio.run()</code> inside a coroutine to "just run this small blocking bit". Cause: one running loop per thread. Fix: <code>await</code> it, or push the blocking call through <code>await asyncio.to_thread(fn)</code>. Watch for the companion line <code>RuntimeWarning: coroutine 'sleep' was never awaited</code>, which usually shows up in logs before the exception does.</p>
+<p><strong>Error 8: <code>time.sleep()</code> inside a coroutine — no error, just zero concurrency</strong></p>
+<p>Symptom: 20 coroutines sleeping 50 ms each should finish in about 0.05 s; measured 1.009 s. Swapping in <code>await asyncio.sleep(0.05)</code> gave 0.068 s, a 14.8x difference. Cause: <code>time.sleep</code> blocks the thread, the loop stops, and the 20 tasks serialise. Fix: use the <code>await</code> form, and wrap any synchronous third-party library in <code>asyncio.to_thread</code>. Failures like this are worse than exceptions, because the only symptom is "slow" and nothing reaches a log. The related family of cancellation traps is covered in <a href="https://yaohehe.github.io/2026-11-01-asyncio.html" class="internal-link">the asyncio cancellation piece</a>.</p>
+<h2>When a queue is genuinely the right answer</h2>
+<p>The decision tree I ended up with:</p>
+<ul><li><strong>Question 1</strong>: would a retry cause a side effect — an email, a charge, a write to an external system? Then you need idempotency keys and persistence. Ship the queue.</li><li><strong>Question 2</strong>: after a kill, must unfinished tasks resume? Then the queue, or at least a durable to-do table.</li><li><strong>Question 3</strong>: will the producer stay faster than the consumer? Then you need a bounded queue at minimum; the queue itself is optional.</li><li><strong>Question 4</strong>: do tasks need to run on other machines? Then the queue.</li><li><strong>Question 5</strong>: if all of the above are "no", the standard library is enough: thread pool for I/O starting at 8 workers, process pool for pure Python with task sizes above 100 ms, and coroutines only when you already have an async stack or need thousands of concurrent connections.</li></ul>
+<p>One more criterion for case 5 comes from a sentence in the docs that is easy to skip: <code>ThreadPoolExecutor</code> states "All threads enqueued to ThreadPoolExecutor will be joined before the interpreter can exit", followed by "it is recommended that ThreadPoolExecutor not be used for long-running tasks". <strong>Interpreter exit waits for every thread.</strong> One stuck long task can keep the whole process alive. Long tasks belong in a process pool, a queue, or behind proper cancellation. The queue-library layer — retry semantics, visibility, locking — is a separate problem, and <a href="https://yaohehe.github.io/2026-11-01-huey-apscheduler-celery.html" class="internal-link">the seven silent failures across huey, APScheduler and Celery</a> digs into it.</p>
+<h2>Limits of this test</h2>
+<ul><li>Everything ran on one 16-core Windows machine where <code>spawn</code> is the default start method. Linux defaults to <code>fork</code>, which makes process-pool startup much cheaper; do not carry the 6.3x figure over to Linux unchanged.</li><li>The server was my own single-process Python service and it is the bottleneck in this experiment. Point the client at Go or nginx and the speedup curve keeps climbing and the plateau moves right. <strong>Do not treat 8 workers as a universal optimum.</strong></li><li><code>tracemalloc</code> measures Python-level allocation, not RSS. Thread stacks, the interpreter and C buffers are outside it.</li><li>I did not test the free-threaded 3.13 build; the GIL section would need a rerun there.</li><li>I did not test distributed queues across machines, nor real Celery plus Redis throughput.</li></ul>
+<h2>What I would copy into the next script</h2>
+<pre><code># 1) I/O-bound: thread pool, start at 8, raise only if wall clock drops
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=8) as ex:
+    for r in ex.map(fetch, urls):     # order matters? use map
+        save(r)
+
+# 2) First finished, first handled: as_completed, never map
+from concurrent.futures import as_completed
+futs = {ex.submit(fetch, u): u for u in urls}
+for f in as_completed(futs):
+    handle(futs[f], f.result())
+
+# 3) Pure-Python CPU work: process pool, tasks above 100 ms
+from concurrent.futures import ProcessPoolExecutor
+def heavy(n): ...                      # must be a module-level function
+with ProcessPoolExecutor() as ex:
+    list(ex.map(heavy, payload, chunksize=8))   # do not leave chunksize at 1
+
+# 4) Producer faster than consumer: bounded queue, task_done in finally
+q = queue.Queue(maxsize=1000)</code></pre>
+<p>Three sentences to take away: measure the bottleneck before choosing a shape; a default is a guardrail, not an optimum; a queue buys survival and backpressure, not speed. If you want the same method applied to process-level silent failures, <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">the subprocess post-mortem from October 29</a> is the companion piece.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

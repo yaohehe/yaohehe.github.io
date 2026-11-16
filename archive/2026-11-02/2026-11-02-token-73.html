@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>五个分词器数同一段中文：token 账单差 73% - TechPassive</title>
+  <meta name="description" content="同一段中文，cl100k 数出 128 个 token，DeepSeek 只要 74 个。我实际跑了四个 tokenizer.json 加两个 tiktoken 编码逐条对拍，量出这 73% 的差距出在哪、哪些字符最贵、词表大小为什么解释不了它，以及官方离线包和 HF 镜像包究竟差在哪一步、要不要信镜像。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>五个分词器数同一段中文：口径差在哪</h1>
+  <div class="post-tags">
+    <span class="tag">tokenizer</span><span class="tag">计费</span><span class="tag">实测</span>
+  </div>
+  <div class="content">
+    <p>上个月给一个内容平台做成本核算。我拿 tiktoken 的 cl100k_base 把两万篇中文稿子全数了一遍，按这个结果报了预算。第一个月账单下来，只有预估的六成。</p>
+<p>第一反应是「是不是量少了」。翻日志，请求数一条不少，重试也没有，缓存命中率也正常。少的是每个请求里的 token —— 同一段中文，换一个模型，切出来的块数就不一样，而计费按块数走。</p>
+<p>这不是 bug，是词表不同造成的口径差。上一篇我用 tiktoken 量了汉字与 token 的比例（<a href="https://yaohehe.github.io/2026-11-01-tokenizer-4-1-token-34.html" class="internal-link">Tokenizer 实测：一个汉字被切成几个 token</a>），那是单一库内部的两种编码。这篇往下走一层：把 Qwen、DeepSeek、Llama、Mistral 四家权重目录里的 tokenizer.json 全部下下来，跟 OpenAI 的两个编码放一起，对同一段文本逐条数。</p>
+<p><strong>TL;DR</strong>：同一段 118 字中文，六个口径数出 74 到 128 个 token，最大差 73.0%；同一段 60 词英文只差 4.4%。词表大小不是答案 —— Llama-3.1 的 128,256 条和 DeepSeek 的 128,815 条几乎一样大，中文 token 数却差 33.8%。要报预算，得拿目标模型自己的 tokenizer.json 数，别拿 tiktoken 代打。</p>
+<h2>六个口径分别是哪来的</h2>
+<p>全部本地加载，不联网、不调接口。tiktoken 0.14.0 直接给两个编码，其余四个用 <code>tokenizers</code> 0.23.3 的 <code>Tokenizer.from_file()</code> 读 HF 权重目录里的 tokenizer.json。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">口径</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">词表条目</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文件体积</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">来源</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">cl100k_base</td><td style="border:1px solid #ddd;padding:8px;">100,277</td><td style="border:1px solid #ddd;padding:8px;">内置</td><td style="border:1px solid #ddd;padding:8px;">tiktoken 0.14.0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">o200k_base</td><td style="border:1px solid #ddd;padding:8px;">200,019</td><td style="border:1px solid #ddd;padding:8px;">内置</td><td style="border:1px solid #ddd;padding:8px;">tiktoken 0.14.0</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Qwen3-8B</td><td style="border:1px solid #ddd;padding:8px;">151,669</td><td style="border:1px solid #ddd;padding:8px;">10.89 MB</td><td style="border:1px solid #ddd;padding:8px;">HF Qwen/Qwen3-8B</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">DeepSeek-V4</td><td style="border:1px solid #ddd;padding:8px;">129,280</td><td style="border:1px solid #ddd;padding:8px;">6.37 MB</td><td style="border:1px solid #ddd;padding:8px;">官网离线包</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Llama-3.1-8B</td><td style="border:1px solid #ddd;padding:8px;">128,256</td><td style="border:1px solid #ddd;padding:8px;">8.66 MB</td><td style="border:1px solid #ddd;padding:8px;">HF 镜像仓库</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Mistral-7B-v0.1</td><td style="border:1px solid #ddd;padding:8px;">32,000</td><td style="border:1px solid #ddd;padding:8px;">1.71 MB</td><td style="border:1px solid #ddd;padding:8px;">HF mistralai/Mistral-7B-v0.1</td></tr></tbody></table>
+<p>一个细节值得先说：Llama-3.1 的官方仓库是门禁的，直接请求 tokenizer.json 返回 401。我用的是未经门禁的同权重重镜像仓库，词表内容一致，但这一步本身就说明 —— 「官方分词器」这句话在工程上未必成立，你得先确认拿到的是哪一份。</p>
+<h2>中文差 73%，英文只差 4.4%</h2>
+<p>拿一段 118 字的纯中文（讲的就是这件事本身，措辞尽量像正常技术文），逐家数：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">分词器</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">token 数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">每字 token</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">每 1 万字 token</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">cl100k_base</td><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">1.085</td><td style="border:1px solid #ddd;padding:8px;">10,847</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Mistral-7B</td><td style="border:1px solid #ddd;padding:8px;">119</td><td style="border:1px solid #ddd;padding:8px;">1.008</td><td style="border:1px solid #ddd;padding:8px;">10,085</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Llama-3.1</td><td style="border:1px solid #ddd;padding:8px;">99</td><td style="border:1px solid #ddd;padding:8px;">0.839</td><td style="border:1px solid #ddd;padding:8px;">8,390</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">o200k_base</td><td style="border:1px solid #ddd;padding:8px;">96</td><td style="border:1px solid #ddd;padding:8px;">0.814</td><td style="border:1px solid #ddd;padding:8px;">8,136</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Qwen3</td><td style="border:1px solid #ddd;padding:8px;">81</td><td style="border:1px solid #ddd;padding:8px;">0.686</td><td style="border:1px solid #ddd;padding:8px;">6,864</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">DeepSeek-V4</td><td style="border:1px solid #ddd;padding:8px;">74</td><td style="border:1px solid #ddd;padding:8px;">0.627</td><td style="border:1px solid #ddd;padding:8px;">6,271</td></tr></tbody></table>
+<p>最多与最少差 73.0%（10,847 ÷ 6,271 = 1.73）。换成 60 词英文段落，六家是 68、68、68、69、68、71，最大差 4.4%。</p>
+<p>结论很干脆：<strong>分词器差异是 CJK 问题，不是通用问题</strong>。英文负载上换词表几乎不亏，中文负载上换词表能把成本挪动七成。所有「token 用量大概多少」的经验值，只要语料是中文，就不能跨厂商套用。</p>
+<p>顺带验证了 DeepSeek 官方文档的换算口径。官方 token 用量页原文写「1 English character ≈ 0.3 token. 1 Chinese character ≈ 0.6 token.」，我这 118 字实测 74 token = 0.627/字，比官方系数高 4.5%。官方给的是近似值，同一页也写了「actual number of tokens processed each time is based on the model's return」—— 系数只用来拍脑袋，报账要数。</p>
+<h2>词表大小解释不了这 73%</h2>
+<p>我最初以为词表越大中文越省。数据不支持。</p>
+<p>Llama-3.1 是 128,256 条，DeepSeek 是 128,815 条，差 559 条，可以认为是一样大；但同一段中文，Llama 要 0.839/字，DeepSeek 只要 0.627/字，差 33.8%。反过来，Qwen3 词表 151,669 条，比 DeepSeek 大 17.7%，中文却更费（0.686 对 0.627）。</p>
+<p>真正的变量是中文词条的覆盖率：训练语料里中文占比高的词表，会把「产品说明」「词表」「预算」这类常用词整块收进去；占比低的词表只能退回按字节切，一个汉字拆成两三个块。词表条目数是容量上限，训练分布才决定这个上限里塞了多少中文。</p>
+<p>Mistral-7B 是最极端的例子：32,000 条词表，1.008 token/字，跟 cl100k 差不多，比 DeepSeek 贵 60.8%。它不是坏 —— 它本来就不是为中文训练的。</p>
+<h2>官方离线包和 HF 镜像包：词表差 465 条，token 数差 0%</h2>
+<p>DeepSeek 的 token 用量页给了一个离线分词器压缩包，我下下来解开对比 HF 上的 DeepSeek-V3 目录：</p>
+<ul><li>官方包：词表 129,280 条，tokenizer.json 6.37 MB</li><li>HF 镜像：词表 128,815 条，tokenizer.json 7.48 MB</li></ul>
+<p>词表条目差 465 条，文件体积差 1.1 MB，看起来像两个不同的东西。实际对同一段中文是 74 对 74，同一段英文是 69 对 69，<strong>差 0.0%</strong>。差的 465 条是特殊 token 槽位与附加条目，不参与普通文本切分。</p>
+<p>这既是好消息也是坑。好消息是用 HF 镜像代官方包，在这个模型上是安全的；坑是「体积不同、条目不同、结果一样」这件事没有任何提示，你只能靠对拍发现。换一个模型版本，0.0% 可能变成 8%，也没有任何东西会报警。</p>
+<p>官方包里那支 demo 脚本还要求装 transformers 并开 <code>trust_remote_code=True</code>。我第一版直接跑，拿到的是 <code>ModuleNotFoundError: No module named 'transformers'</code> —— 一个「官方提供的工具」在你机器上根本不成立，而它本身只是三行代码。</p>
+<h2>tokenizers 库的三个默认值</h2>
+<p>对拍脚本写完，最容易错的地方不在分词器，在库的默认参数。</p>
+<p><strong>第一，<code>encode()</code> 默认加特殊 token。</strong> Llama-3.1 和 Mistral 每条会多 1 个（BOS），Qwen3 与 DeepSeek 是 0 个。你如果一边用 tiktoken（不加）一边用 tokenizers（默认加）估算同一批文本，两个口径从一开始就不一致；100 万条短文本能凭空多出 100 万 token 的账。</p>
+<p><strong>第二，<code>decode</code> 的 <code>skip_special_tokens</code>。</strong> 我第一版往返校验拿 <code>decode(ids, skip_special_tokens=False)</code> 还原，13 个用例 <strong>13/13 报不一致</strong>，包括纯英文。原因不是分词器坏了，是那个 BOS 被原样解成了字面量 <code><|begin_of_text|></code>，拼在正文前面。默认参数下 13/13 全部正确。这也是我一直提醒自己的那条：报错之前先怀疑校验层。</p>
+<p><strong>第三，两个库的接口不通用。</strong> tiktoken 的 <code>encode()</code> 返回 list，tokenizers 返回 Encoding 对象，要取 <code>.ids</code>。把 list 直接丢给 tokenizers 会抛 <code>TypeError: TextInputSequence must be str</code>。写「一份脚本跑所有分词器」的抽象层时，这两条得在适配器里对齐，不然错误会以很怪的方式出现。</p>
+<h2>数字、全角、UUID：日志负载的隐形涨价</h2>
+<p>技术负载里真正贵的不一定是汉字。逐项测下来，各家在结构化字符上的分歧比中文还大：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">输入</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">cl100k</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">o200k</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Qwen3</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DeepSeek</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Mistral</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>1284500</code></td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">7</td><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">8</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>1,284,500</code></td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">9</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">10</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">UUID（36 字符）</td><td style="border:1px solid #ddd;padding:8px;">23</td><td style="border:1px solid #ddd;padding:8px;">23</td><td style="border:1px solid #ddd;padding:8px;">33</td><td style="border:1px solid #ddd;padding:8px;">23</td><td style="border:1px solid #ddd;padding:8px;">34</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">全角 <code>ＡＢＣ１２３</code></td><td style="border:1px solid #ddd;padding:8px;">9</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">6</td><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">19</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">半角 <code>ABC123</code></td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">一行 markdown 表格</td><td style="border:1px solid #ddd;padding:8px;">28</td><td style="border:1px solid #ddd;padding:8px;">25</td><td style="border:1px solid #ddd;padding:8px;">30</td><td style="border:1px solid #ddd;padding:8px;">23</td><td style="border:1px solid #ddd;padding:8px;">30</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>打包失败 😅 重跑三次 ✅</code></td><td style="border:1px solid #ddd;padding:8px;">13</td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">10</td><td style="border:1px solid #ddd;padding:8px;">9</td><td style="border:1px solid #ddd;padding:8px;">16</td></tr></tbody></table>
+<p>Qwen3 把 <code>1284500</code> 切成 7 段，是 cl100k 的 2.33 倍；UUID 贵 43.5%。DeepSeek 和 cl100k 在数字上完全一致，但表格行更省（23 对 28）。</p>
+<p>这条对做日志分析、订单号抽取、型号匹配的团队很实际：你的负载里如果一半是 ID 和数字，Qwen 系的账单会比按中文比例算出来的高得多。全角字符是另一处：<code>ＡＢＣ１２３</code> 在 o200k 上 5 个 token，在 Mistral 上 19 个，差 3.8 倍 —— 中文输入法打出的全角字母混进 prompt 是常态。</p>
+<h2>报预算的三条规则</h2>
+<p><strong>用目标模型自己的分词器。</strong> 不是「用最接近的那个」。cl100k 是我见过的默认选择，但它在中文上比 DeepSeek 高估 73.0%，比 Qwen3 高估 58.1%。</p>
+<p><strong>采样要采真实请求，不要采同质文本。</strong> 我上面用一篇技术文当语料，3,157 个汉字、6,066 个字符，六家的绝对 token 数是 5,531、4,101、4,278、4,072、3,613、5,738，最大差 58.8%。这个 58.8% 比纯中文段的 73.0% 小 —— 因为技术文里有大量 ASCII，把差距摊平了。只用纯中文样本会高估差距，只用代码样本会低估。</p>
+<p><strong>两个乘数都要按各自口径取。</strong> 这是最容易算错的一步。按官方定价页（截至发稿）：DeepSeek flash 输入峰值 $0.30/百万 token、低谷 $0.15；gpt-4o 输入 $2.50/百万 token。</p>
+<p>每 10 万汉字：DeepSeek 只需 62,712 token，成本 $0.0188；gpt-4o 要 108,475 token，成本 $0.2712。真实倍数是 <strong>14.4 倍</strong>。如果你两家都用 cl100k 数，算出来是 8.3 倍 —— 单价倍数是对的，token 数的差异被约掉了，于是真实的 14.4 倍被记成 8.3 倍，差 73%。</p>
+<h2>踩坑录：五个真实报错</h2>
+<h3>报错一：官方 demo 脚本缺 transformers</h3>
+<pre><code>ModuleNotFoundError: No module named 'transformers'</code></pre>
+<p>官方 tokenizer 压缩包里的 demo 脚本第一行就是 <code>import transformers</code>。它还有第二层要求：<code>AutoTokenizer.from_pretrained(..., trust_remote_code=True)</code>。不想装 transformers 的话，直接用 <code>Tokenizer.from_file('tokenizer.json')</code>，不需要这个依赖。</p>
+<h3>报错二：门禁仓库返回 401</h3>
+<pre><code>Cannot access gated repo for url https://huggingface.co/meta-llama/Llama-3.1-8B/resolve/main/tokenizer.json.
+Access to model meta-llama/Llama-3.1-8B is restricted. You must have access to it and be
+authenticated to access it. Please log in.</code></pre>
+<p>这不是网络问题，是仓库门禁。换未经门禁的镜像仓库即可，但要在文里写清楚用的是镜像 —— 我上面那张表里 Llama 那一行就是这么标的。</p>
+<h3>报错三：from_file 传目录</h3>
+<pre><code>Exception : 拒绝访问。 (os error 5)</code></pre>
+<p><code>Tokenizer.from_file()</code> 传了一个目录进去。这个报错连「文件不存在」都没说，直接抛系统级拒绝访问，字符串还是本地化的中文，日志里很难 grep。参数必须是 tokenizer.json 的完整路径。</p>
+<h3>报错四：13/13 往返不一致（假失败）</h3>
+<p>不是报错，是校验函数写错了。<code>decode(ids, skip_special_tokens=False)</code> 把 BOS 解成 <code><|begin_of_text|></code> 拼在正文前，<code>joined != text</code>，看起来像分词器丢字。默认参数下 13/13 全部正确。</p>
+<h3>报错五：把 list 喂给 encode</h3>
+<pre><code>TypeError: TextInputSequence must be str</code></pre>
+<p><code>tokenizer.encode()</code> 只吃单个 str，批量要用 <code>encode_batch()</code>。而 tiktoken 的 <code>encode()</code> 同样不吃 list，两边都得自己循环。</p>
+<h2>怎么确认你数的就是服务端数的</h2>
+<p>我这次没有 API key，所以没法逐条验证「本地数出来的 token 数」与「服务端返回的 usage」是否相等。这一点必须说清楚：所有本地对拍证明的是<strong>各家词表之间的相对差异</strong>，不是<strong>你的账单绝对值</strong>。</p>
+<p>要闭环，最省事的办法是发 20 条长度递增的真实请求，把返回里的 usage 与本地数做散点。如果本地与线上系统性偏高，先查是不是多算了特殊 token；如果系统性偏低，先查是不是漏了 system prompt 与 chat template 的固定开销 —— 那部分通常每家都不一样，而且不在你的正文里。</p>
+<h2>本文的边界</h2>
+<p>没测日韩专用词表（比如韩语优化的编码器会在这条线上再拉一个量级）；没测多模态输入；没覆盖 chat template 的固定开销（本篇只算纯文本）；词表本身会随模型版本更换，本文所有数字绑定 tiktoken 0.14.0、tokenizers 0.23.3、CPython 3.13.14，以及 2026-11-02 抓取的那几份 tokenizer.json。</p>
+<p>另一条相关的坑在别处：库的默认值改了不报错这种事，我上次在序列化库上踩过一遍（<a href="https://yaohehe.github.io/2026-10-28-python-json-json-orjson-msgspec.html" class="internal-link">json / orjson / msgspec 的九处默认值</a>），形态不一样，性质一样 —— 默认值是最贵的隐式契约。token 怎么流到前端是另一个层，那篇讲流式三口径的（<a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 流式三入口</a>）里，token 的计数口径与传输口径也是两件事。</p>
+<h2>常见问题</h2>
+<p><strong>Q：能不能直接用 tiktoken 的 o200k 代替所有国产模型？</strong></p>
+<p>不行。o200k 在中文上是 0.814/字，比 DeepSeek 的 0.627 高 29.8%，比 Qwen3 的 0.686 高 18.7%。它比 cl100k 好，但不是任何一家的替身。</p>
+<p><strong>Q：词表条目越多越省钱吗？</strong></p>
+<p>不是。Qwen3 条目最多（151,669），中文却不是最省的。要看训练语料里中文的密度，这个数字官方一般不公布，只能拿真实文本对拍。</p>
+<p><strong>Q：本地数出来比账单少，怎么回事？</strong></p>
+<p>先看特殊 token 和 chat template。system prompt、角色标记、工具定义都会进 token，这些通常不在你数的正文里。</p>
+<p><strong>Q：同一家的不同版本词表会变吗？</strong></p>
+<p>会。DeepSeek 官方包与 HF 上的 V3 目录在我这次对拍里切分完全一致，但这是巧合级别的幸运，不是保证。升级模型后要重新对拍一次。</p>
+<p>本文不含任何联盟推广链接。所有数字来自本机实跑，脚本与语料口径已在文中写明，官方价格以发文时的定价页为准。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

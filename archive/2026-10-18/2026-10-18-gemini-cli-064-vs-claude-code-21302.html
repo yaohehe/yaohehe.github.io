@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Gemini CLI 0.64 vs Claude Code 2.1.302：权限与上下文模型对比 - TechPassive</title>
+  <meta name="description" content="我把 Gemini CLI 0.64.0 与 Claude Code 2.1.302 装在同一台 Windows 实测：策略引擎 TOML 与 permissions JSON 的写法差异、优先级算法、GEMINI.md 与 CLAUDE.md 上下文层级，以及 7 个带退出码的报错复现。Gemini CLI 0.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Gemini CLI 与 Claude Code 的权限与上下文模型</h1>
+  <div class="post-tags">
+    <span class="tag">Gemini CLI</span><span class="tag">Claude <a href="/2026-09-29-2026-6-clean-code-ai-engineering.html" class="internal-link">Code</a></span><span class="tag">终端 Agent</span>
+  </div>
+  <div class="content">
+    <p><strong>太长不看</strong>：Gemini CLI 把权限拆成「审批模式 + 策略引擎（TOML 规则 + 数值优先级）」两层；Claude <a href="/2026-09-29-2026-6-clean-code-ai-engineering.html" class="internal-link">Code</a> 是一套 JSON 规则，按 deny → ask → allow 的固定顺序评估，规则具体程度不改变顺序。上下文文件两者都默认 GEMINI.md / CLAUDE.md 三段式，但 Claude 会一路向根目录拼接父级 CLAUDE.md，Gemini 走目录扫描加 JIT 加载。下面每条都标了出处与实测条件。</p>
+<h2>我实测的口径</h2>
+<p>版本号不是模糊的「最新版」，是我本机 <code>npm</code> 装完后用 <code>--version</code> 跑出来的真实输出，日期 2026-10-18：</p>
+<ul><li>gemini: <strong>0.64.0</strong>（<code>@google/gemini-cli@0.64.0</code>，engines 要求 <code>node >=20</code>）</li><li>claude: <strong>2.1.302 (Claude Code)</strong>（<code>@anthropic-ai/claude-code@2.1.302</code>）</li></ul>
+<p>环境是 Windows 11 + Node v24.15.0。两个包分别 94.0 MB（449 个文件）与 276.9 MB（约 2.9 亿字节，7 个文件）；<code>gemini --help</code> 全文 3989 字符、29 个参数，<code>claude --help</code> 是 22102 字符、78 个参数，后者接近前者的 2.7 倍，这个量级差本身就说明了两家的取向。</p>
+<p>需要先说清楚：<strong>我没有 Gemini 与 Anthropic 的可用 API Key</strong>，所以本文不涉及模型回答质量，只测命令能不能起、配置怎么被解析、报错长什么样。所有退出码都是本机跑出来的真实数字。</p>
+<h2>权限第一层：谁能改你的文件</h2>
+<p>Gemini CLI 的入口是审批模式，<code>--approval-mode</code> 只接受四个值（0.64.0 <code>--help</code> 原文）：<code>default</code>（每个工具调用都要问）、<code>auto_edit</code>（编辑类自动放行，其余继续问）、<code>yolo</code>（全部放行）、<code>plan</code>（只读）。</p>
+<p>这里有个容易踩的点：<strong><code>yolo</code> 不能写进 <code>settings.json</code></strong>。settings 表里给了 <code>general.defaultApprovalMode</code>，但校验报错的原文是 <code>Invalid enum value. Expected 'default' | 'auto_edit' | 'plan', received 'yolo'</code>（退出码 1）。想无脑放行只能在命令行给 <code>--yolo</code> 或 <code>--approval-mode=yolo</code>；反过来想彻底禁掉，写 <code>"security": {"disableYoloMode": true}</code>，源码里它和 <code>admin.secureModeEnabled</code> 是或的关系。</p>
+<p>Claude Code 的对应物是权限模式，六档：<code>default</code>、<code>acceptEdits</code>、<code>plan</code>、<code>auto</code>、<code>dontAsk</code>、<code>bypassPermissions</code>。官方文档对 <code>default</code> 的描述是「Prompts for permission on first use of each tool」，CLI 里显示为 Manual，<code>manual</code> 是它的别名。</p>
+<p>一个版本相关的坑：文档明确写了 <code>auto</code> 与 <code>bypassPermissions</code> 从项目或 local 设置里<strong>不生效</strong>，必须写进 user 或 managed 设置，或者用 <code>--permission-mode</code> 临时给；并注明「Before v2.1.257, <code>bypassPermissions</code> took effect <a href="/2026-09-29-2026-technical-books-for-programmers-6-books-ranke-en.html" class="internal-link">from</a> any file」。也就是说 2.1.257 之前你写在项目 <code>.claude/settings.json</code> 里的 <code>bypassPermissions</code> 是能用的，升级之后静默失效。想从根上禁掉，设 <code>permissions.disableBypassPermissionsMode</code> 或 <code>permissions.disableAutoMode</code> 为 <code>"disable"</code>。</p>
+<h2>权限第二层：规则写在哪、谁赢</h2>
+<p>这层两家思路完全不同。</p>
+<p>Gemini CLI 的规则是 <strong>TOML</strong>，放在 <code>~/.gemini/policies/*.toml</code>：</p>
+<pre><code>[[rule]]
+toolName = "run_shell_command"
+commandPrefix = "git"
+decision = "ask_user"
+priority = 100</code></pre>
+<p>决胜靠优先级：<code>final_priority = tier_base + (toml_priority / 1000)</code>，tier 从低到高是 Default(1) / Extension(2) / Workspace(3) / User(4) / Admin(5)。</p>
+<p>⚠️ <strong>官方文档在这段自相矛盾，我按原文照抄不作取舍</strong>：tier 表给 Admin 的 base 是 5、User 是 4，同页下面的例子却写「User 的 priority 100 变成 3.100」「Admin 的 priority 20 变成 4.020」，而 Admin 小节又把 Admin 称作 "Tier 4"。三处对不上，真要做企业级下发，建议自己写一条高 priority 规则实测一遍，别照文档推断。</p>
+<p>更要紧的是这段原文警告：<strong>Workspace tier（<code>.gemini/policies</code>）当前是坏的</strong>，官方直接写了 "currently non-functional ... will not have any effect"，并指向 issue #18186。想给某个仓库单独下发策略，目前只能落在 User 或 Admin 层。</p>
+<p>Claude Code 的规则是 JSON，写在 <code>settings.json</code> 的 <code>permissions</code> 里：</p>
+<pre><code>{
+  "permissions": {
+    "allow": ["Bash(npm run test *)"],
+    "deny": ["Read(./.env)", "Read(./.env.*)"]
+  }
+}</code></pre>
+<p>评估顺序固定，官方文档原话：「Rules are evaluated in order: deny, then ask, then allow. The first match in that order determines the outcome, and rule specificity doesn't change the order.」翻成白话：一条宽 <code>deny</code> 会吃掉一条窄 <code>allow</code>，你没法用 <code>Bash(aws s3 ls)</code> 的 allow 去开 <code>Bash(aws *)</code> 的 deny 一个口子；<code>ask</code> 同理压过 <code>allow</code>。跨作用域也一样，用户级 deny 压过项目级 allow。</p>
+<p>对比下来最实用的一句话：<strong>Gemini 是「谁的数值大谁说话」，Claude 是「deny 永远最大」</strong>。前者灵活但要自己算数，后者死板但不会算错。</p>
+<p>另外三个细节值得记：</p>
+<p>1. Gemini 的全局 <code>deny</code>（不带 <code>argsPattern</code>）有个副作用是好事：官方说这会把工具「从模型的记忆里完全移除」，模型连这个工具都看不到，省上下文。</p>
+<p>2. Claude 的文件路径规则只认 <code>Edit(path)</code> 与 <code>Read(path)</code>。写 <code>Write(docs/<strong>)</code> 会被接受但永远不被查询，启动时给警告，官方要求改用 <code>Edit(docs/</strong>)</code>。</p>
+<p>3. 通配符位置有讲究：Claude 的 <code>Bash(git *)</code> 放行所有 git 子命令，<code>Bash(git log *)</code> 只放行 <code>git log</code>。文档原话是 "Put the <code>*</code> after the subcommand"。</p>
+<p>信任模型也不同。Claude 里项目 <code>.claude/settings.json</code> 的 allow 规则要等你在工作区信任对话框里确认后才生效，deny 与 ask 立刻生效；Gemini 的 folderTrust 则直接决定 headless 能不能起来，这条放到报错二讲。</p>
+<h2>上下文文件：同名不同命</h2>
+<p>两家都用一个 markdown 文件当项目记忆，默认名分别是 <code>GEMINI.md</code> 与 <code>CLAUDE.md</code>，都可以改（Gemini 是 <code>context.fileName</code>，可以填数组；Claude 另外认 <code>AGENTS.md</code>）。加载范围差别很大：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Gemini CLI</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Claude Code</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">全局</td><td style="border:1px solid #ddd;padding:8px;"><code>~/.gemini/GEMINI.md</code></td><td style="border:1px solid #ddd;padding:8px;"><code>~/.claude/CLAUDE.md</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">项目</td><td style="border:1px solid #ddd;padding:8px;">工作区与父目录中的 <code>GEMINI.md</code></td><td style="border:1px solid #ddd;padding:8px;"><code>./CLAUDE.md</code> 或 <code>./.claude/CLAUDE.md</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">私有</td><td style="border:1px solid #ddd;padding:8px;">私有记忆目录</td><td style="border:1px solid #ddd;padding:8px;"><code>./CLAUDE.local.md</code>（建议进 .gitignore）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">规则目录</td><td style="border:1px solid #ddd;padding:8px;">无</td><td style="border:1px solid #ddd;padding:8px;"><code>.claude/rules/**.md</code>、<code>~/.claude/rules/</code> 递归发现</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">组织下发</td><td style="border:1px solid #ddd;padding:8px;">Admin 系统目录</td><td style="border:1px solid #ddd;padding:8px;">managed <code>CLAUDE.md</code>（Windows 在 <code>C:\Program Files\ClaudeCode\CLAUDE.md</code>）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">按需加载</td><td style="border:1px solid #ddd;padding:8px;">工具访问某目录时扫该目录及祖先（JIT）</td><td style="border:1px solid #ddd;padding:8px;">子目录文件在读写该目录内文件后才加载</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">导入语法</td><td style="border:1px solid #ddd;padding:8px;"><code>@file.md</code></td><td style="border:1px solid #ddd;padding:8px;"><code>@path</code>，递归最多 4 跳</td></tr></tbody></table>
+<p>两个容易被忽略的差异：</p>
+<ul><li><strong>父目录拼接</strong>：Claude 明确写了「从文件系统根一路向下拼到你的工作目录」，所以 <code>~/work/CLAUDE.md</code> 里写的东西，进到 <code>~/work/proj</code> 也会带上；Gemini 的层级描述是「全局 → 工作区与父目录 → JIT」，实际行为要先在目标机器上验证。</li><li><strong>大小上限</strong>：Claude 写了「loads a CLAUDE.md file of up to 4 MiB in full and skips a larger file」，超限整个文件跳过；Gemini 官方文档我没找到对应数字，不确定就不要自己加限制。</li></ul>
+<p>自动记忆这块也能看出取向。Claude 的 auto memory 每次会话自动带 <code>MEMORY.md</code> 的前 200 行或 25KB（先到先算）；Gemini 的 Auto Memory 标注为 experimental 且<strong>默认关闭</strong>，要手动开 <code>experimental.autoMemory</code>，触发条件还挺苛刻：会话需空闲至少 3 小时且含至少 10 条用户消息，而且只把候选写进 inbox，不经批准不碰任何记忆文件。一个是默认帮你记，一个是默认不记、记了也要你点头。</p>
+<p>顺手放三篇本站之前的上下文管理文章，配合着看更完整：<a href="https://yaohehe.github.io/2026-05-27-claude-code-200k-165k.html" target="_blank" rel="nofollow sponsored">Claude Code 上下文窗口管理</a> 讲 200K/165K 的实际可用空间，<a href="https://yaohehe.github.io/2026-06-13-headroom-claude-code-token-65k-5k-3.html" target="_blank" rel="nofollow sponsored">65K token 余量怎么省</a> 讲压缩策略，<a href="https://yaohehe.github.io/2026-07-27-karpathy-claudemd-2026-vs-skills-claude-code.html" target="_blank" rel="nofollow sponsored">CLAUDE.md 与 Skills 该怎么分工</a> 讨论了这个文件到底该写多长。</p>
+<h2>报错一：退出码 41，没配认证方式</h2>
+<p>现象（headless 下 <code>-p</code>）：</p>
+<pre><code>Please set an Auth method in your <home>/.gemini/settings.json or specify one of the following environment variables before running: GEMINI_API_KEY, GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_GENAI_USE_GCA</code></pre>
+<p>原因：<code>GEMINI_API_KEY</code> 为空且 settings 里没有 <code>security.auth</code>。处理：在用户 settings 里配 <code>security.auth.selectedType</code>，或显式 <code>export GEMINI_API_KEY=...</code>。注意别把它塞进项目 <code>.gemini/settings.json</code>，那样会被 folderTrust 拦在门外（见下一条）。</p>
+<h2>报错二：退出码 55，headless 里工作区不被信任</h2>
+<p>现象：</p>
+<pre><code>Gemini CLI is not running in a trusted directory. To proceed, either use `--skip-trust`, set the `GEMINI_CLI_TRUST_WORKSPACE=true` environment variable, or trust this directory in interactive mode.</code></pre>
+<p>这是 CI 里最容易卡住的一条。三种解法我都实测过：加 <code>--skip-trust</code>；设 <code>GEMINI_CLI_TRUST_WORKSPACE=true</code>；或在用户 settings 里显式写 <code>"security": {"folderTrust": {"enabled": true}}</code> 并预先登记目录。</p>
+<p>⚠️ <strong>顺带挖到一个官方文档的自相矛盾</strong>：trusted-folders 文档写「The Trusted Folders feature is <strong>disabled by default</strong>」，settings 表却给 <code>security.folderTrust.enabled</code> 默认值 <code>true</code>，而 0.64.0 的源码 <code>isFolderTrustEnabled</code> 是 <code>settings.security?.folderTrust?.enabled ?? true</code>。我用一个全新目录测试：不写任何设置直接 <code>-p</code>，拿到的就是这条 55；把 <code>folderTrust</code> 显式设成 <code>false</code> 后，命令行继续往下走到了认证阶段。<strong>实际默认是开启的，trusted-folders 那页文档滞后。</strong> 结论：CI 里别依赖默认值，显式给 <code>--skip-trust</code> 或环境变量，版本升级也不会翻车。</p>
+<h2>报错三：退出码 52，settings.json 语法错</h2>
+<p>现象：</p>
+<pre><code>Error in <home>/.gemini/settings.json: Expected double-quoted property name in JSON at position 44 (line 1 column 45)
+Please fix the configuration file(s) and try again.</code></pre>
+<p>比 Claude 那边更硬：整个 CLI 起不来。而且报错给的是字符位置不是行号，长文件里找起来很烦，建议先 <code>python -m json.tool</code> 过一遍。</p>
+<h2>报错四：想在 settings.json 里默认开 YOLO</h2>
+<p>现象（退出码 1，但仍会继续执行）：</p>
+<pre><code>Invalid configuration in <home>/.gemini/settings.json:
+
+Error in: general.defaultApprovalMode
+    Invalid enum value. Expected 'default' | 'auto_edit' | 'plan', received 'yolo'</code></pre>
+<p>原因前面说过，<code>yolo</code> 只接受命令行形式。要长期生效就写 <code>--approval-mode=yolo</code>（或 <code>--yolo</code>），要永久禁止就 <code>security.disableYoloMode: true</code>。</p>
+<h2>报错五：CI 里工具静默被拒</h2>
+<p>这不是一条报错文本，是策略引擎的语义坑。官方文档原文：<code>ask_user</code> 决策「In non-interactive mode, this is treated as <code>deny</code>」。也就是说你在本地交互时习惯让模型问你一声，到了 <code>-p</code> 的 CI 里会直接被拒，而日志未必告诉你为什么。</p>
+<p>处理：CI 里显式下发 allow 规则（User 或 Admin tier），或者对个别命令写 <code>commandPrefix</code> 规则覆盖默认的 <code>ask_user</code>。不要指望 <code>--yolo</code> 兜底，那条路在 <code>security.disableYoloMode</code> 打开时会被降级成 default。</p>
+<h2>报错六：Claude 的 permissions.allow 类型写错，整个文件失效</h2>
+<p>现象（退出码 1）：</p>
+<pre><code>Not logged in · Please run /login
+These settings files did not load, so nothing in them is in effect, including hooks and permission rules. Each loads again once the problem listed for it is fixed:
+  <home>/claude/settings.json (permissions.allow): Expected array, but received string</code></pre>
+<p>我测试时把 <code>permissions.allow</code> 写成了字符串。注意这句的严重性：<strong>hooks 一起失效</strong>，不只是权限。修成数组即可。排查时优先看这段提示，它比任何日志都直接。</p>
+<h2>报错七：两个 CLI 的家目录会互相污染</h2>
+<p>同时测两个工具时，这次实测时我一开始只设了 <code>GEMINI_CLI_HOME</code>，结果 Claude 照旧往 <code>~/.claude</code> 里写。正确做法是分别重定向：</p>
+<pre><code>$env:GEMINI_CLI_HOME = "D:\tmp\gcli\home"
+$env:CLAUDE_CONFIG_DIR = "D:\tmp\gcli\home\claude"</code></pre>
+<p>实测首次运行的落盘差异：Gemini 只生成 <code>.gemini/projects.json</code>（72 字节）与 <code>history/</code>、<code>tmp/</code> 下的 <code>.project_root</code>；Claude 会写 <code>.claude.json</code>（719 字节，含 machineID 与 userID）、<code>backups/.claude.json.backup.<ts></code> 以及 <code>projects/<路径>/<uuid>.jsonl</code> 会话记录（单条 80 KB 上下）。做沙箱或 CI 缓存时这个差异要算进去。</p>
+<h2>迁移对照表</h2>
+<p>从 Claude Code 切到 Gemini CLI，或者反过来，可以照这张表改：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Claude Code</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Gemini CLI</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>permissions.allow: ["Bash(npm test *)"]</code></td><td style="border:1px solid #ddd;padding:8px;">TOML <code>toolName="run_shell_command"</code> + <code>commandPrefix="npm test"</code> + <code>decision="allow"</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>permissions.deny: ["Read(./.env)"]</code></td><td style="border:1px solid #ddd;padding:8px;">同上 <code>decision="deny"</code>（全局 deny 还会把工具从模型视野移除）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>--dangerously-skip-permissions</code></td><td style="border:1px solid #ddd;padding:8px;"><code>--yolo</code> 或 <code>--approval-mode=yolo</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>--permission-mode plan</code></td><td style="border:1px solid #ddd;padding:8px;"><code>--approval-mode plan</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>permissions.defaultMode</code></td><td style="border:1px solid #ddd;padding:8px;"><code>general.defaultApprovalMode</code>（不接受 yolo）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">managed settings</td><td style="border:1px solid #ddd;padding:8px;">Admin tier 策略 + 系统级 settings（Windows 在 <code>C:\ProgramData\gemini-cli\policies</code>）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>--add-dir</code></td><td style="border:1px solid #ddd;padding:8px;"><code>--include-directories</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">项目 <code>.claude/settings.json</code></td><td style="border:1px solid #ddd;padding:8px;">项目 <code>.gemini/settings.json</code>（folderTrust 未信任时被忽略）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>CLAUDE_CONFIG_DIR</code></td><td style="border:1px solid #ddd;padding:8px;"><code>GEMINI_CLI_HOME</code></td></tr></tbody></table>
+<h2>FAQ</h2>
+<p><strong>Q: 两个能同时装在一台机器上吗？</strong></p>
+<p>A: 能，我这次就是同时装的。但家目录要分开（见报错七），否则排查配置时会互相干扰。</p>
+<p><strong>Q: 项目级的策略下发，哪家现在能用？</strong></p>
+<p>A: Claude 可以用 <code>.claude/settings.json</code> 提交进仓库（allow 需等工作区信任确认）；Gemini 的 Workspace tier 官方标注为 non-functional（issue #18186），目前只能走 User 或 Admin 层。</p>
+<p><strong>Q: 想让某个工具彻底不出现在模型视野里，怎么做？</strong></p>
+<p>A: Gemini 写一条不带 <code>argsPattern</code> 的 deny，官方明确说这会把工具从模型记忆里移除；Claude 侧 <code>Bash(*)</code> 作为 deny 时「remove the tool <a href="/2026-09-29-2026-technical-books-for-programmers-6-books-ranke-en.html" class="internal-link">from</a> Claude's context」，效果类似。</p>
+<p><strong>Q: 上下文文件写多大合适？</strong></p>
+<p>A: Claude 给了硬指标：单个 CLAUDE.md 超过 4 MiB 整个跳过，官方还提示 "Shorter files produce better adherence"。Gemini 侧我没查到官方上限，建议自己保守一点。</p>
+<p><strong>Q: 版本信息以哪个为准？</strong></p>
+<p>A: 以 <code>gemini --version</code> / <code>claude --version</code> 的实际输出和 npm registry 为准。第三方教程的版本号经常滞后，本文所有数字都是 2026-10-18 在本机实测得到的。</p>
+<h2>写到最后</h2>
+<p>这两家的差异不在「谁更安全」，而在<strong>你把决策权放在哪</strong>：Gemini 把决定权交给一套可算优先级的规则文件，适合要集中下发、分级管控的团队；Claude 把决定权交给 deny-first 的固定顺序和逐条提示，适合想让规则行为可预测、宁可多问一句的人。</p>
+<p>如果你的场景是 CI，先解决 folderTrust（报错二）和 <code>ask_user</code> 静默变 deny（报错五）这两条，其余都是配置习惯问题。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

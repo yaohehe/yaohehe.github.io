@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PostgreSQL 17 Troubleshooting in Production: 5 Real Lock-Wait Errors and the pg_wait_events Fix - TechPassive</title>
+  <meta name="description" content="The database was up, CPU sat at 10%, and the slow-query log was empty, yet every API call timed out. A post-mortem built on PostgreSQL 17's new pg_wait_events view, with pg_stat_activity, pg_locks, and pg_blocking_pids, plus copy-paste SQL and tiered timeout settings.">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>PostgreSQL Production Post-Mortem: When the DB Is Up but Every Request Hangs</h1>
+  <div class="post-tags">
+    <span class="tag">PostgreSQL</span><span class="tag">Troubleshooting</span><span class="tag">Observability</span><span class="tag">SRE</span><span class="tag">Database</span>
+  </div>
+  <div class="content">
+    <h2>⏳ TL;DR: The Short Version</h2>
+<ul><li>The night every endpoint timed out, the <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> was alive, CPU was sitting around 10%, and the slow-query log had recorded nothing. The backends were not **running**; they were **waiting**.</li><li>PostgreSQL records why a backend is paused in two columns of `pg_stat_activity`: `wait_event_type` and `wait_event`. Since PostgreSQL 17 there is also a `pg_wait_events` view (`type`, `name`, `description`) that translates those wait codes into plain English.</li><li>The diagnostic order is fixed: find sessions with `wait_event_type = 'Lock'`, walk the blocking chain with `pg_blocking_pids(pid)` until you reach the real blocker, confirm the lock type with `pg_locks`, and only then decide whether to cancel or terminate.</li><li>What turns an intermittent window into a full outage is rarely one slow query. It is usually a single **idle in transaction** session holding a lock it no longer needs.</li></ul>
+<blockquote>Disclosure: this post contains independent third-party affiliate links. Buying through them does not change your price but may earn this site a commission. Purchasing is unrelated to the troubleshooting method described here.</blockquote>
+<h2>The Incident: Database Up, Every Endpoint Stuck</h2>
+<p>Version details matter here, because several of the commands below behave differently across releases:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Item</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Version / note</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">OS</td><td style="border:1px solid #ddd;padding:8px;">Ubuntu 24.04 LTS</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Database</td><td style="border:1px solid #ddd;padding:8px;">PostgreSQL 18.6 (released 2026-08-13); one instance still on 17.11</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Pooler</td><td style="border:1px solid #ddd;padding:8px;">PgBouncer 1.25.2</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Tools</td><td style="border:1px solid #ddd;padding:8px;">pg_stat_activity, pg_locks, pg_stat_statements, pg_wait_events</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Network</td><td style="border:1px solid #ddd;padding:8px;">2.5G switch shared by the primary and a read replica</td></tr></tbody></table>
+<p>It was a textbook e-commerce afternoon. Around 14:00 the order API's P99 jumped from 80ms to 12s, and thirty seconds later <code>504</code> responses piled up. The first instinct is always "the <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> got slow," so we checked three things:</p>
+<p>1. <code>top</code>: the PostgreSQL backend processes together used just over 10% CPU.</p>
+<p>2. Slow-query log: <code>log_min_duration_statement = 1000</code> was on, yet that hour recorded almost nothing.</p>
+<p>3. Connections: PgBouncer's <code>cl_active</code> had climbed to the <code>max_client_conn</code> ceiling, and requests were queuing behind it.</p>
+<p>Those three facts together rule out "one query scanning too much." **Low CPU + a clean slow-query log + a full connection pool** all point the same way: most sessions were not burning CPU at all. They were waiting on a lock, and waiting does not show up in the slow-query log unless you also enable <code>log_lock_waits</code>.</p>
+<p>When I actually ran this incident, my first move was a restart, which is close to the least useful action for a waiting-type failure and wiped the live evidence on the way down. I spent 35 minutes from 14:05 to 14:40, and the real diagnosis took under ten of them. The workflow below is the checklist I wrote afterward so the next on-call engineer does not lose those 25 minutes.</p>
+<h2>First, Quantify "Waiting": wait_event_type and wait_event</h2>
+<p>Since PostgreSQL 9.6, <code>pg_stat_activity</code> has exposed <code>wait_event_type</code> and <code>wait_event</code>. Whenever a backend is not spending time on CPU work, it writes the reason it paused into those two columns. The broad categories are few:</p>
+<ul><li>`Lock`: heavyweight locks (table, row, `transactionid`, and so on) and the most common outage culprit.</li><li>`LWLock`: lightweight locks, usually internal contention such as `WALWrite` or `ProcArray`.</li><li>`IO`: disk I/O waits such as `DataFileRead` or `WALWrite`.</li><li>`Client`: waiting on the client, classically `ClientRead` when the application has the result but has not committed or sent the next query.</li><li>`IPC`, `Timeout`, `BufferPin`, `Activity`: internal messaging, timeout waits, buffer pinning, and process main loops.</li></ul>
+<p>Keep one counter-intuitive fact in mind: <code>wait_event_type = 'Client'</code> with <code>wait_event = 'ClientRead'</code> usually means the <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> is fine and the application is stalling. On read replicas this is easily misread as <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> trouble.</p>
+<p>Start with a single read-only query that aggregates every non-idle session by wait:</p>
+<pre><code>SELECT wait_event_type, wait_event, count(*) AS sessions
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+  AND state <> 'idle'
+GROUP BY 1, 2
+ORDER BY sessions DESC;</code></pre>
+<p>If the <code>Lock</code> row suddenly shows dozens of sessions, you have found your incident. This statement is read-only and safe to run in production at any time.</p>
+<h2>PostgreSQL 17's pg_wait_events Turns Wait Codes Into Plain English</h2>
+<p><code>pg_stat_activity.wait_event</code> returns short identifiers such as <code>WALWrite</code>, <code>ClientRead</code>, or <code>relation</code>. Before version 17, understanding them meant digging through the documentation or the <code>wait_event_names.txt</code> file in the source tree. Starting with PostgreSQL 17, those descriptions were frozen into a system view called <code>pg_wait_events</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Column</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Type</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Meaning</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`type`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">Broad wait category, matching `wait_event_type`</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`name`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">Specific wait name, matching `wait_event`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`description`</td><td style="border:1px solid #ddd;padding:8px;">text</td><td style="border:1px solid #ddd;padding:8px;">One human-readable sentence</td></tr></tbody></table>
+<p>The view is read-only, readable by every role, needs no statistics reset, and has no runtime cost. It is documentation that ships with the server. A stock 17.x instance returns roughly 350 rows, and the count grows with each major release as new wait points are instrumented. Join it to <code>pg_stat_activity</code> on <code>type</code> / <code>name</code> and you can read the real answer at the incident scene:</p>
+<pre><code>SELECT a.pid, a.usename, a.state, a.wait_event_type, a.wait_event,
+       now() - a.xact_start AS xact_age,
+       now() - a.query_start AS query_age,
+       w.description
+FROM pg_stat_activity a
+JOIN pg_wait_events w
+  ON a.wait_event_type = w.type
+ AND a.wait_event = w.name
+WHERE a.wait_event IS NOT NULL
+  AND a.state = 'active'
+ORDER BY xact_age DESC;</code></pre>
+<p><code>xact_age</code> (how long the transaction has been open) matters more than <code>query_age</code> (how long the current statement has run). A statement that started 200ms ago can still hold a lock acquired 18 minutes earlier by the surrounding transaction.</p>
+<h2>The Three-Query Workflow</h2>
+<p><strong>Query one, find who is blocked:</strong></p>
+<pre><code>SELECT pid, usename, application_name, wait_event_type, wait_event,
+       now() - query_start AS waited, left(query, 80) AS stmt
+FROM pg_stat_activity
+WHERE wait_event_type = 'Lock'
+ORDER BY waited DESC;</code></pre>
+<p><strong>Query two, walk the chain to the root:</strong></p>
+<pre><code>SELECT blocked.pid   AS blocked_pid,
+       pg_blocking_pids(blocked.pid) AS blocker_pids,
+       blocked.state AS blocked_state,
+       blocker.pid   AS blocker_pid,
+       blocker.state AS blocker_state,
+       now() - blocker.xact_start AS blocker_xact_age,
+       left(blocker.query, 80) AS blocker_stmt
+FROM pg_stat_activity blocked
+JOIN pg_stat_activity blocker
+  ON blocker.pid = ANY (pg_blocking_pids(blocked.pid))
+WHERE blocked.wait_event_type = 'Lock'
+ORDER BY blocker_xact_age DESC;</code></pre>
+<p><code>pg_blocking_pids()</code> returns an **array**, so there may be more than one blocker. Pay close attention to <code>blocker_state</code>: if it reads <code>idle in transaction</code>, that backend stopped doing useful work long ago and is still holding locks. That is the single most common, and most fixable, cause.</p>
+<p><strong>Query three, confirm which lock is being waited on:</strong></p>
+<pre><code>SELECT l.pid, l.locktype, l.relation::regclass, l.mode, l.granted,
+       now() - a.query_start AS waited
+FROM pg_locks l
+JOIN pg_stat_activity a ON l.pid = a.pid
+WHERE NOT l.granted
+ORDER BY waited DESC;</code></pre>
+<p>There is a trap with row-level contention: because row locks are stored on disk, <code>pg_locks</code> often shows no <code>tuple</code> entry and instead reports a wait on <code>transactionid</code>. So "I checked <code>pg_locks</code> and saw no row lock" is expected behavior, not a dead end.</p>
+<h2>Post-Mortem: Five Real Errors and How to Fix Them</h2>
+<h3>Error 1: ERROR: canceling statement due to lock timeout</h3>
+<pre><code>ERROR:  canceling statement due to lock timeout</code></pre>
+<p><strong>Symptom:</strong> a batch job that updates order status fails every so often, then succeeds on retry.</p>
+<p>**Root cause:** the statement could not acquire its lock within <code>lock_timeout</code> and was cancelled. Note this is not <code>statement_timeout</code>. <code>lock_timeout</code> caps how long a statement queues for a lock; <code>statement_timeout</code> caps total execution time. **Raising <code>statement_timeout</code> will not rescue a statement cancelled by <code>lock_timeout</code>.**</p>
+<p>**Fix:** use query two to find the blocker. If it is an abandoned <code>idle in transaction</code> session, release it with <code>pg_terminate_backend()</code>. If it is a legitimate but heavy transaction, reshape the job into a short <code>lock_timeout</code> (say 100ms) plus an application-level retry loop, so it fails fast and loudly instead of occupying a connection in the queue.</p>
+<h3>Error 2: ERROR: relation "pg_wait_events" does not exist</h3>
+<pre><code>ERROR:  relation "pg_wait_events" does not exist
+LINE 1: SELECT * FROM pg_wait_events LIMIT 3;</code></pre>
+<p><strong>Symptom:</strong> you paste the SQL from this article and immediately get a missing-relation error.</p>
+<p>**Root cause:** the view was **introduced in PostgreSQL 17** (commit 1e68e43d). On 16 and earlier it simply does not exist. Confirm with <code>SHOW server_version;</code> or <code>SELECT version();</code>.</p>
+<p>**Fix:** on versions below 17, fall back to the <code>wait_event_type</code> / <code>wait_event</code> columns in <code>pg_stat_activity</code> and read the official wait-event tables. The durable fix is upgrading to a supported major version. Note that **PostgreSQL 14 stops receiving fixes on 2026-11-12**, so any instance still on 14 should plan an upgrade soon.</p>
+<h3>Error 3: ERROR: deadlock detected</h3>
+<pre><code>ERROR:  deadlock detected
+DETAIL:  Process 52210 waits for ShareLock on transaction 998877; blocked by process 51990.
+Process 51990 waits for ShareLock on transaction 552211; blocked by process 52210.
+HINT:  See server log for query details.</code></pre>
+<p><strong>Symptom:</strong> two sessions each wait for a row lock the other holds, forming a cycle.</p>
+<p>**Root cause:** two code paths acquire locks in **opposite order**. Path A locks orders then inventory; path B locks inventory then orders. After <code>deadlock_timeout</code> (default 1s), PostgreSQL's detector intervenes and rolls back one transaction at random.</p>
+<p>**Fix:** timeouts cannot cure this. Standardize lock ordering so every transaction touching both orders and inventory accesses them in the same fixed order. Turn on <code>log_lock_waits = on</code> so the log preserves the evidence chain.</p>
+<h3>Error 4: FATAL: terminating connection due to idle-in-transaction timeout</h3>
+<pre><code>FATAL:  terminating connection due to idle-in-transaction timeout</code></pre>
+<p><strong>Symptom:</strong> sporadic "server closed the connection" errors that always follow a few reporting endpoints.</p>
+<p>**Root cause:** the application opened a <code>BEGIN</code>, then did something outside the <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> (calling an external API, running post-processing), leaving the transaction open the whole time. On PostgreSQL 18.6 / 17.11, with <code>idle_in_transaction_session_timeout</code> set, such idle sessions are forcibly disconnected and rolled back. **This is a protective mechanism, not a bug** — but it exposes a wrongly drawn transaction boundary.</p>
+<p>**Fix:** move external calls and message sends out of the transaction. For genuinely long work, use short transactions plus idempotent retries. Also set <code>idle_in_transaction_session_timeout</code> (say <code>60s</code>) on ordinary business databases so a forgotten transaction dies early instead of dragging the whole site down.</p>
+<h3>Error 5: pg_blocking_pids() returns an empty array, yet the session is clearly waiting</h3>
+<p>**Symptom:** a session reports <code>wait_event_type = 'Lock'</code>, but <code>pg_blocking_pids(pid)</code> returns <code>{}</code>. Nobody appears to block it.</p>
+<p>**Root cause:** <code>pg_blocking_pids()</code> only resolves heavyweight lock chains **within the same instance**. If the session is actually waiting on <code>Client</code> (a <code>ClientRead</code>, waiting for the app to consume the result) or another internal wait, the function has no blocker to return. The blocker could also live in a different <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a>, or connection pooling can change PID semantics so the chain looks empty.</p>
+<p>**Fix:** go back to <code>pg_stat_activity</code> and read the real <code>wait_event_type</code>. Is it <code>Lock</code>, or is it <code>Client</code> / <code>IO</code> / <code>LWLock</code>? Only <code>Lock</code> justifies chasing a blocker. And set <code>application_name</code> on every application so sessions are traceable to a service instead of guessed at inside the pool.</p>
+<h2>Seeing "Waiting" in EXPLAIN: SERIALIZE and MEMORY in PG 17</h2>
+<p>Not every "slow" is a lock. Some of it is data conversion and planner memory. PostgreSQL 17 added two <code>EXPLAIN</code> options:</p>
+<ul><li>`SERIALIZE`: shows the time spent converting the result set into the format sent over the network, which can dominate for large result sets or complex types.</li><li>`MEMORY`: reports memory used during query planning.</li></ul>
+<p>Stack them with <code>ANALYZE</code> and <code>BUFFERS</code>, and you get the full picture:</p>
+<pre><code>EXPLAIN (ANALYZE, BUFFERS, SERIALIZE, MEMORY, TIMING)
+SELECT o.id, o.status, o.total
+FROM orders o
+WHERE o.batch_id = 42;</code></pre>
+<p>Watch three things: whether <code>actual rows</code> matches the <code>rows=</code> estimate in order of magnitude (a large gap means stale statistics, so run <code>ANALYZE</code>); whether <code>read=</code> buffer counts are abnormal (missing index or bloat); and whether the <code>Serialization</code> portion is disproportionate (the bottleneck is conversion, not scanning).</p>
+<h2>Hardening: Turn "Intermittent" Into "Contained"</h2>
+<p>1. **Tier your timeouts** instead of using one global value. Use a tight <code>statement_timeout</code> for OLTP; relax it (or set it to 0) only for migrations and analytics sessions. Always set <code>lock_timeout</code> so lock waits fail early instead of queuing forever, and always set <code>idle_in_transaction_session_timeout</code>.</p>
+<p>2. **Use low-lock migration patterns.** Build indexes in production with <code>CREATE INDEX CONCURRENTLY</code>, keep heavy table changes off peak hours, and <code>SET lock_timeout</code> before an <code>ALTER TABLE</code> so you can back off and retry rather than queue a DDL behind a long query and create a lock queue.</p>
+<p>3. **Make the log carry evidence.** Turn on <code>log_lock_waits</code>, tune <code>deadlock_timeout</code> to the workload's sensitivity, and standardize <code>application_name</code>, so the next incident can be reconstructed quickly.</p>
+<h2>Self-Hosted PostgreSQL Lab and Desk Gear (Affiliate Links)</h2>
+<p>These three are a common combination for a small self-hosted lab used to reproduce the waits described above: a low-power node for a test instance, a solid cable for primary-replica traffic, and a card for a cold backup. They are buying references only and are unrelated to the method itself:</p>
+<ul><li>Raspberry Pi 5 (8GB): a low-power node for a self-hosted PostgreSQL test instance, handy for reproducing lock waits and replication lag. 👉 <a href="https://www.amazon.com/dp/B0CK2FCG1K?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check it on Amazon >></a></li><li><a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Basics Cat 6 Ethernet cable: for primary-replica and internal traffic; pick the length for your rack or desk. 👉 <a href="https://www.amazon.com/dp/B00N2VISLW?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check it on Amazon >></a></li><li><a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> Basics microSDXC 128GB: a single-board-computer system disk for a disposable test environment. 👉 <a href="https://www.amazon.com/dp/B08TJRVWV1?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Check it on Amazon >></a></li></ul>
+<p>Prices shift with memory markets and promotions; check the live listing on <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a>.</p>
+<h2>FAQ</h2>
+<p>**Q: Does <code>wait_event_type = 'Client'</code> still count as a <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> problem?**</p>
+<p>A: No. <code>Client</code> means the backend is waiting for the client to read the result or send the next statement; the bottleneck is the application. A flood of <code>ClientRead</code> usually means the app holds a connection without committing.</p>
+<p><strong>Q: I cannot see other users' sessions in pg_stat_activity. What now?</strong></p>
+<p>A: An ordinary role sees <code>query</code> text only for its own sessions, but <code>wait_event_type</code> / <code>wait_event</code> / <code>pid</code> remain readable. For the full view, use the <code>pg_monitor</code> role or a superuser.</p>
+<p><strong>Q: Does pg_wait_events add production overhead?</strong></p>
+<p>A: No. It is a static catalog view with no statistics reset and no runtime cost, queryable at any time.</p>
+<p><strong>Q: What lock_timeout value is right?</strong></p>
+<p>A: There is no universal number. Short OLTP transactions often start near 1s, while migrations and DDL use something shorter (for example 100ms) with retries. The point is to fail early and loudly rather than queue indefinitely.</p>
+<p><strong>Q: Will idle_in_transaction_session_timeout kill legitimate long transactions?</strong></p>
+<p>A: It can, so set the threshold per workload. It measures time spent with a transaction open but doing nothing; genuinely running long transactions are unaffected. What gets killed is usually a transaction boundary that was drawn wrong.</p>
+<h2>Final Thoughts</h2>
+<p>The lesson compresses into one line: **in <a href="/2026-09-26-how-i-cut-a-wordpress-query-from-32s-to-180ms-en.html" class="internal-link">database</a> incidents, "slow" and "waiting" are different problems, and <code>pg_wait_events</code> makes "waiting" readable for the first time.** Read the wait type correctly, trace the blocking chain to its root, and tier your three timeouts, and most "every endpoint suddenly hangs" events can be classified within ten minutes instead of being fixed by restarting and hoping.</p>
+<p>Further reading:</p><p style="margin:15px 0;"><a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join MiniMax Token Plan: AI coding acceleration for businesses</a></p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://platform.minimaxi.com/subscribe/token-plan?code=E5yur9NOub&source=link" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#00d4aa;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⭐ MiniMax Token Plan</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

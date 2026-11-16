@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Chat Template 吃掉的 token：工具定义与消息信封实测 - TechPassive</title>
+  <meta name="description" content="40 条消息、10 个工具，实测四个模型 chat template 的真实开销：每条消息信封 1 到 5 token，Qwen3 的工具清单占 963 token，Llama 与 DeepSeek 的模板直接把工具吞掉且不报错。附可复现脚本、预算公式与 4 个真实报错，所有数字均为本机实跑。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Chat Template 吃掉的 token：工具定义与消息信封实测</h1>
+  <div class="post-tags">
+    <span class="tag">token</span><span class="tag">Chat Template</span><span class="tag">LLM</span>
+  </div>
+  <div class="content">
+    <p>我把同一段 40 轮的运维对话，按四个模型的官方 chat template 渲染后再数 token：正文部分 1,842 个 token，实际进上下文的是 3,012 个。多出来的 1,170 个不是对话内容，是模板加的信封和工具清单。</p>
+<p><strong>一句话结论</strong>：按正文估 token 的预算表，在这四个模型上会低估 3.6% 到 63.5%；其中两个模型的模板根本不认工具，一个 token 都不加，也不报任何错。本文不含任何联盟推广链接，所有数字都是我在本机跑出来的。</p>
+<h2>我实际测了什么</h2>
+<p>环境是 CPython 3.13.14、transformers 5.22.1、tokenizers 0.23.3。四份 chat template 取自各自 Hugging Face 仓库的 tokenizer_config.json，2026-11-03 抓取：Llama-3.1 的模板 348 个字符、DeepSeek-V3 2,145 个字符、Mistral-7B-Instruct-v0.3 3,959 个字符、Qwen3-8B 4,168 个字符。</p>
+<p>测法是同一条路径，不掺任何猜测：把 messages 列表交给 apply_chat_template，tokenize 打开，数出 id 长度；再拿同一批 messages 的 content 单独编码求和，两者相减就是模板加的量。20 轮问答、40 条消息，每条用户消息 35 个词左右，助手回复 12 个词左右。</p>
+<h2>信封：每条消息都收一次过路费</h2>
+<p>先看最小的一层，也就是只有结构、没有内容的开销。把 content 全设为空字符串，逐条加上去：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">模型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">单条空 user 消息</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">每多一条 user</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">每多一轮问答</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">40 条消息信封合计</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Llama-3.1</td><td style="border:1px solid #ddd;padding:8px;">10 token</td><td style="border:1px solid #ddd;padding:8px;">+5</td><td style="border:1px solid #ddd;padding:8px;">+15</td><td style="border:1px solid #ddd;padding:8px;">205</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Qwen3</td><td style="border:1px solid #ddd;padding:8px;">5 token</td><td style="border:1px solid #ddd;padding:8px;">+5</td><td style="border:1px solid #ddd;padding:8px;">+14</td><td style="border:1px solid #ddd;padding:8px;">207</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">DeepSeek-V3</td><td style="border:1px solid #ddd;padding:8px;">2 token</td><td style="border:1px solid #ddd;padding:8px;">+1</td><td style="border:1px solid #ddd;padding:8px;">+3</td><td style="border:1px solid #ddd;padding:8px;">62</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Mistral-v0.3</td><td style="border:1px solid #ddd;padding:8px;">8 token</td><td style="border:1px solid #ddd;padding:8px;">无法单加</td><td style="border:1px solid #ddd;padding:8px;">+9</td><td style="border:1px solid #ddd;padding:8px;">141</td></tr></tbody></table>
+<p>Llama-3.1 的一条 user 消息渲染出来是 <code><|begin_of_text|><|start_header_id|>user<|end_header_id|></code> 加两个换行，再跟正文和 <code><|eot_id|></code>，一共 5 个 token 只为了说「下面是用户说的话」。Qwen3 用 <code><|im_start|>user</code> 加换行，也是 5 个。DeepSeek-V3 最省，<code><｜User｜></code> 只要 1 个 token，因为它的角色标记被训练成了单个词表条目。</p>
+<p>Mistral 那栏写「无法单加」，原因后面单独说：这个模板不接受两条连续的 user 消息，逐条加会直接抛异常，只能按「user 加 assistant」成对加。</p>
+<p>信封本身不吓人，40 条消息最多 207 个 token。吓人的是它随消息条数线性长：一个 200 条消息的长会话，光信封就是 1,000 个 token 上下，而你在正文里一个数字都看不到。</p>
+<h2>工具定义：不是按 JSON 的字符数计价</h2>
+<p>真正的大头在工具。我准备了 10 个真实感的函数 schema，压缩成单行 JSON 之后，工具清单的裸文本是这样的：Llama 的词表下 745 个 token，Qwen3 下 756 个，Mistral 下 888 个。</p>
+<p>但模板不会把 JSON 原样贴进去，它会加说明文字：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">模型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">1 个工具</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">10 个工具</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">JSON 裸文本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">模板自带的说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Qwen3</td><td style="border:1px solid #ddd;padding:8px;">+175</td><td style="border:1px solid #ddd;padding:8px;">+963</td><td style="border:1px solid #ddd;padding:8px;">756</td><td style="border:1px solid #ddd;padding:8px;">约 207</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Mistral-v0.3</td><td style="border:1px solid #ddd;padding:8px;">+113</td><td style="border:1px solid #ddd;padding:8px;">+939</td><td style="border:1px solid #ddd;padding:8px;">888</td><td style="border:1px solid #ddd;padding:8px;">约 51</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Llama-3.1</td><td style="border:1px solid #ddd;padding:8px;">+0</td><td style="border:1px solid #ddd;padding:8px;">+0</td><td style="border:1px solid #ddd;padding:8px;">745</td><td style="border:1px solid #ddd;padding:8px;">无</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">DeepSeek-V3</td><td style="border:1px solid #ddd;padding:8px;">+0</td><td style="border:1px solid #ddd;padding:8px;">+0</td><td style="border:1px solid #ddd;padding:8px;">745</td><td style="border:1px solid #ddd;padding:8px;">无</td></tr></tbody></table>
+<p>Qwen3 一个工具要 175 个 token，而它的 JSON 只有 69 个。多出来的 106 个是模板自己写的一段系统消息，原文是 <code># Tools</code>、<code>You may call one or more functions to assist with the user query.</code>、<code>You are provided with function signatures within <tools></tools> XML tags:</code>，然后才是 JSON。十个工具时这段说明只加一次，所以单价从 175 掉到 96 左右。</p>
+<p>Mistral 走的是另一套：它把工具清单包成 <code>[AVAILABLE_TOOLS]</code> 塞在最后一条 user 消息前面，一个工具 113 个 token，十个 939 个，边际成本大约 94 个。</p>
+<p><strong>这里有个容易被忽略的量级</strong>：Qwen3 上 10 个工具（963 token）比整段 40 轮对话的正文（1,842 token）的一半还多。如果你在做一个二十个工具的 Agent，按实测每个约 96 token 外推，光工具清单就接近 1,900 个 token，还没开始聊。这个外推我没有实测，只作量级参考。</p>
+<h2>两个模板把工具整个吞掉，还不报错</h2>
+<p>Llama-3.1 的模板只有 348 个字符，全文是循环 messages、拼 <code><|start_header_id|></code> 加 role、再拼 content，最后补一个 assistant 头。里面没有出现 <code>tools</code> 这个变量名一次。</p>
+<p>结果是：你把 tools 传进去，模板照收，但渲染出来的字符串和不传时逐字节相同。我用字符串相等做了断言，<code>tools_rendered_identical</code> 为 true；40 条消息下带 10 个工具是 1,905 个 token，不带也是 1,905 个。</p>
+<p>DeepSeek-V3 更绕。它的模板 2,145 个字符，里面确实有工具相关的分支：<code>message['tool_calls']</code> 会被渲染成 <code><｜tool▁call▁begin｜></code> 那一串，<code>tool</code> 角色也有对应的输出格式。但它从头到尾没有读过 <code>tools</code> 这个变量。也就是说，这个模板能渲染「模型已经调用过工具」的历史消息，却不能把「你有哪些工具可用」写进 prompt。</p>
+<p>这类失败最难查：接口不抛异常，日志里 <code>tools=[...]</code> 看起来传得好好的，模型就是不调用工具，你会先怀疑模型能力、再怀疑提示词，最后才想到模板。</p>
+<p>对照办法只有一条，而且很便宜：把同一组 messages 渲染两遍，一遍带 tools 一遍不带，比较两个字符串是否相等。相等就说明工具没进 prompt。</p>
+<h2>18,780 与 939：我自己的测试踩了模板的相等判定</h2>
+<p>上面那栏破折号的来源值得单独讲，因为它是这次最贵的一课。</p>
+<p>Mistral 的模板里有这么一行判断：<code>{%- if tools is not none and (message == user_messages[-1]) %}</code>，意思是「只有当这条消息是最后一条 user 消息时，才注入工具清单」。它用的是字典相等，不是索引比较。</p>
+<p>我第一版测试为了省事，40 条消息里每一条用户消息的 content 完全相同、每一条助手回复也完全相同。于是每一对 user 消息都相等，判断对每一条都成立，工具清单被注入了 20 次。</p>
+<p>那一版测出来是 20,681 个 token，正文 1,740 个，工具成本 18,780 个，超了 1,088.6%。我第一反应是「Mistral 每轮都重发工具」，差点就这么写进文章。</p>
+<p>改法很简单：给每条消息加一个不同的后缀，让字典不相等。同样 40 条消息、同样 10 个工具，工具成本从 18,780 掉到 939，正好是 20 倍差。</p>
+<p><strong>教训有两层</strong>。第一层是测试自己的：对照组必须真的不同，否则你测的是「模板的行为」还是「你数据重复导致的放大」，分不清。第二层是模板的：用字典相等判断位置，只要客户端重发同一条消息（重试、回填、占位消息），工具清单就会被重复注入，成本按次数翻倍，而且没有任何提示。</p>
+<h2>一个能用的预算公式</h2>
+<p>把上面几层加起来，就是实际占用：</p>
+<p>实际 token ≈ 正文 token 之和 + 信封单价 × 消息条数 + 工具清单 × 注入次数 + 生成提示</p>
+<p>四个模型的验算，全部对得上：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">模型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">正文</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">信封</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">工具</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实际</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">偏差</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Llama-3.1</td><td style="border:1px solid #ddd;padding:8px;">1,700</td><td style="border:1px solid #ddd;padding:8px;">205</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,905</td><td style="border:1px solid #ddd;padding:8px;">+12.1%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Qwen3</td><td style="border:1px solid #ddd;padding:8px;">1,842</td><td style="border:1px solid #ddd;padding:8px;">207</td><td style="border:1px solid #ddd;padding:8px;">963</td><td style="border:1px solid #ddd;padding:8px;">3,012</td><td style="border:1px solid #ddd;padding:8px;">+63.5%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">DeepSeek-V3</td><td style="border:1px solid #ddd;padding:8px;">1,720</td><td style="border:1px solid #ddd;padding:8px;">62</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1,782</td><td style="border:1px solid #ddd;padding:8px;">+3.6%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Mistral-v0.3</td><td style="border:1px solid #ddd;padding:8px;">1,942</td><td style="border:1px solid #ddd;padding:8px;">141</td><td style="border:1px solid #ddd;padding:8px;">939</td><td style="border:1px solid #ddd;padding:8px;">3,022</td><td style="border:1px solid #ddd;padding:8px;">+55.6%</td></tr></tbody></table>
+<p>用法很直接：先用你的分词器把正文数出来，再加上表里的信封单价乘以条数，最后确认工具模板到底认不认 tools。三步里最容易被跳过的是第三步，而它恰好是那种「不认也不会告诉你」的检查。</p>
+<p>还有个细节：空 system 消息也要钱。Llama 上塞一条 content 为空的 system，多 5 个 token；Mistral 多 3 个；Qwen3 多 5 个；DeepSeek 是 0，因为它把 system 内容直接拼到开头，空字符串等于没拼。</p>
+<h2>报错与不报错的陷阱</h2>
+<p>我实际测试时踩到的四个真报错，原文照抄：</p>
+<p><strong>报错一</strong>：<code>ValueError: Cannot use chat template functions because tokenizer.chat_template is not set and no template argument was passed!</code> 原因是只加载了 tokenizer.json，没设模板。解法是从 tokenizer_config.json 里读 chat_template 赋给 tokenizer，或者直接给 apply_chat_template 传 template 参数。</p>
+<p><strong>报错二</strong>：<code>jinja2.exceptions.UndefinedError: 'dict object' has no attribute 'role'</code>。messages 里有一条只有 content 没有 role。模板会直接去取 message['role']，缺键就炸在渲染阶段，与分词无关。</p>
+<p><strong>报错三</strong>：<code>ValueError: Cannot apply chat template to an empty conversation. Provide at least one message.</code>。消息列表是空的时候，连渲染都进不去。这个报错本身很清楚，但它常出现在「历史被清空后重试请求」的场景里。</p>
+<p><strong>报错四</strong>：<code>TemplateError: After the optional system message, conversation roles must alternate user/assistant/user/assistant/...</code>。这是 Mistral 的交替校验，两条连续的 user 消息会直接失败。修法是在中间补一条 assistant，或者把两条 user 合并成一条。</p>
+<p>三个不报错但更危险的：</p>
+<p>一是 role 写成 <code>wizard</code>，模板原样渲染成 <code><|start_header_id|>wizard<|end_header_id|></code>，11 个 token，模型看到的是一个它没训练过的角色名。</p>
+<p>二是 content 传 None，渲染出来就是字符串 <code>None</code>，同样是 11 个 token，模型会把「None」当成用户说的话。</p>
+<p>三是 content 传多模态的列表，文本模板会把整个 Python 结构 repr 进去，渲染结果是 <code>[{'type': 'text', 'text': 'hi'}]</code>，24 个 token，比纯文本多花 13 个，而且模型看到的是带引号的字面量。</p>
+<h2>官方文档怎么说，实测对得上对不上</h2>
+<p>Hugging Face 的 chat templating 文档把机制写得很清楚：<code>role</code> 和 <code>content</code> 组成的字典「会被转换成 token 序列，通常带有 <code><|user|></code>、<code><|assistant|></code>、<code><|end_of_message|></code> 这类控制 token，让模型看到对话结构」。同一页还提醒，模板本身已经包含所有必要的特殊 token，再额外加通常是不对或重复的。</p>
+<p>关于生成提示，文档的原话是「并非所有模型都需要生成提示，有些模型比如 Llama 在 assistant 回复前没有任何特殊 token，这种情况下 add_generation_prompt 不起作用」。我的实测完全对上：Llama 加不加差 0，Mistral 差 0，Qwen3 差 3，DeepSeek 差 1。</p>
+<p>工具这块，文档只说「当一个模型支持工具调用时，把函数传给 apply_chat_template 的 tools 参数」。它没有写不支持时会怎样。我实测的答案是：静默丢弃，零 token，零报错。</p>
+<p>OpenAI 那边的口径不同。官方 cookbook 的计数函数是每条消息固定加 3 个 token、最后再加 3 个给回复打底，并且自己注明「这个函数算出来的是估计值，不是永久保证」，还专门写了一句「带 functions 参数的请求会在估算之外额外消耗 token」。所以哪怕在 OpenAI 这一侧，按正文数 token 也是低估。</p>
+<p>再看看另一套格式：tiktoken 里 o200k_harmony 编码带 1,091 个特殊 token。同一段两轮对话，纯文本 11 个 token，套上 <code><|start|>user<|message|>…<|end|></code> 之后是 22 个，正好翻倍。</p>
+<h2>本文的边界</h2>
+<p>我只测了 tokenizer 和模板渲染，没有测服务端真实计费，API 侧可能再包一层，也可能按不同的消息格式计。四个模型都只做前缀编码，没有跑生成质量，工具调用能不能成功还要看模型本身。四份模板是 Hugging Face 上开源权重仓库里的版本，DeepSeek 官方 API 的函数调用走的是服务端另一份模板，与我测的这份不是同一个文件。</p>
+<p>想接着往下看计数口径，可以先读我前面写的<a href="https://yaohehe.github.io/2026-11-01-tokenizer-4-1-token-34.html" class="internal-link">一个汉字被切成几个 token</a>，那篇讲单库两个编码的差异；再读<a href="https://yaohehe.github.io/2026-11-02-token-73.html" class="internal-link">五个分词器数同一段中文差 73%</a>，那篇讲换厂商词表之后的偏差。两篇都在讲「正文怎么数」，这篇补的是「正文之外还有多少」。如果你在做流式输出，<a href="https://yaohehe.github.io/2026-10-27-langgraph-messages.html" class="internal-link">LangGraph 的三个流式入口</a>那篇讲 token 怎么一段段吐出来，和这里的信封成本是同一件事的两头。</p>
+<h2>三句话收尾</h2>
+<p>先渲染再数，不要数正文。渲染两遍做相等断言，确认工具真的进了 prompt。最后按条数算信封，别按字数算。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

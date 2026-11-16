@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQLite Hot Backup: Opens Fine, 14,500 Rows Missing - TechPassive</title>
+  <meta name="description" content="Eleven hot backups on one SQLite database: single-file, three-file, backup API and VACUUM INTO. Single-file copies lost 14,500 rows, integrity_check said ok.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>SQLite Hot Backup: 11 Rounds, and a Copy 14,500 Rows Short</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-10-28-sqlite-14500.html" class="internal-link">SQLite</a></span><span class="tag">backup</span><span class="tag">disaster-recovery</span>
+  </div>
+  <div class="content">
+    <p>A reader sent me a question I could not answer with a shrug: the backup job runs every night, every log line is green, so why was there nothing to restore on the day it mattered?</p>
+<p>I turned that question into something measurable. One SQLite database, four common ways of "taking a backup", five to six rounds each, with writes running the whole time. Then I compared every snapshot row by row.</p>
+<p>The result is worse than I expected. <strong>A backup that opens is not necessarily a correct backup.</strong> The most common approach — copy the <code>.db</code> file somewhere else — lost committed data in four of five rounds. The worst round was 14,500 rows short, and <code>PRAGMA integrity_check</code> returned <code>ok</code> in all five.</p>
+<p>Everything below is what I actually ran: Windows, CPython 3.13, the bundled sqlite3 3.53.1. No <a href="/2026-09-29-github-actions-supply-chain-post-mortem-2026-i-aud-en.html" class="internal-link">Docker</a>, no cloud console, no vendor dashboard. You can reproduce every number on your own machine. The body of this post has no product affiliate links and no product recommendations; the book-list module at the foot of the page is mounted site-wide and has nothing to do with this topic.</p>
+<h2>Three findings first</h2>
+<p>Each of these has data behind it further down.</p>
+<p>1. <strong>A single-file copy is consistent but stale.</strong> What you get is a perfectly legal state of the database from some earlier moment, so every structural check passes. The only way to catch it is to compare it against the live database, not against itself.</p>
+<p>2. <strong>Copying all three files loses nothing, but it fails at random.</strong> One failure in five rounds, two in six, with the error <code>[WinError 33] another program has locked a portion of the file</code>.</p>
+<p>3. <strong>Raise the checkpoint frequency and the single-file copy stops being stale and starts being corrupt.</strong> Two rounds out of six produced <code>database disk image is malformed</code> on open.</p>
+<p>There are only two correct approaches: the <code>sqlite3</code> backup API, or <code>VACUUM INTO</code>. On a 43 MB database they averaged 386 ms and 460 ms respectively, and both produced zero-loss snapshots in every round.</p>
+<h2>Setup, and how I decided what "consistent" means</h2>
+<p>The schema is one table: <code>events(id INTEGER PRIMARY KEY, ts INTEGER, payload TEXT)</code>, where <code>payload</code> is a 200-byte filler string. 200,000 rows, 43.3 MB.</p>
+<p>The writer runs in a separate process: <strong>500 rows per batch, 50 ms between batches, one commit per batch</strong>, which works out to roughly 10,000 rows per second. The backup runs in the parent process while the writer is still going, and the writer is allowed to finish naturally afterwards.</p>
+<p>To decide whether a snapshot is consistent I used a property that can actually be proven rather than eyeballed: because the writer commits whole batches, <strong>any consistent snapshot must be a contiguous prefix</strong> — ids from 0 upward with no gaps, a row count divisible by 500, and <code>max(id) + 1</code> equal to the row count.</p>
+<p>The deviation column below is snapshot rows minus rows visible immediately before the copy. <strong>A negative number means committed transactions were lost.</strong> A positive number just means the writer got a few more batches in while the copy was happening, which is normal.</p>
+<p>I also measured the cost of verification itself. On the 43 MB database, <code>PRAGMA quick_check</code> took 70–120 ms and <code>PRAGMA integrity_check</code> took 71–108 ms. At this size, verifying every backup is effectively free — which matters, because it removes "too expensive" as an excuse for skipping the check.</p>
+<h2>Single-file copy: consistent, and 1.45 seconds behind</h2>
+<p>This is what almost everyone does: <code>shutil.copy2(db_path, backup_path)</code>, or <code>cp</code>, or a single-file <code>rsync</code>, or a cloud drive syncing the <code>.db</code>. With the default checkpoint settings, five rounds:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Round</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Visible before copy</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Snapshot rows</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Deviation</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">integrity_check</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">203,500</td><td style="border:1px solid #ddd;padding:8px;">200,000</td><td style="border:1px solid #ddd;padding:8px;">−3,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">232,000</td><td style="border:1px solid #ddd;padding:8px;">232,000</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">262,500</td><td style="border:1px solid #ddd;padding:8px;">248,000</td><td style="border:1px solid #ddd;padding:8px;">−14,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">292,500</td><td style="border:1px solid #ddd;padding:8px;">287,000</td><td style="border:1px solid #ddd;padding:8px;">−5,500</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">5</td><td style="border:1px solid #ddd;padding:8px;">323,000</td><td style="border:1px solid #ddd;padding:8px;">319,000</td><td style="border:1px solid #ddd;padding:8px;">−4,000</td><td style="border:1px solid #ddd;padding:8px;">ok</td></tr></tbody></table>
+<p>Four out of five rounds lost data. The worst was 14,500 rows — at 10,000 rows per second, <strong>that copy is 1.45 seconds behind</strong>. Round 2 came out at zero deviation because that copy happened to land in the window just after a checkpoint finished. So it is not "occasionally inaccurate"; it is "usually inaccurate, occasionally lucky".</p>
+<p>The official documentation is blunt about why. A WAL-mode database consists of the main file plus <code>-wal</code> and <code>-shm</code>, and the WAL file is not scratch space:</p>
+<blockquote>The WAL file is part of the persistent state of the database and should be kept with the database if the database is copied or moved.</blockquote>
+<p>The sentence right after it states the consequence:</p>
+<blockquote>If a database file is separated from its WAL file, then transactions that were previously committed to the database might be lost, or the database file might become corrupted.</blockquote>
+<p>SQLite checkpoints automatically when the WAL reaches 1000 pages, about 4 MB, moving those frames back into the main file and recycling the WAL. So the main file holds the state as of the last checkpoint, and the WAL holds everything committed since. Copy only the main file and you have copied a snapshot from the last checkpoint.</p>
+<p>What makes this dangerous is that it is <strong>entirely legal</strong>. This is not corruption, it is time travel. It really is a complete, valid database as of some real moment, so <code>integrity_check</code> says <code>ok</code> and the page structure, indexes and constraints are all fine. Any check that asks "does it open, is the structure sound" will be satisfied.</p>
+<p>One related trap: if your plan is "delete the WAL, then copy", the documentation recognises exactly one safe way to remove a WAL file — open the database with <code>sqlite3_open()</code> and immediately close it with <code>sqlite3_close()</code>, letting SQLite run its final checkpoint first.</p>
+<h2>Three-file copy: zero loss, random failure</h2>
+<p>If one file is not enough, copy all three. No rows were lost in five rounds, but one round threw:</p>
+<pre><code>PermissionError: [WinError 33] another program has locked a portion of the file.</code></pre>
+<p>In the aggressive-checkpoint group of six, the same error appeared twice. Windows takes byte-range locks on a <code>-wal</code> file held by the writing process, and <code>shutil.copy2</code> gets blocked when it opens it. Linux usually will not raise this — but do not celebrate. Copying three files is not atomic: the main file, <code>-wal</code> and <code>-shm</code> are read at three different instants. If the writer commits a batch between two of those reads, your three files come from three different moments. Whether that splice opens at all depends on whether the WAL frame checksums and salt values happen to line up. That is a probability, not a guarantee.</p>
+<p>It worked in all five rounds here and I still will not recommend it. <strong>A backup method that throws at random, after it has already overwritten half of the destination, is a time bomb in a script.</strong> When <code>cp a b</code> fails, <code>b</code> may already be a half-written file. If your job only checks the exit code and never checks the artifact, that half file becomes today's backup.</p>
+<h2>Raise the checkpoint frequency and the copy is simply corrupt</h2>
+<p>Both groups above used default settings. Plenty of projects set <code>wal_autocheckpoint</code> to 1 so the WAL cannot grow, or call <code>PRAGMA wal_checkpoint(TRUNCATE)</code> on a schedule. I set the writer's <code>wal_autocheckpoint</code> to 1 — a checkpoint on every transaction — and ran six rounds:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Outcome</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Rounds</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Note</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Snapshot valid, zero deviation</td><td style="border:1px solid #ddd;padding:8px;">4/6</td><td style="border:1px solid #ddd;padding:8px;">The main file is almost always current, so it "works"</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>DatabaseError: database disk image is malformed</code></td><td style="border:1px solid #ddd;padding:8px;">2/6</td><td style="border:1px solid #ddd;padding:8px;">Fails on open; not even <code>integrity_check</code> can run</td></tr></tbody></table>
+<p>The same operation, under two checkpoint configurations, produces two completely different failure modes: silent staleness in one, hard corruption in the other. And the aggressive configuration is exactly the "optimisation" teams apply to stop the WAL from growing. The optimisation breaks the backup, and it breaks it non-deterministically.</p>
+<p>This is the point I most want to make from this round: <strong>backup correctness depends on runtime configuration, not on the backup script.</strong> Change one PRAGMA that looks unrelated and your backup reliability changes class.</p>
+<h2>The two approaches the documentation actually recommends</h2>
+<p>SQLite offers two supported ways to snapshot a database that is in use, and the costs are measurable.</p>
+<p><strong>The backup API.</strong> The guarantee is bit-for-bit identity:</p>
+<blockquote>The effect of completing the backup call sequence is to make the destination a bit-wise identical copy of the source database as it was when the copying commenced. (The destination becomes a "snapshot.")</blockquote>
+<p>In Python it is three lines:</p>
+<pre><code>src = sqlite3.connect(db_path)
+dst = sqlite3.connect(backup_path)
+src.backup(dst)
+dst.close(); src.close()</code></pre>
+<p>On the 43 MB database this averaged 386 ms. On an 82.5 MB, 380,000-row database, a single copy took 438 ms — 188 MB/s. Zero loss in every round. The documentation also warns that if the source is modified mid-backup, SQLite detects it and "usually restarts the backup process", and that "if the backup process is restarted frequently enough it may never run to completion". On a write-heavy database, put a timeout on it.</p>
+<p><strong><code>VACUUM INTO</code>.</strong> The documentation names it as an alternative:</p>
+<blockquote>The VACUUM command with an INTO clause is an alternative to the backup API for generating backup copies of a live database.</blockquote>
+<p>The trade-off is spelled out too: the output is minimal in size, deleted content is purged, no forensic traces remain; in exchange it burns more CPU and cannot be incremental. Measured: 460 ms average on the 43 MB database, zero loss in five rounds. That is about 19% slower than the backup API, and what you buy is a smaller artifact with deleted rows genuinely gone — which matters if the backup leaves your control or is archived long-term.</p>
+<p>One limitation you must know: the target file <strong>must not already exist, or must be empty</strong>, otherwise it fails. I pointed it at an existing 1 KB file and got:</p>
+<pre><code>DatabaseError: file is not a database</code></pre>
+<p>That message is actively misleading. It reads like "your source is broken"; the actual problem is that the destination path holds something that is not a database.</p>
+<h2>The restore drill: 340 ms end to end, and almost everyone verifies the wrong thing</h2>
+<p>Getting the backup right is only the first gate. The second is <strong>what the restore drill actually verifies</strong>.</p>
+<p>Start with the cost, because cost is the usual excuse. An 82.5 MB, 380,000-row artifact, restored to a new path and fully checked:</p>
+<ul><li>copy the file: 64 ms</li><li>open it, <code>COUNT(*)</code>, <code>integrity_check</code>: 276 ms</li><li>total: 340 ms</li></ul>
+<p>340 milliseconds. "Drills are expensive, so we do one a quarter" does not survive contact with that number. You can run this after every single backup.</p>
+<p>But speed is not the point. <strong>Verifying the right thing is.</strong> I tested two traps.</p>
+<p><strong>Trap one: a zero-byte file also returns <code>ok</code>.</strong> I created an empty file with <code>open(path, "wb").close()</code> and connected to it:</p>
+<ul><li><code>PRAGMA integrity_check</code> → <code>ok</code></li><li>tables in <code>sqlite_master</code> → 0</li><li><code>SELECT ... FROM events</code> → <code>OperationalError: no such table: events</code></li></ul>
+<p>So if your drill is "open it and run integrity_check", an empty file scores full marks. The realistic way you get an empty backup is a job that creates the destination with <code>></code> redirection, fails halfway and exits, leaving a zero-byte file — while your alerting only watches whether the job exited 0.</p>
+<p><strong>Trap two: a stale snapshot also returns <code>ok</code>.</strong> Already demonstrated above: the copy that was 14,500 rows short passed <code>integrity_check</code> in every round. A structural check answers "is this file internally coherent", not "is this the moment I wanted".</p>
+<p>So a drill should verify <strong>three numbers that can be reconciled</strong>, not whether the file opens:</p>
+<p>1. <strong>Row count</strong> against the live database, or against the last known baseline, within an expected window;</p>
+<p>2. <strong>Max primary key</strong>, <code>SELECT MAX(id)</code>, which surfaces tail loss far better than a row count;</p>
+<p>3. <strong>Newest business timestamp</strong>, which translates directly into "how many minutes of data would we lose if we restored right now" — your RPO.</p>
+<p>Then add one read-only business query to confirm the tables, indexes and views are all present. All four together are still a few hundred milliseconds, and together they catch the empty file, the stale snapshot and the structural damage — which happen to be every failure mode that appeared in this experiment.</p>
+<h2>A drill checklist you can copy</h2>
+<p>1. Take the snapshot with <code>src.backup(dst)</code> or <code>VACUUM INTO</code>. <strong>Do not copy files.</strong></p>
+<p>2. Immediately record metadata: row count, <code>MAX(id)</code>, <code>MAX(ts)</code>, file size, elapsed time.</p>
+<p>3. Restore the snapshot to a <strong>temporary path</strong> — never over the live database — and open it.</p>
+<p>4. <code>PRAGMA integrity_check</code> must return the single row <code>ok</code>. Multiple rows mean structural problems, and it reports at most 100 of them by default.</p>
+<p>5. Reconcile row count, <code>MAX(id)</code> and <code>MAX(ts)</code> against the live database. Any mismatch is an alert. This step is the actual verification.</p>
+<p>6. Run a real read-only business query, not <code>SELECT 1</code>, and confirm tables, indexes and views exist.</p>
+<p>7. Record the total elapsed time. That is your RTO floor.</p>
+<p>The division of labour between steps 4 and 5 matters. <code>integrity_check</code> verifies formatting and consistency — page ordering, record format, missing pages, index entries, UNIQUE/CHECK/NOT NULL constraints, the freelist, sections used more than once or not at all. It <strong>does not check foreign keys</strong>: "PRAGMA integrity_check does not find [FOREIGN KEY] errors", which is what <code>PRAGMA foreign_key_check</code> is for. And it cannot check whether the data is current, because it has no idea what the live database contains.</p>
+<p>On the performance split: <code>quick_check</code> skips UNIQUE constraints and index-versus-table consistency, and the documentation gives O(N) versus O(N log N). At 43 MB both land around 100 ms and you cannot tell them apart. At tens of GB, <code>quick_check</code> for routine monitoring and a full <code>integrity_check</code> before a release is a reasonable split.</p>
+<h2>Four errors, verbatim</h2>
+<p>All four were reproduced on this machine.</p>
+<p><strong><code>PermissionError: [WinError 33] another program has locked a portion of the file.</code></strong></p>
+<p>Raised while copying <code>-wal</code>. On Windows the active WAL file carries byte-range locks held by the writer. Retrying does not fix this properly — a successful retry only means you happened to pick a gap between two commits; it does not mean the three files came from the same instant. Switch to the backup API or <code>VACUUM INTO</code>.</p>
+<p><strong><code>DatabaseError: database disk image is malformed</code></strong></p>
+<p>Two of six rounds under per-transaction checkpointing with a single-file copy. It fails on open, before any verification can run. The main file was being rewritten in place while it was read, so you captured half-written pages. When you see this, suspect the backup method before you suspect the source database.</p>
+<p><strong><code>DatabaseError: file is not a database</code></strong></p>
+<p>Two sources. Opening a <code>-wal</code> file as if it were a database (I used a real 136.8 KB WAL file), and pointing <code>VACUUM INTO</code> at a destination that already holds a non-empty file. The second is the more misleading, because the message describes the file while the bug is in the argument.</p>
+<p><strong><code>OperationalError: no such table: events</code></strong></p>
+<p>This is the illusion of a successful restore: the file opens, <code>integrity_check</code> returns <code>ok</code>, and the database contains no tables at all. A zero-byte file lands here. If your restore script prints "restore successful" right after <code>integrity_check</code>, this error is invisible — until the day you actually need to query the data.</p>
+<h2>Where these conclusions stop</h2>
+<ul><li>Measured only on <strong>SQLite 3.53.1</strong>, bundled with CPython 3.13. PostgreSQL and MySQL behave differently; do not transplant this. If your problem is PostgreSQL WAL growth, the replication-slot experiment I ran on 18.6 covers the same family of failure from the other side: <a href="https://yaohehe.github.io/2026-10-16-postgresql-186-2026-6.html" class="internal-link">PostgreSQL 18.6 replication slots</a>.</li><li>Local Windows disk. <strong>WAL does not work over a network filesystem</strong> — "WAL does not work over a network filesystem", because WAL requires all processes to share a small amount of memory. If the database lives on NFS or SMB, the premise of hot backup is already gone.</li><li>Timings are hardware-specific. 188 MB/s and 386 ms are my machine; yours may be twice as fast or half. The two mechanism-level findings — single-file copies go stale, three-file copies throw lock errors — do not change with hardware.</li><li>I measured snapshot correctness, not off-site disaster recovery. A perfect backup on the same disk protects you from a mistaken <code>DELETE</code>, not from a dead drive.</li><li>If your actual question is "did the data survive a schema change", that is a different layer. My <a href="https://yaohehe.github.io/2026-10-24-alembic-autogenerate.html" class="internal-link">Alembic autogenerate experiment</a> covers what migration scripts silently miss, and it does not overlap with backups.</li></ul>
+<h2>The takeaway</h2>
+<p>The expensive lesson here is not "file copies are bad". It is that <strong>the verification method does not match the failure mode</strong>. We prove backups work by opening them, and none of the three failures in this experiment — zero bytes, 1.45 seconds stale, page-level corruption — was caught by "it opens". The first two were not caught by <code>integrity_check</code> either.</p>
+<p>What catches them is reconciliation: row count, max primary key, newest timestamp, compared against the live database. No extra tooling, one SQL statement each, a few hundred milliseconds. Moving a backup from "the job succeeded" to "the numbers reconcile" is not a technical gap. It is the check that keeps getting skipped.</p>
+<p>If your backup script currently only inspects the exit code, change it tonight to inspect the artifact — row count first, then <code>MAX(id)</code>, and <code>integrity_check</code> last. The other order works too, but reconciliation first tells you sooner.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

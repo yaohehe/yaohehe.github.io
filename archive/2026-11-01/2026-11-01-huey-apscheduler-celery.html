@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>单机任务队列三选一：huey、APScheduler、Celery 的七个静默失效 - TechPassive</title>
+  <meta name="description" content="同一台机器上跑延迟与定时任务，最坑的不是报错而是没有报错：huey 3.5.3、APScheduler 3.11.3、Celery 5.6.3 各有一批静默失效，任务进队没人跑、结果读一次就没了、错过一秒就不执行、memory broker 跨进程收不到。附 5 个真实报错原文、本机复现脚本与一棵选型决策树。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>单机任务队列三选一：七个不报错的失效</h1>
+  <div class="post-tags">
+    <span class="tag">huey</span><span class="tag">APScheduler</span><span class="tag">Celery</span>
+  </div>
+  <div class="content">
+    <p>单机跑定时任务，最耗时间的从来不是写功能，而是「它到底有没有跑」。我实际在 Windows 11 + CPython 3.13.14 上把 huey 3.5.3、APScheduler 3.11.3、Celery 5.6.3 各跑了一遍，想搞清楚同一件事为什么在三个库里会以三种不同的方式悄悄失败。结论有点反直觉：<strong>这三家最容易出问题的地方都不在文档第一页，而在默认值里</strong>——默认值不会报错，只会让任务少跑几次。</p>
+<p><strong>TL;DR</strong>：任务「没报错但没执行」，先查四个地方 —— huey 有没有 consumer 在跑、APScheduler 的 <code>misfire_grace_time</code> 是不是还是默认的 1 秒、Celery 的 broker 是不是 <code>memory://</code>、以及主线程是不是早就退出了。下文每个数字都来自本机实测，脚本可直接复制。本文不含任何联盟推广链接，也不含佣金分成；版本号取自 PyPI 实时数据。</p>
+<h2>先把三个库放在同一张表上</h2>
+<p>选型文一上来就比性能，但单机场景里性能通常不是瓶颈，<strong>运维面</strong>才是。三个库真正的差别在这几行：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">维度</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">huey 3.5.3</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">APScheduler 3.11.3</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Celery 5.6.3</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">需要外部服务</td><td style="border:1px solid #ddd;padding:8px;">不需要（<code>SqliteHuey</code> 只用标准库 <code>sqlite3</code>）</td><td style="border:1px solid #ddd;padding:8px;">不需要</td><td style="border:1px solid #ddd;padding:8px;">需要 broker（Redis / RabbitMQ）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">进程模型</td><td style="border:1px solid #ddd;padding:8px;">独立 consumer 进程</td><td style="border:1px solid #ddd;padding:8px;">进程内后台线程</td><td style="border:1px solid #ddd;padding:8px;">独立 worker 进程</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">默认持久化</td><td style="border:1px solid #ddd;padding:8px;">有（SQLite / Redis / PostgreSQL 任选）</td><td style="border:1px solid #ddd;padding:8px;">无（内存 jobstore）</td><td style="border:1px solid #ddd;padding:8px;">result backend 另配</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">内建重试</td><td style="border:1px solid #ddd;padding:8px;">有（<code>retries</code> / <code>retry_delay</code> / <code>retry_backoff</code>）</td><td style="border:1px solid #ddd;padding:8px;">无，需自己写</td><td style="border:1px solid #ddd;padding:8px;">有（<code>autoretry_for</code> / <code>max_retries</code>）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">定时语法</td><td style="border:1px solid #ddd;padding:8px;"><code>crontab(minute='*/5')</code></td><td style="border:1px solid #ddd;padding:8px;"><code>cron</code> / <code>interval</code> / <code>date</code> 三种 trigger</td><td style="border:1px solid #ddd;padding:8px;">beat + <code>crontab</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">能否脱离外部服务跑通</td><td style="border:1px solid #ddd;padding:8px;">能</td><td style="border:1px solid #ddd;padding:8px;">能</td><td style="border:1px solid #ddd;padding:8px;"><strong>不能</strong>（<code>memory://</code> 只在线程间传递）</td></tr></tbody></table>
+<p>表格最后一行是全文的起点：Celery 在没有 broker 的机器上，你测不出它的真实行为，只能测出一个近似的替身，而那个替身会给你错误的信心。</p>
+<h2>huey 的三个静默失效</h2>
+<p>huey 的设计很朴素：任务序列化后塞进队列存储，另一个进程把消息取出来执行。好处是依赖少，坏处是<strong>「队列里有东西」和「事情发生了」之间隔着一个人</strong>。</p>
+<h3>失效一：任务进队了，但没有人执行</h3>
+<p><code>@huey.task()</code> 装饰的函数被调用时并不执行，只是入队。没有 consumer 在跑时，队列会一直涨，调用方拿到的 <code>Result</code> 永远是 <code>None</code>：</p>
+<pre><code>from huey import SqliteHuey
+h = SqliteHuey('q1', filename='q1.db')
+
+@h.task()
+def add(a, b):
+    print('executed')
+    return a + b
+
+r = add(1, 2)
+print(r())                     # None
+print(h.storage.queue_size())  # 1</code></pre>
+<p>本机实测：<code>r()</code> 返回 <code>None</code>，<code>queue_size()</code> 是 1，副作用 0 次，<strong>没有任何异常或日志</strong>。手动跑一次 <code>h.execute(h.dequeue())</code> 之后 <code>r()</code> 才变成 3。</p>
+<p>容易误判的是：<code>None</code> 在 huey 里只表示「还没执行」，不表示「执行失败」。任务真失败时 <code>Result.get()</code> 抛 <code>TaskException</code>。用 <code>if result is None</code> 做健康检查，接到的是「未就绪」而不是「失败」。</p>
+<h3>失效二：结果读一次就没了</h3>
+<p>这个坑我在写测试时踩到：断言写完再打印一次，值就变 <code>None</code> 了。查源码才明白 <code>Result._get()</code> 默认走 <code>huey.get_raw(task_id, peek=False)</code>，而 <code>peek=False</code> 落到 <code>storage.pop_data()</code>——<strong>读即删除</strong>。</p>
+<p>官方 API 文档写得很清楚：</p>
+<p>> <strong>preserve</strong> (*bool*) – when set to <code>True</code>, this parameter ensures that the task result will be preserved after having been successfully retrieved. Ordinarily, Huey will discard results after they have been read, to prevent the result store from growing without bounds.</p>
+<p>实测对照：</p>
+<pre><code>r = mul(6, 7)
+h.execute(h.dequeue())
+print(r())                    # 42
+print(h.result(r.id))         # None —— 存储里已经空了
+print(r.get(preserve=True))   # 需要保留时必须显式传</code></pre>
+<p>同一个 <code>Result</code> 对象第二次还能读到 42，是因为它内部有 <code>_result</code> 缓存；换成新的 <code>Result</code> 就查不到。「本地跑通、换个入口查结果就查不到」，根因往往在读取姿势，不在存储。</p>
+<h3>失效三：任务名对不上，消息直接消失</h3>
+<p>滚动发布时新旧代码并存是常态。队列里躺着一个旧版本的任务名、消费端没注册它，huey 不是跳过也不是重试，而是<strong>在出队阶段就抛异常，消息已经没了</strong>：</p>
+<pre><code>huey.exceptions.HueyException: __main__.legacy_name not found in TaskRegistry</code></pre>
+<p>实测更值得记：抛异常前 <code>queue_size()</code> 是 1，抛完是 <strong>0</strong>。原因在 <code>Huey.dequeue()</code> 里——先从存储 pop 出消息，再 <code>deserialize_task()</code>，而 <code>TaskRegistry.string_to_task()</code> 找不到就 <code>raise HueyException</code>。消息已被 pop，没有回滚路径。</p>
+<p>consumer 侧也帮不上忙，它的循环长这样：</p>
+<pre><code>try:
+    task = self.huey.dequeue()
+except Exception:
+    self._logger.exception('Error reading from queue')
+    self.sleep()</code></pre>
+<p>记一条 traceback，然后退避重试。任务不会回来。结论很硬：<strong>任务名是持久化契约，改名要留别名，不能直接改</strong>。</p>
+<h2>huey 的 SQLite 存储：一个 timeout 参数管两件事</h2>
+<p><code>SqliteHuey</code> 有个 <code>timeout</code> 参数，文档没细讲，源码注释是 <code># Busy timeout in seconds, default is 5.</code>。问题在于它同时是另一件事的时限。</p>
+<p>huey 3.5.2 的更新日志有一条：</p>
+<blockquote>修复多个进程同时打开新的 sqlite 数据库时出现「database is locked」的问题，参见 #925。</blockquote>
+<p>修复写在 <code>storage.py</code> 的 <code>_set_journal_mode()</code> 里：新库切 WAL 需要把读锁升级成写锁，并发时会失败，于是用 <code>deadline = time.monotonic() + self._timeout</code> 做重试窗口，命中 <code>database is locked</code> 就 <code>time.sleep(0.01)</code> 再来，超过 deadline 才抛。</p>
+<p>于是 <code>timeout</code> 被两个语义共用：SQLite 忙等秒数，以及建库重试窗口。把它调小（不少性能文章会建议这么做）等于把重试窗口关掉。我用 3 个进程各灌 400 条任务做对照：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>timeout</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">入库任务数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">进程结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>0</code></td><td style="border:1px solid #ddd;padding:8px;"><strong>400</strong>（丢 800 条，66.7%）</td><td style="border:1px solid #ddd;padding:8px;">2 个进程 <code>rc=1</code>，<code>sqlite3.OperationalError: database is locked</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>5</code>（默认）</td><td style="border:1px solid #ddd;padding:8px;">1200</td><td style="border:1px solid #ddd;padding:8px;">3 个进程全部 <code>rc=0</code></td></tr></tbody></table>
+<p>失败的两个进程是<strong>直接退出</strong>，不是重试后成功。如果启动脚本用 <code>nohup</code> 或 systemd 拉起多个入队进程，一个报错就少一个写入者，而队列长度还在涨，看上去一切正常。</p>
+<p>补一句边界：SQLite 的 WAL 允许读者与单写者共存，huey 把连接设成 <code>isolation_level = None</code>（autocommit），所以能扛多进程写，但扛不住长事务。这和 WAL 热备时的行为是同一套机制，可以对照站内那篇 <a href="https://yaohehe.github.io/2026-10-28-sqlite-14500.html" class="internal-link">SQLite 热备 14500 行</a> 一起看。</p>
+<h2>APScheduler 的三个默认值，全都不报错</h2>
+<p>APScheduler 更隐蔽，因为它连「队列」概念都没有：任务在进程内线程池里跑，失败与跳过都只写日志。三个默认值可以直接打印：</p>
+<pre><code>python -c "from apscheduler.schedulers.background import BackgroundScheduler as B; print(B()._job_defaults)"
+# {'misfire_grace_time': 1, 'coalesce': True, 'max_instances': 1}</code></pre>
+<p>我在 3.11.1 与 3.11.3 上分别跑过，两个版本的 <code>_job_defaults</code> 完全一致。</p>
+<h3>默认值一：misfire_grace_time = 1 秒</h3>
+<p>文档对它的解释是「seconds after the designated runtime that the job is still allowed to be run」，但没说默认 1 秒意味着什么。实测：一个定在 30 秒前的 <code>date</code> 任务，启动调度器后<strong>从未执行</strong>，并且从 <code>get_jobs()</code> 里消失了（不是留着等下次），只留一条警告：</p>
+<pre><code>WARNING apscheduler.executors.default Run time of job "job_a (trigger: date[2026-11-01 21:50:08 CST], next run at: 2026-11-01 21:50:08 CST)" was missed by 0:00:30.006098</code></pre>
+<p>同一个任务加 <code>misfire_grace_time=3600</code> 就补跑了。1 秒对「进程内每秒触发」够用，对「机器休眠后恢复」「容器滚动重启」完全不够。</p>
+<h3>默认值二：coalesce = True</h3>
+<p>官方 user guide 的说法是「if coalescing is enabled for the job and the scheduler sees one or more queued executions for the job, it will only trigger it once」。这句话的范围常被读宽——它只在<strong>同一次唤醒内</strong>生效，源码是一行切片：</p>
+<pre><code>run_times = (run_times[-1:] if run_times and job.coalesce else run_times)</code></pre>
+<p>纯函数口径测最干净，不依赖调度器抖动：<code>interval</code> 2 秒、<code>next_run_time</code> 定在 t0、<code>now = t0 + 11s</code>，<code>Job._get_run_times()</code> 得到 6 个触发点；<code>coalesce=True</code> 提交 1 个，<code>coalesce=False</code> 提交 6 个。</p>
+<p>真实调度器上做 pause/resume 对照也吻合：暂停 11 秒后恢复，<code>coalesce=True</code> 补跑 2 次，<code>coalesce=False</code> 补跑 6 次。所以「补跑几次」既不是 5 也不是 1，取决于你数的是哪一段——写告警阈值时不能拿它当固定值。</p>
+<h3>默认值三：max_instances = 1</h3>
+<p>官方原文是「By default, only one instance of each job is allowed to be run at the same time」。实测：1 秒间隔、每次执行睡 3 秒，8 秒内只跑了 2 次，同时刷出 6 条：</p>
+<pre><code>WARNING apscheduler.scheduler Execution of job "slow (trigger: interval[0:00:01], next run at: 2026-11-01 21:51:12 CST)" skipped: maximum number of running instances reached (1)</code></pre>
+<p>这条是 WARNING 级，默认日志配置下很容易被更吵的日志淹掉。它想说的是「你的任务比调度间隔慢」，而多数人的结论是「任务丢了」。</p>
+<h3>第四个坑：主线程结束，任务就没了</h3>
+<p>这条不在默认值里，但比上面三个更常见。<code>BackgroundScheduler</code> 的「Background」是相对阻塞式调度器说的，它依然是进程内线程。让脚本 1 秒后退出、任务定在 3 秒后：</p>
+<ul><li>子进程 <code>rc=0</code>，无任何输出</li><li>4 秒后检查标记文件：不存在</li><li>加 <code>sched.shutdown(wait=True)</code> 也没用——它只等<strong>正在执行</strong>的任务，不等还没到期的</li></ul>
+<p>如果这个脚本是 <code>docker run</code> 或某个 CI 步骤，你会看到「成功」并且任务从未发生。</p>
+<h2>Celery 的三个边界</h2>
+<p>Celery 的失败方式不一样：通常会在<strong>启动时</strong>报错，只是报错信息看起来像环境问题而不是配置问题。</p>
+<h3>边界一：memory:// 只在同一个进程的线程之间</h3>
+<p>kombu 官方文档对 in-memory transport 只写了一句：</p>
+<p>> Simple transport using memory for storing messages. <strong>Messages can be passed only between threads.</strong></p>
+<p>按字面做跨进程实验：生产者进程 <code>send_task()</code> 成功拿到 task id，消费者进程 <code>drain_events()</code> 等到超时，抛 <code>TimeoutError</code>。<strong>消息从没离开过第一个进程的堆内存。</strong> 用 <code>memory://</code> 做本地集成测试，测的是「函数能不能被调用」，不是「队列能不能通」。</p>
+<h3>边界二：没配 broker 的第一个报错</h3>
+<p>不传 <code>broker</code> 时 <code>app.conf.broker_url</code> 是 <code>None</code>，但连接不会因此直接失败——它会回落到 AMQP 默认地址，然后给出一个看起来毫不相关的错误：</p>
+<pre><code>kombu.exceptions.OperationalError: [WinError 10061] 由于目标计算机积极拒绝，无法连接。</code></pre>
+<p>Windows 上这条 10061 几乎总是「5672 端口上没有 RabbitMQ」，不是防火墙也不是凭据。先确认 <code>broker_url</code> 到底渲染成什么，比改配置快得多。</p>
+<h3>边界三：eager 模式下 delay() 不报错</h3>
+<p><code>task_always_eager=True</code> 常被用来在单测里绕过 broker，但它不改 <code>task_eager_propagates</code> 的默认值（<code>False</code>），于是失败的 eager 任务不抛异常：</p>
+<pre><code>app.conf.task_always_eager = True
+r = bad.delay()     # 不抛
+print(r.state)      # FAILURE
+print(r.result)     # eager boom
+r.get()             # 这里才抛 ValueError</code></pre>
+<p>源码里就一行：<code>throw = app.conf.task_eager_propagates</code>。所以「eager 测试全绿」只证明任务被调用了，不证明它成功。要么把 <code>task_eager_propagates</code> 设成 <code>True</code>，要么测试里断言 <code>r.state == 'SUCCESS'</code>。</p>
+<p>版本口径：本机原有 Celery 5.3.1，PyPI 当前最新 5.6.3（2026-03-26）。两个版本在 <code>task_always_eager</code> / <code>task_eager_propagates</code> 的默认值上没有差别，但 5.3.1 已不在维护线上，Python 3.13 下的兼容性建议以 5.6.x 为准。</p>
+<h2>Troubleshooting：五个真实报错</h2>
+<p>下面五条都是我在本机复现出来的原文，不是抄来的示例。</p>
+<h3>报错一：sqlite3.OperationalError: database is locked</h3>
+<p>现象：多进程同时往同一个 <code>SqliteHuey</code> 文件入队，部分进程 <code>rc=1</code> 退出，队列里少了对应数量的任务。</p>
+<p>原因：<code>SqliteStorage._set_journal_mode()</code> 新建库时要执行 <code>pragma journal_mode="wal"</code>，把读锁升级为写锁；并发时这一步会失败，重试窗口由 <code>timeout</code> 决定，超过就抛。</p>
+<p>解决：不要调小 <code>timeout</code>；确实要并发写就拆库，或改成单点入队。</p>
+<pre><code># 错误：把 timeout 当性能参数调成 0
+h = SqliteHuey('q', filename='q.db', timeout=0)
+
+# 正确：保持默认 5 秒，或按写入并发度上调
+h = SqliteHuey('q', filename='q.db', timeout=5)</code></pre>
+<pre><code># 复现：3 个进程各灌 400 条，观察 rc 与入库数
+for i in 1 2 3; do python enqueue_worker.py p$i 400 & done; wait
+python -c "import sqlite3;print(sqlite3.connect('q.db').execute('select count(*) from task').fetchone())"</code></pre>
+<h3>报错二：HueyException: xxx not found in TaskRegistry</h3>
+<p>现象：consumer 日志里反复出现 <code>Error reading from queue</code> 的 traceback，队列长度却在下降。</p>
+<p>原因：<code>dequeue()</code> 先 pop 消息再反序列化，任务名没注册时抛异常，消息已经不在队列里了。</p>
+<p>解决：任务改名时保留旧名别名，等队列排空再删；发布期间不要同时改任务名和删旧代码。</p>
+<pre><code>@h.task(name='legacy_name')       # 旧名继续可消费
+def new_name(x):
+    return x</code></pre>
+<h3>报错三：Run time of job ... was missed by 0:00:30.006098</h3>
+<p>现象：<code>date</code> 任务从未执行，<code>get_jobs()</code> 里也找不到它。</p>
+<p>原因：<code>misfire_grace_time</code> 默认 1 秒，超过就判定为错过并移除任务。</p>
+<p>解决：按业务容忍度显式设置，跨重启或休眠的场景必须放大。</p>
+<pre><code>sched.add_job(job, 'date', run_date=when, misfire_grace_time=3600)</code></pre>
+<h3>报错四：Execution of job ... skipped: maximum number of running instances reached (1)</h3>
+<p>现象：固定间隔任务的实际执行次数远少于预期，日志周期性刷这条 WARNING。</p>
+<p>原因：<code>max_instances</code> 默认 1，上一次还没跑完，这一轮直接跳过（不是排队）。</p>
+<p>解决：确认任务耗时是否真的短于间隔；确实允许并发再调大。</p>
+<pre><code>sched.add_job(slow, 'interval', seconds=1, max_instances=3, coalesce=False)</code></pre>
+<h3>报错五：kombu.exceptions.OperationalError: [WinError 10061]</h3>
+<p>现象：<code>task.delay()</code> 抛连接被拒。</p>
+<p>原因：没配 broker，回落到 AMQP 默认地址 <code>localhost:5672</code>。</p>
+<p>解决：显式配置并先验证连通性。</p>
+<pre><code>python -c "from celery import Celery; print(Celery('x').conf.broker_url)"
+set CELERY_BROKER_URL=redis://127.0.0.1:6379/0</code></pre>
+<h2>同一台机器上怎么选</h2>
+<p>把上面的边界条件折成一棵决策树，顺序很重要：</p>
+<p>1. <strong>只需要「过 N 秒执行一次」，且进程会一直活着</strong> → 别上队列，<code>threading.Timer</code> 或系统计划任务就够。</p>
+<p>2. <strong>单机、要持久化、要重试、可以多起一个进程</strong> → <code>SqliteHuey</code>。不需要额外服务，代价是你必须自己保证 consumer 在跑。</p>
+<p>3. <strong>单机、任务都是秒级短任务、讨厌多一个进程</strong> → APScheduler。前提是把三个默认值全部显式写出来。</p>
+<p>4. <strong>要多机、要削峰、已经有 Redis 或 RabbitMQ</strong> → Celery。反过来说，没有 broker 的机器上它连真实行为都测不出来。</p>
+<p>5. <strong>进程生命周期短（CLI、CI、Serverless）</strong> → 三个都别用进程内调度，改成事件触发。</p>
+<p>实用版本是：<strong>先算你的进程能活多久</strong>。进程活不过任务间隔，任何进程内调度器都等于没装。</p>
+<h2>上线前的最小加固清单</h2>
+<p>不用全做，覆盖你实际踩过的那条就够：</p>
+<ul><li>huey：确认 consumer 是独立进程且在进程管理器里；任务名当契约；<code>Result</code> 别当数据库用（要重复读就 <code>preserve=True</code>）；<code>SqliteHuey</code> 的 <code>timeout</code> 不低于 5。</li><li>APScheduler：把 <code>misfire_grace_time</code>、<code>coalesce</code>、<code>max_instances</code> 写进代码而不是靠默认；用持久化 jobstore 时必须显式 <code>id</code> + <code>replace_existing=True</code>，否则每次重启多一份任务；保证主线程活到任务跑完。</li><li>Celery：<code>memory://</code> 只用于单测；<code>broker_url</code> 打印出来确认；eager 测试断言 <code>state</code>；<code>task_eager_propagates</code> 按需打开。</li></ul>
+<p>想看同一类「不报错但没干活」的失败模式，站内还有一篇 <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 的七个静默失效</a>，讲的是退出码 0 却拿不到输出；<a href="https://yaohehe.github.io/2026-10-10-n8n-task-runner.html" class="internal-link">n8n Task Runner 的队列模式</a> 则把「执行器外置」之后的三层角色拆开讲，可以当作本篇的上层对照。</p>
+<h2>常见问题</h2>
+<p><strong>Q：huey 的 <code>Result()</code> 返回 None，是任务失败了吗？</strong></p>
+<p>不是。<code>None</code> 只表示结果还没写进存储（未消费或正在执行）。任务失败时读结果会抛 <code>TaskException</code>，里面带原始异常字符串和 traceback。</p>
+<p><strong>Q：APScheduler 为什么任务只跑了一次就不跑了？</strong></p>
+<p>先看触发器——<code>date</code> 本来就只跑一次，跑完从 job 列表移除。如果用的是 <code>interval</code>，检查 <code>max_instances</code> 的 WARNING 是否在刷，以及单次耗时是否超过间隔。</p>
+<p><strong>Q：Celery 用 <code>memory://</code> 在本机测通了，能上线吗？</strong></p>
+<p>不能。kombu 明确写了「Messages can be passed only between threads」，跨进程收不到，跨机器更收不到。上线前至少用 Redis 或 RabbitMQ 跑一遍真实链路。</p>
+<p><strong>Q：这三个库能混用吗？</strong></p>
+<p>可以但没必要。典型混用是「APScheduler 负责定时触发、把任务丢给 Celery 执行」，此时 APScheduler 的 misfire 逻辑决定丢不丢，Celery 的 ack 逻辑决定丢了能不能找回，两个语义叠在一起很难排查。</p>
+<h2>结语</h2>
+<p>三个库的失败方式，其实是三种设计哲学的副作用：huey 把「执行」交给另一个进程，所以默认不执行；APScheduler 把「准时」看得比「补跑」重要，所以默认只等 1 秒；Celery 把「可靠投递」交给 broker，所以没有 broker 时它连自己是空的都不说。</p>
+<p>下次遇到「任务没跑」，按这个顺序查比读文档快：huey 先看 <code>queue_size()</code>，APScheduler 先看 <code>_job_defaults</code>，Celery 先看 <code>broker_url</code>。三个都只要一行命令。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>从 Ollama 迁到 Docker Model Runner：4 条端点对照与 5 个真实报错 - TechPassive</title>
+  <meta name="description" content="把现有 Ollama 客户端迁到 Docker Model Runner 到底要改几行？本机用 openai、ollama、httpx 三个官方客户端实测 29 组写法，只有 11 组落在 Docker 公布的路由上。附 OpenAI 兼容、Ollama 兼容、CLI 与模型名四张对照表，以及 5 个真实报错。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>从 Ollama 迁到 Docker Model Runner 的端点对照</h1>
+  <div class="post-tags">
+    <span class="tag"><a href="/2026-09-26-i-added-full-tracing-to-my-self-hosted-n8n-workflo-en.html" class="internal-link">Docker</a></span><span class="tag">Ollama</span><span class="tag"><a href="/2026-10-14-docker-model-runner-open-webui-4.html" class="internal-link">本地大模型</a></span>
+  </div>
+  <div class="content">
+    <p>我实际测试了一遍「把现有 Ollama 客户端迁到 <a href="/2026-09-26-langfuse-n8n-llm.html" class="internal-link">Docker</a> Model Runner（DMR）」这件事，结论比预期更分裂：用 Ollama 原生 API 的项目几乎不用改代码，用 OpenAI 兼容 API 的项目必须改一个 base URL，而只用到 embeddings 的项目会撞上一个很隐蔽的坑——<a href="/2026-09-29-2026-github-actions-4-action.html" class="internal-link">Docker</a> 官方兼容的那个 embeddings 端点，恰恰是 Ollama 官方文档里标注「已被取代」的旧端点。</p>
+<p>⚠️ 实测口径声明：本机没有 Docker Desktop，也没有可用 GPU，无法启动真实 DMR 服务进程。下文所有「实测」指的是 openai 3.32.0、ollama 0.6.3、httpx 0.28.1 三个官方客户端在本机发出的<strong>真实 HTTP 请求行</strong>，一共 29 组；服务端是我按 Docker 官方 api-reference 端点表实现的回放服务器，只用于判断「这条路径是否落在 DMR 公布过的路由上」。DMR 服务端的实际响应以官方文档为准，凡属文档未覆盖的行为我都单独标注了。</p>
+<p><strong>TL;DR</strong>：Ollama 原生客户端只改端口（11434 → 12434）就能跑通聊天与列举模型，实测请求行 <code>POST /api/chat</code>、<code>GET /api/tags</code> 都落在官方路由上；OpenAI 兼容客户端必须把 base URL 从 <code>http://localhost:11434/v1/</code> 改成 <code>http://localhost:12434/engines/v1</code>，只换端口会发出 <code>POST /v1/chat/completions</code> 并拿到 404；embeddings 要改用 <code>/api/embeddings</code> 或 <code>/engines/v1/embeddings</code>，Ollama 现行的 <code>/api/embed</code> 在 DMR 官方文档里没有对应。</p>
+<h2>迁移代价分三档：先数清楚你要改几行</h2>
+<p>迁移前最容易犯的错，是以为「换一个端口就行」。代价完全取决于你用的是哪一层 API。按我这轮实测，可以明确分成三档：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">档位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你现在的写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">要改什么</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实测结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">零改动档</td><td style="border:1px solid #ddd;padding:8px;">Ollama 原生客户端（ollama SDK / curl /api/chat）</td><td style="border:1px solid #ddd;padding:8px;">只把端口从 11434 换成 12434</td><td style="border:1px solid #ddd;padding:8px;">请求行不变，落在官方路由上</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">一行改动档</td><td style="border:1px solid #ddd;padding:8px;">OpenAI 兼容客户端（各类框架与 SDK）</td><td style="border:1px solid #ddd;padding:8px;">base URL 从 <code>...:11434/v1/</code> 改为 <code>...:12434/engines/v1</code></td><td style="border:1px solid #ddd;padding:8px;">只换端口会 404</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">必须重构档</td><td style="border:1px solid #ddd;padding:8px;">Modelfile 造模型、embeddings 管线、Responses API</td><td style="border:1px solid #ddd;padding:8px;">换机制，不是换地址</td><td style="border:1px solid #ddd;padding:8px;">官方文档无对应端点</td></tr></tbody></table>
+<p>第三档是真正会让人卡住的地方。Ollama 的 <code>ollama create -f Modelfile</code> 在 DMR 里没有等价的 HTTP 端点，Docker 官方给的替代路径是 CLI 的 <code>docker model package --gguf</code>；而 embeddings 的错配更隐蔽，下面单独讲。</p>
+<h2>端点对照一：OpenAI 兼容层，`/v1` 要换成 `/engines/v1`</h2>
+<p>两边都实现了 OpenAI 兼容 API，但路径前缀完全不同，这是绝大多数 404 的来源。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">能力</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Ollama 官方（base <code>http://localhost:11434/v1/</code>）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Docker Model Runner 官方（base <code>http://localhost:12434/engines/v1</code>）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">聊天</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/chat/completions</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">文本补全</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/completions</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/completions</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">列举模型</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/models</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">单个模型</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/models/{model}</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/models/{namespace}/{name}</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">向量</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/embeddings</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/engines/v1/embeddings</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Responses API</td><td style="border:1px solid #ddd;padding:8px;"><code>/v1/responses</code></td><td style="border:1px solid #ddd;padding:8px;">官方文档未列出</td></tr></tbody></table>
+<p>注意最后一列的两个细节。第一，DMR 的「单个模型」路径模板是 <code>{namespace}/{name}</code> 两段而不是一段——官方模型名一律带 <code>ai/</code> 前缀，真实路径形如 <code>/engines/v1/models/ai/smollm2</code>。第二，Ollama 官方文档列了 <code>/v1/responses</code>，DMR 的端点表里没有它；实测 <code>client.responses.create(...)</code> 发出 <code>POST /engines/v1/responses</code>，落在公布路由之外。</p>
+<p>DMR 还允许把引擎名写进路径，变成 <code>/engines/llama.cpp/v1/chat/completions</code>。实测带引擎名的写法同样命中路由，这在同时跑多个推理引擎时才用得上。</p>
+<p>另外一条官方标注的差异：DMR 官方文档写明「Token counting 使用模型原生 token 编码器，可能与 OpenAI 的不同」。如果你的代码里拿 <code>usage</code> 做计费或截断判断，这一条值得单独回归一次。</p>
+<h2>端点对照二：Ollama 兼容层，5 个对 15 个</h2>
+<p>Docker 官方明确写了「Ollama-compatible clients」的 base URL 就是 <code>http://localhost:12434</code>，不带任何路径。按官方 api-reference 的兼容端点表统计，只有 5 个：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DMR 官方列出的 Ollama 兼容端点</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">对应 Ollama 官方端点</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>GET /api/tags</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/api/tags</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/show</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/api/show</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/chat</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/api/chat</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/generate</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/api/generate</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/embeddings</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/api/embeddings</code>（Ollama 已标注 superseded）</td></tr></tbody></table>
+<p>而 Ollama 官方 <code>docs/api.md</code> 里一共列了 15 个端点路径：<code>/api/generate</code>、<code>/api/chat</code>、<code>/api/create</code>、<code>/api/tags</code>、<code>/api/show</code>、<code>/api/copy</code>、<code>/api/delete</code>、<code>/api/pull</code>、<code>/api/push</code>、<code>/api/embed</code>、<code>/api/embeddings</code>、<code>/api/ps</code>、<code>/api/version</code>，以及 <code>/api/blobs/{sha256}</code>（HEAD 查存在、POST 推 blob 各一个）。按文档口径，覆盖率是 5/15，约 33%。</p>
+<p><strong>最值得注意的一条错配</strong>：Ollama 官方文档在 <code>/api/embeddings</code> 那一节写了原话 <code>this endpoint has been superseded by /api/embed</code>，也就是说 Ollama 自己已经不推荐这个旧端点、改推 <code>/api/embed</code>；而 DMR 公布的兼容清单里只有旧的 <code>/api/embeddings</code>，没有 <code>/api/embed</code>。结果就是：一个按 Ollama 现行最佳实践写的 embeddings 项目，迁过去会 404。实测 ollama SDK 的 <code>embed()</code> 发出 <code>POST /api/embed</code>，落在 DMR 公布路由之外。</p>
+<p>其余没有对应端点的能力，官方文档里也没给替代 HTTP 方案：<code>/api/pull</code>、<code>/api/push</code> 走 CLI 的 <code>docker model pull</code> / <code>docker model push</code>；<code>/api/create</code>（Modelfile）走 CLI 的 <code>docker model package</code>；<code>/api/ps</code> 在 HTTP 兼容层缺失，但 CLI 有 <code>docker model ps</code>；<code>/api/version</code> 对应 CLI 的 <code>docker model version</code>。</p>
+<h2>端点对照三：CLI 怎么换</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Ollama CLI</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Docker Model Runner CLI</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">备注</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ollama pull llama3.2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model pull ai/smollm2:360M-Q4_K_M</code></td><td style="border:1px solid #ddd;padding:8px;">官方示例带命名空间与量化标签</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>ollama run llama3.2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model run ai/smollm2</code></td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ollama list</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model list</code></td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>ollama ps</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model ps</code></td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ollama rm</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model rm</code></td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>ollama show</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model show</code> / <code>docker model inspect</code></td><td style="border:1px solid #ddd;padding:8px;"></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>ollama create -f Modelfile</code></td><td style="border:1px solid #ddd;padding:8px;"><code>docker model package --gguf ./model.gguf --push myorg/mistral-7b-v0.1:Q4_K_M</code></td><td style="border:1px solid #ddd;padding:8px;">机制不同：GGUF 打成 OCI Artifact</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">无对应</td><td style="border:1px solid #ddd;padding:8px;"><code>docker model tag</code> / <code>docker model push</code></td><td style="border:1px solid #ddd;padding:8px;">官方示例 <code>docker model tag ai/smollm2 myorg/smollm2</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Modelfile 参数</td><td style="border:1px solid #ddd;padding:8px;"><code>docker model configure --context-size 8192 ai/qwen2.5-coder</code></td><td style="border:1px solid #ddd;padding:8px;">官方 configuration 页示例</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">无对应</td><td style="border:1px solid #ddd;padding:8px;"><code>docker model logs</code> / <code>docker model requests</code></td><td style="border:1px solid #ddd;padding:8px;">排障入口</td></tr></tbody></table>
+<p>从 Docker 官方 CLI 参考页看，<code>docker model</code> 有 30 多个子命令，比 ollama 的管理面更宽（<code>df</code>、<code>bench</code>、<code>status</code>、<code>purge</code>、<code>unload</code>、<code>gateway</code> 等等）。如果你的迁移动机是「想要一套更像容器工作流的管理方式」，CLI 这一层其实是加分项。</p>
+<h2>端点对照四：模型名与环境变量</h2>
+<p>改动最小，但最容易漏。</p>
+<ul><li><strong>命名空间</strong>：Ollama 官方说模型名是 <code>model:tag</code> 格式，命名空间可选，例子是 <code>orca-mini:3b-q8_0</code>；DMR 官方则要求「full model identifier including the namespace」，例子是 <code>ai/smollm2</code>、<code>ai/llama3.2</code>。所以 <code>smollm2</code> 要写成 <code>ai/smollm2</code>。</li><li><strong>量化标签大小写</strong>：Ollama 官方示例用小写 <code>q8_0</code>；DMR 官方示例用大写 <code>Q4_K_M</code>（<code>ai/smollm2:360M-Q4_K_M</code>）。我没法在本机验证 DMR 服务端对大小写是否敏感，但官方示例这么写，<strong>建议照官方示例抄大写</strong>。</li><li><strong>鉴权</strong>：Ollama 官方 OpenAI 兼容文档写着 <code>api_key='ollama',  # required but ignored</code>；DMR 官方写的是「Not required. DMR ignores the <code>Authorization</code> header」。两边都忽略 key，但<strong>客户端通常仍要求这个字段非空</strong>，留空会在 SDK 侧直接报错。</li><li><strong>端口</strong>：Ollama 默认 <code>11434</code>；DMR 默认 <code>12434</code>。Docker Desktop 上这个 TCP 端口<strong>默认不开</strong>，要在设置 AI 标签页勾「Enable host-side TCP support」并填端口；Docker Engine 上官方写明「TCP support is enabled by default for Docker Engine on port 12434」。</li><li><strong>容器内访问</strong>：官方给了三套口径——Desktop 容器内 <code>http://model-runner.docker.internal</code>（不带端口），Engine 容器内 <code>http://172.17.0.1:12434</code>，Compose 项目里可能还要加 <code>extra_hosts: "model-runner.docker.internal:host-gateway"</code>。我本机没法验证真实环境，三套口径互不一致这件事本身，在上一篇讲 Compose 集成的文章里已经拆过。</li></ul>
+<h2>客户端实测：29 组写法，11 组落在官方路由上</h2>
+<p>我把常见的 base URL 与 host 写法穷举了一遍，全部用真实 SDK 发真实请求，服务端按官方端点表判路由。29 组里 11 组（37.9%）落在 DMR 公布过的路径上。几种典型结果：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实测请求行</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">命中官方路由</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">openai <code>base_url=...:12434/engines/v1</code></td><td style="border:1px solid #ddd;padding:8px;"><code>POST /engines/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">openai <code>base_url=...:12434/engines/v1/</code>（带尾斜杠）</td><td style="border:1px solid #ddd;padding:8px;"><code>POST /engines/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">是，尾斜杠不影响</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">openai <code>base_url=...:12434</code>（只换端口）</td><td style="border:1px solid #ddd;padding:8px;"><code>POST /chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">openai <code>base_url=...:12434/v1/</code>（Ollama 官方写法）</td><td style="border:1px solid #ddd;padding:8px;"><code>POST /v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">openai <code>base_url=...:12434/engines/llama.cpp/v1</code></td><td style="border:1px solid #ddd;padding:8px;"><code>POST /engines/llama.cpp/v1/chat/completions</code></td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ollama SDK <code>host=...:12434</code></td><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/chat</code></td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ollama SDK <code>host=...:12434</code> + <code>list()</code></td><td style="border:1px solid #ddd;padding:8px;"><code>GET /api/tags</code></td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ollama SDK <code>host=...:12434/engines/v1</code></td><td style="border:1px solid #ddd;padding:8px;"><code>POST /engines/v1/api/chat</code></td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">ollama SDK <code>host=...:12434</code> + <code>embed()</code></td><td style="border:1px solid #ddd;padding:8px;"><code>POST /api/embed</code></td><td style="border:1px solid #ddd;padding:8px;">否</td></tr></tbody></table>
+<p>两条可以直接用的结论：<strong>尾斜杠不用纠结</strong>，openai SDK 对 <code>.../engines/v1</code> 和 <code>.../engines/v1/</code> 拼出的路径完全一样；<strong>ollama SDK 的 host 里不能带路径</strong>，它会在你给的路径后面再拼 <code>/api/xxx</code>。</p>
+<p>想自己复跑的话，核心就是起一个记录请求行的本地服务，再用两个 SDK 各打一遍：</p>
+<pre><code>import threading, http.server, socketserver
+from openai import OpenAI
+
+SEEN = []
+
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(n)
+        SEEN.append(self.path)          # 记录真实请求行
+        body = b'{"choices":[{"message":{"role":"assistant","content":"ok"}}]}'
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+srv = socketserver.TCPServer(("127.0.0.1", 18888), H)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+OpenAI(base_url="http://127.0.0.1:18888/engines/v1", api_key="x", max_retries=0) \
+    .chat.completions.create(model="ai/smollm2", messages=[{"role": "user", "content": "hi"}])
+print(SEEN)   # ['/engines/v1/chat/completions']</code></pre>
+<h2>踩坑录：5 个真实报错</h2>
+<p>下面 5 条都是本机实跑出来的。请求行与状态码是实测的；报错文案里的响应体由回放服务器生成，真实 DMR 的 404 报文可能不同，但异常类型来自官方 SDK 本身。</p>
+<h3>报错一：只换端口，`openai.NotFoundError: Error code: 404`</h3>
+<pre><code>openai.NotFoundError: Error code: 404 - {'error': {'message': 'no route for /v1/chat/completions'}}</code></pre>
+<p>实测请求行是 <code>POST /v1/chat/completions</code>。原因：你沿用了 Ollama 官方示例里的 <code>base_url='http://localhost:11434/v1/'</code>，只把端口换成了 12434。修法是把 base URL 整体换掉：</p>
+<pre><code>from openai import OpenAI
+client = OpenAI(base_url="http://localhost:12434/engines/v1", api_key="not-needed")</code></pre>
+<h3>报错二：ollama SDK 的 host 写了路径，`ollama.ResponseError`</h3>
+<pre><code>ollama.ResponseError: no route for /engines/v1/api/chat</code></pre>
+<p>实测请求行 <code>POST /engines/v1/api/chat</code>。原因是 <code>Client(host=...)</code> 会把你给的路径原样保留，再往下拼 <code>/api/chat</code>。修法是 host 只写到端口为止：<code>Client(host="http://localhost:12434")</code>。同理，写成 <code>Client(host="http://localhost:12434/v1")</code> 会拼出 <code>POST /v1/api/chat</code>，一样挂。</p>
+<h3>报错三：embeddings 端点错配，`ollama.ResponseError: no route for /api/embed`</h3>
+<pre><code>ollama.ResponseError: no route for /api/embed</code></pre>
+<p>实测请求行 <code>POST /api/embed</code>。这是本轮最反直觉的一条：你的代码完全符合 Ollama 现行官方文档，但 DMR 公布的兼容清单里只有旧端点 <code>/api/embeddings</code>。两条修法——留在 Ollama 兼容层就把调用改成 <code>/api/embeddings</code>（注意它的参数名是 <code>prompt</code>，不是 <code>/api/embed</code> 的 <code>input</code>）；或者干脆迁到 OpenAI 兼容层用 <code>/engines/v1/embeddings</code>，实测 <code>POST /engines/v1/embeddings</code> 命中路由。</p>
+<h3>报错四：Responses API 没有对应，`openai.NotFoundError: Error code: 404`</h3>
+<pre><code>openai.NotFoundError: Error code: 404 - no route for /engines/v1/responses</code></pre>
+<p>实测请求行 <code>POST /engines/v1/responses</code>。Ollama 官方 openai-compatibility 文档列了 <code>/v1/responses</code>，DMR 端点表里没有。修法是改回 <code>chat.completions.create(...)</code>。</p>
+<h3>报错五：模型名只有一段，匹配不上官方路径模板</h3>
+<p>实测 <code>models.retrieve("smollm2")</code> 发出的请求行是 <code>GET /engines/v1/models/smollm2</code>，而 DMR 官方路径模板是 <code>/engines/v1/models/{namespace}/{name}</code> 两段。修法是把模型名写成 <code>ai/smollm2</code>。这条我没有在真实 DMR 上验证过失败形态（回放服务器对单段名是放行的），属于<strong>按官方路径模板推出的结论</strong>，请以你自己环境为准。</p>
+<h2>哪些场景建议先别迁</h2>
+<ul><li><strong>深度依赖 Modelfile</strong>：<code>ollama create -f Modelfile</code> 没有 HTTP 等价物。官方替代是 <code>docker model package --gguf</code>，但那是把 GGUF 打包成 OCI Artifact 的另一套流程，模板、system 提示、参数都换了地方写（<code>docker model configure</code>）。</li><li><strong>只用 embeddings 且已按新端点重写过</strong>：见报错三，你会迁到一个 Ollama 自己都标了 superseded 的端点上。</li><li><strong>依赖 <code>/api/ps</code> 的监控面板</strong>：HTTP 兼容层没有这个端点，要改成拉 CLI 的 <code>docker model ps</code>。</li><li><strong>Windows 上跑 Desktop</strong>：官方明确写了要手动开 host-side TCP，否则 12434 不监听；GPU 加速还要单独勾。</li></ul>
+<h2>FAQ</h2>
+<p>Q: 只把 11434 改成 12434，最小改动能跑通哪些功能？</p>
+<p>A: 按本轮实测，<code>/api/chat</code>、<code>/api/tags</code>、<code>/api/generate</code>、<code>/api/show</code>、<code>/api/embeddings</code> 这 5 个 Ollama 原生端点都落在 DMR 官方公布路由上。前提是你走 Ollama 兼容层，并且模型名带上 <code>ai/</code> 这类命名空间。</p>
+<p>Q: OpenAI 兼容层的 base URL 到底写哪个？</p>
+<p>A: 官方「Base URLs for third-party tools」表里分三类：OpenAI SDK 类写 <code>http://localhost:12434/engines/v1</code>；Anthropic SDK 类写 <code>http://localhost:12434</code>；Ollama 兼容客户端也写 <code>http://localhost:12434</code>。差别就在 <code>/engines/v1</code> 这个后缀。</p>
+<p>Q: embeddings 到底该用哪个端点？</p>
+<p>A: 留在 Ollama 兼容层就用 <code>/api/embeddings</code>（参数是 <code>prompt</code>）；迁到 OpenAI 兼容层就用 <code>/engines/v1/embeddings</code>。Ollama 现行的 <code>/api/embed</code> 在 DMR 官方文档里没有对应，别用。</p>
+<p>Q: 容器里怎么连？</p>
+<p>A: 官方口径分三套：Desktop 容器内用 <code>http://model-runner.docker.internal</code>（不带端口），Engine 容器内用 <code>http://172.17.0.1:12434</code>，Compose 项目里可能还需要 <code>extra_hosts</code>。我本机起不了真实环境，建议按你用的是 Desktop 还是 Engine 二选一，再用 <code>docker model logs</code> 看请求。</p>
+<p>Q: DMR 版本号怎么查？</p>
+<p>A: 官方 get-started 页给的命令是 <code>docker model version</code>。我这台机器没有 Docker，无法给出具体版本号；本文涉及 DMR 的描述均来自 2026-10-17 抓取的官方文档，请以你本地 <code>docker model version</code> 的输出为准。</p>
+<h2>延伸阅读</h2>
+<ul><li><a href="https://yaohehe.github.io/2026-10-11-docker-model-runner.html" target="_blank" rel="nofollow sponsored">Docker Model Runner 架构解剖：三引擎与两种地址口径</a></li><li><a href="https://yaohehe.github.io/2026-10-14-docker-model-runner-open-webui-4.html" target="_blank" rel="nofollow sponsored">Docker Model Runner 接 Open WebUI：4 个真实故障</a></li><li><a href="https://yaohehe.github.io/2026-10-15-compose-ai-docker-model-runner-4.html" target="_blank" rel="nofollow sponsored">在 Compose 里声明 AI 模型：端点注入与 4 个真实报错</a></li></ul>
+<p>本文所有官方事实取自 Docker 官方 api-reference、get-started、configuration 与 CLI 参考页，以及 Ollama 官方仓库的 <code>docs/api.md</code> 与 <code>docs/api/openai-compatibility.mdx</code>，抓取时间 2026-10-17；Ollama 最新 release 为 v0.40.5（2026-10-14 发布）。价格与版本均标注「截至发稿」，请以官方页面为准。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

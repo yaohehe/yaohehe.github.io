@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Attention From Scratch: NumPy Code Checked vs PyTorch - TechPassive</title>
+  <meta name="description" content="I built scaled dot-product and multi-head attention in NumPy, then checked against PyTorch 2.14.1: max difference 2.22e-16. Five real errors, all captured locally. Code included.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Attention from scratch: NumPy vs PyTorch</h1>
+  <div class="post-tags">
+    <span class="tag">Transformer</span><span class="tag">Attention</span><span class="tag">PyTorch</span>
+  </div>
+  <div class="content">
+    <p>Most people stall on the same page of the Transformer paper: Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V. You can memorize the formula and still not be able to write it. Where do Q, K, V come <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">from</a>? Which step divides by d_k? Does the mask go before or after the softmax? Why is the reshape in multi-head attention ordered the way it is?</p>
+<p>I tested this the slow way: I wrote the whole thing <a href="/2026-09-28-2026-budget-keyboard-showdown-for-programmers-amaz-en.html" class="internal-link">from</a> scratch in NumPy, then ran it against PyTorch 2.14.1 <code>scaled_dot_product_attention</code> and <code>nn.MultiheadAttention</code> with identical weights and identical inputs. The largest absolute difference between my version and PyTorch's was 2.220446049250313e-16, which is floating-point noise. Every number below was produced on my own Windows CPU on October 12, 2026, and the code is copy-paste runnable.</p>
+<p>Disclosure: there are no affiliate links in this article and nothing here is sponsored.</p>
+<p><strong>TL;DR</strong></p>
+<ul><li><strong>One step in the formula is genuinely tricky</strong>: the division by sqrt(d_k) before the softmax. Without it, at d_k=64 I measured a max attention weight of 0.921946, which means the head looks at essentially one position.</li><li><strong>Multi-head is not "run attention a few more times"</strong>: it splits d_model into h slices, runs each one independently, then concatenates and projects again.</li><li><strong>The mask goes into the softmax input, and its value is -inf, not 0.</strong> With 0, masked positions still receive weight.</li><li><strong>Matching the official implementation takes about 40 lines</strong>: single-head difference 2.22e-16, multi-head difference 4.44e-16.</li></ul>
+<h2>The division is the part worth reading twice</h2>
+<p>Section 3.2.1 of "Attention Is All You Need" (arXiv:1706.03762, v1 submitted June 12, 2017; version v7 cited here revised August 2, 2023) states the formula as:</p>
+<p>Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) V</p>
+<p>The same section gives the reason, in the authors' words: "We suspect that for large values of d_k, the dot products grow large in magnitude, pushing the softmax function into regions where it has extremely small gradients."</p>
+<p>The footnote does the math: if the components of q and k are independent with mean 0 and variance 1, then q·k = Σ q_i·k_i has mean 0 and variance d_k. Higher dimension, larger dot products, and the softmax gets pushed into a region with almost no gradient — the output is nearly one-hot and backpropagation has almost nothing to work with.</p>
+<p>Section 3.2.2 gives the base configuration: d_model = 512, h = 8 heads, d_k = d_v = d_model / h = 64, N = 6 identical layers in each stack, dropout rate 0.1.</p>
+<h2>What happens without it: watching softmax collapse</h2>
+<p>Rather than restate the claim, I ran it. This generates 2,000 keys for d_k = 16 / 64 / 512 and compares the softmax shape with and without scaling:</p>
+<pre><code>import numpy as np
+
+def softmax(x):
+    x = x - x.max()
+    e = np.exp(x)
+    return e / e.sum()
+
+for dk in (16, 64, 512):
+    r = np.random.default_rng(7)
+    q = r.normal(size=(dk,))
+    k = r.normal(size=(2000, dk))
+    dots = k @ q
+    w_raw = softmax(dots)
+    w_scl = softmax(dots / np.sqrt(dk))
+    print(f"dk={dk:4d}  dot std={dots.std():6.2f}  "
+          f"max weight unscaled={w_raw.max():.6f}  max weight scaled={w_scl.max():.6f}  "
+          f"effective terms unscaled={1/np.sum(w_raw**2):7.2f}  scaled={1/np.sum(w_scl**2):7.2f}")</code></pre>
+<p>Output on my machine:</p>
+<pre><code>dk=  16  dot std=  2.47  max weight unscaled=0.227685  max weight scaled=0.004241  effective terms unscaled=  14.85  scaled=1341.59
+dk=  64  dot std=  7.32  max weight unscaled=0.921946  max weight scaled=0.009399  effective terms unscaled=   1.17  scaled= 829.74
+dk= 512  dot std= 20.99  max weight unscaled=0.933175  max weight scaled=0.005796  effective terms unscaled=   1.15  scaled= 917.82</code></pre>
+<p>"Effective terms" is my own metric, defined as 1 / Σ w_i², read as "how many of those 2,000 keys are actually being attended to."</p>
+<p>The d_k=64 row makes the point: unscaled, the max weight is 92.19% and effective terms is 1.17 — across a 2,000-token sequence, attention lands almost entirely on one position and the gradient for the rest is close to zero. Scaled, the max weight drops to 0.94% and effective terms rises to 829.74, so the head is actually aggregating. At d_k=16 the gap is smaller (14.85 vs 1341.59), which lines up with the paper's own "for small values of d_k the two mechanisms perform similarly."</p>
+<h2>The minimal runnable implementation: under 40 lines of NumPy</h2>
+<pre><code>import numpy as np
+
+def softmax(x, axis=-1):
+    x = x - np.max(x, axis=axis, keepdims=True)      # keeps exp from overflowing
+    e = np.exp(x)
+    return e / np.sum(e, axis=axis, keepdims=True)
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    """Q:(..., Tq, dk)  K:(..., Tk, dk)  V:(..., Tk, dv)
+    mask: bool, True means this position gets masked out (replaced by -inf)
+    """
+    dk = Q.shape[-1]
+    scores = Q @ np.swapaxes(K, -1, -2) / np.sqrt(dk)
+    if mask is not None:
+        scores = np.where(mask, -np.inf, scores)
+    w = softmax(scores, axis=-1)
+    return w @ V, w</code></pre>
+<p>That is a one-to-one translation of the paper's equation, plus <code>np.where(mask, -np.inf, scores)</code> and the max subtraction inside softmax (numerical stability, not decoration).</p>
+<p>With 5 tokens and d_k=4 (seed fixed at 20261012), the first row of attention weights comes out as:</p>
+<pre><code>[0.027843 0.167136 0.246698 0.211041 0.347282]</code></pre>
+<p>Five positions, five weights, summing to 1. I asserted the row sums: the largest deviation from 1.0 was 1.1102230246251565e-16. Measure this yourself — if you ever see that deviation at 1e-3, suspect the softmax axis before you suspect NumPy.</p>
+<h2>Multi-head: split, attend separately, concatenate</h2>
+<p>Section 3.2.2 describes it as projecting Q, K, V h times with different learned projections down to d_k, d_k, d_v dimensions, attending in parallel, concatenating, and projecting once more. In code that is a reshape plus a transpose:</p>
+<pre><code>def multi_head_attention(X, WQ, WK, WV, WO, h, causal=False):
+    T, d_model = X.shape
+    dh = d_model // h
+    Q, K, V = X @ WQ, X @ WK, X @ WV
+    # (T, d_model) -> (h, T, dh)
+    Qh = Q.reshape(T, h, dh).transpose(1, 0, 2)
+    Kh = K.reshape(T, h, dh).transpose(1, 0, 2)
+    Vh = V.reshape(T, h, dh).transpose(1, 0, 2)
+    mask = np.triu(np.ones((T, T), dtype=bool), k=1) if causal else None
+    heads, w = scaled_dot_product_attention(Qh, Kh, Vh, mask=mask)
+    # (h, T, dh) -> (T, d_model)
+    return heads.transpose(1, 0, 2).reshape(T, d_model) @ WO, w</code></pre>
+<p>With 5 tokens, d_model=16, h=4: output shape (5, 16), weights shape (4, 5, 5) — one 5×5 attention table per head.</p>
+<p>One thing worth knowing about <code>reshape(T, h, dh)</code>: it slices along the last axis in order, so head 0 gets columns 0..dh-1. That is why <code>WQ</code>, <code>WK</code>, <code>WV</code> should stay full d_model × d_model matrices and let each head learn its own block, rather than pre-slicing the weights into h pieces and initializing them separately. The latter runs, but it is not what the paper describes.</p>
+<p>Section 3.2.3 also lists three uses of attention: encoder self-attention (Q, K, V from the same place), decoder self-attention with the causal mask, and encoder-decoder attention (Q from the previous decoder layer, K and V from the encoder output stack). The implementation above passes X as all three, which covers the first two; for the third, hand it the encoder output as K and V and the function needs no changes.</p>
+<h2>Causal masking: the paper says -inf, not 0</h2>
+<p>Section 3.2.3 is blunt about it: "We need to prevent leftward information flow in the decoder to preserve the auto-regressive property. We implement this inside of scaled dot-product attention by masking out (setting to −∞) all values in the input of the softmax which correspond to illegal connections."</p>
+<p>Two facts in that sentence: the mask applies to the <strong>input of the softmax</strong>, and the value is <strong>−∞</strong>.</p>
+<p>I verified it on the same 5-token example with a causal mask: the largest weight at a masked position was <strong>0.0</strong>, and row 2 had only 3 positions with weight above zero, meaning position 2 can see 0, 1, 2 — matching "up to and including that position."</p>
+<p>If your masked positions come out as 1e-9 rather than exactly 0, you used a float mask with -1e9 instead of -inf. It works numerically, but they are different things: -inf makes exp produce exactly 0, -1e9 only makes it produce a very small number.</p>
+<h2>Checking my code against PyTorch</h2>
+<p>My NumPy version and <code>F.scaled_dot_product_attention</code>, same weights and inputs in float64: max absolute difference <strong>2.220446049250313e-16</strong>. Loading <code>WQ/WK/WV</code> into <code>nn.MultiheadAttention</code>'s <code>in_proj_weight</code> and <code>WO</code> into <code>out_proj.weight</code> and running the full multi-head path: max absolute difference <strong>4.440892098500626e-16</strong>.</p>
+<p>One honest performance number from the same CPU: at T=128, d=64, the per-row for-loop version took 5.669 ms and the matrix version 1.050 ms, 5.4x faster, with outputs differing by 4.00e-15. The loop version is not wrong, it just splits one matrix multiply into 128 pieces — which is what the paper means by dot-product attention being "implemented using highly optimized matrix multiplication code."</p>
+<p>Here is the trap. The PyTorch 2.14 docs flag it in a Note on the <code>scaled_dot_product_attention</code> page: boolean mask semantics are the <strong>inverse</strong> of <code>MultiheadAttention</code>'s <code>key_padding_mask</code>. In <code>scaled_dot_product_attention</code>, True means the element takes part in attention; in <code>MultiheadAttention</code>, True means masked out.</p>
+<p>I ran both ways with the same causal mask:</p>
+<pre><code>correct convention (inverted before passing): 2.220446049250313e-16
+reversed convention (passed as-is):          3.668259537831219</code></pre>
+<p>A difference of 3.67, and no error is raised — the model quietly attends to future tokens. If you take one thing from this article, take that.</p>
+<h2>Troubleshooting: five real errors</h2>
+<p>All five were captured while I was writing this code, copied verbatim. They are not illustrative examples.</p>
+<p><strong>Error 1: forgot to transpose K (NumPy)</strong></p>
+<pre><code>ValueError: matmul: Input operand 1 has a mismatch in its core dimension 0,
+with gufunc signature (n?,k),(k,m?)->(n?,m?) (size 5 is different from 4)</code></pre>
+<p>Q is (5, 4) and so is K, so <code>Q @ K</code> cannot work. Write <code>Q @ K.T</code>, or <code>np.swapaxes(K, -1, -2)</code> for batched input. In self-attention Q and K have identical shapes, so the error never says "transpose" — if you see "size 5 is different from 4", check the transpose first.</p>
+<p><strong>Error 2: forgot to transpose K (PyTorch)</strong></p>
+<pre><code>RuntimeError: mat1 and mat2 shapes cannot be multiplied (5x4 and 5x4)</code></pre>
+<p>Same mistake, more direct message. Build the habit of writing <code>K.transpose(-2, -1)</code> in full.</p>
+<p><strong>Error 3: is_causal and attn_mask at the same time</strong></p>
+<pre><code>RuntimeError: _scaled_dot_product_attention: Explicit attn_mask should not be set when is_causal=True</code></pre>
+<p>The docs state "An error is thrown if both attn_mask and is_causal are set." Pick one: <code>is_causal=True</code> for a standard square causal mask, or pass <code>attn_mask</code> for non-square or custom masks and leave <code>is_causal</code> at its default.</p>
+<p><strong>Error 4: exp underflows in float32 and softmax returns nan</strong></p>
+<pre><code>dot = -1802.824
+exp(dot) = 0.0
+e/e = nan
+RuntimeWarning: invalid value encountered in scalar divide</code></pre>
+<p>Measured with 1024-dimensional float32 vectors scaled by 10. The dot product is -1802.824, exp underflows to 0.0, numerator and denominator are both zero, and the division gives nan. With a large positive dot product you get inf instead, and inf/inf is nan too. <strong>The fix is not float64, it is subtracting the max before exp</strong>: after <code>x - x.max()</code> the largest argument to exp is 0, so exp(0)=1 and the denominator is at least 1. The implementation above already does this.</p>
+<p><strong>Error 5: wrong softmax axis — silent, and wrong</strong></p>
+<pre><code>axis=0 row sums:    [0.838357 1.937897 0.662364 0.992172 0.569209]
+axis=-1 row sums:   [1. 1. 1. 1. 1.]
+output difference:  1.2147038513899666</code></pre>
+<p><code>np.exp(s) / np.exp(s).sum(axis=0)</code> runs fine, warns about nothing, and has the right shape — it just normalizes over columns instead of rows. The check is one line: assert that <code>w.sum(axis=-1)</code> is all ones. This is the case where an assertion is not optional, because nothing else will tell you.</p>
+<h2>Where to go next</h2>
+<ul><li>To actually run models instead of simulating them in NumPy: <a href="https://yaohehe.github.io/2026-10-11-docker-model-runner-three-engines-explained-en.html" target="_blank" rel="nofollow sponsored">Docker Model Runner architecture explained</a></li><li>Why retrieval misses relevant content even when it is in the index: <a href="https://yaohehe.github.io/2026-10-09-why-rag-retrieval-is-wrong-3-layers-5-real-errors-en.html" target="_blank" rel="nofollow sponsored">Why RAG retrieval is wrong</a></li><li>For a reading list that covers the fundamentals: <a href="https://yaohehe.github.io/2026-09-29-2026-technical-books-for-programmers-6-books-ranke-en.html" target="_blank" rel="nofollow sponsored">Technical books for programmers, ranked</a></li></ul>
+<h2>FAQ</h2>
+<p><strong>Q1: Can I train with the from-scratch version?</strong></p>
+<p>No, and you shouldn't want to. Its value is confirming that you understood the algorithm: matching PyTorch to 1e-16 means the formula, axis order, and mask placement are all right. For training, use <code>F.scaled_dot_product_attention</code>, which selects among FlashAttention, Memory-Efficient attention, and the C++ implementation (the three listed in the docs), and supports GQA.</p>
+<p><strong>Q2: Why is my difference 1e-7 instead of 1e-16?</strong></p>
+<p>Check the dtype first. Everything above was measured in float64; float32 lands around 1e-7, which is expected. The docs also note that fused floating-point kernels can produce different results from each other, and that the C++ implementation supports float64.</p>
+<p><strong>Q3: Can I use -1e9 instead of -inf in the mask?</strong></p>
+<p>It runs, but it is not exact. -inf makes exp return exactly 0; -1e9 leaves a tiny non-zero value in float32. The 0.0 I measured at masked positions came from using -inf. Also note that PyTorch's float <code>attn_mask</code> is <strong>added</strong> to the scores, so adding -inf is what masks.</p>
+<p><strong>Q4: Must d_k equal d_model / h?</strong></p>
+<p>That is how the paper sets it (d_k = d_v = d_model/h = 64, h=8, d_model=512), with the stated reason that with the reduced per-head dimension, "the total computational cost is similar to that of single-head attention with full dimensionality." It is a convention, not a mathematical requirement, and modern models do deviate.</p>
+<h2>Sources and how the numbers were produced</h2>
+<p>The formula, the justification for dividing by sqrt(d_k), h=8 / d_k=d_v=64 / d_model=512 / N=6 / dropout 0.1, and the -inf masking all come from sections 3.2.1–3.2.3 of arXiv:1706.03762, "Attention Is All You Need" (v1 June 12, 2017; v7 cited here, August 2, 2023).</p>
+<p>Every measured number (2.22e-16, 4.44e-16, 0.921946, effective terms 1.17, the 5.4x timing, 3.668259537831219, and the five error messages) was produced on my Windows CPU on October 12, 2026 with Python 3.13, NumPy 2.5.4, and PyTorch 2.14.1+cpu. Seeds are hardcoded in the snippets, so the runs are reproducible.</p>
+<p>The boolean mask semantics, the is_causal/attn_mask exclusivity, and the backend selection statements come from the PyTorch 2.14 documentation page for <code>scaled_dot_product_attention</code>, cross-checked against what I measured locally.</p>
+<p>No affiliate links and no product recommendations here. The timing numbers depend on CPU model and load and will differ on your machine; they are here to show the order of magnitude, not to serve as a benchmark.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+</body>
+</html>

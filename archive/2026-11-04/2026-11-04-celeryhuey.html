@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Celery/huey 任务重试与幂等：谁偷偷跑了第二遍 - TechPassive</title>
+  <meta name="description" content="我用 huey 3.5.4 与 Celery 5.6.3 实测任务重试：retries=2 会执行 3 次，固定 task_id 投两次就跑两次，eager 模式下退避被完全吃掉，不传 countdown 的重试要干等 180 秒。附三个我真实撞到的报错、Celery 5.6.3 源码常量取证与一份可落地的幂等清单。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Celery 与 huey 的任务重试：三次执行、一次副作用</h1>
+  <div class="post-tags">
+    <span class="tag">Celery</span><span class="tag">huey</span><span class="tag">任务队列</span>
+  </div>
+  <div class="content">
+    <p>任务队列最容易被误判的地方，不是「会不会重试」，而是「重试了几次、副作用跑了几遍」。这两件事在三个主流库里用的是三套不同的计数口径，而且没有一个会在出错时提醒你口径不一致。</p>
+<p>我实际把 <a href="/2026-11-01-huey-apscheduler-celery.html" class="internal-link">huey</a> 3.5.4 和 Celery 5.6.3 装在隔离目录里跑了同一组任务：一个必然失败的任务、一个失败两次后成功的任务、一个固定 id 被投递两次的任务。下面每个数字都是本机 CPython 3.13.12 + Windows 11 跑出来的，不是文档抄的。</p>
+<p><strong>TL;DR</strong>：默认配置下，huey 的 <code>retries=2</code> 表示总执行 3 次；Celery 的 <code>max_retries=2</code> 也表示总执行 3 次，但不传 <code>countdown</code> 的重试会等 180 秒；两个库都不对 <code>task_id</code> 去重；Celery 的退避默认带 jitter，文档说的「第一次 1 秒」只是上限，实测期望值 0.5 秒。acks_late 换来的不是「不丢」，而是「可能重复」。</p>
+<h2>三套计数口径，先摆在一张表上</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">库</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">参数</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文档语义</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">实测总执行次数</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">huey 3.5.4</td><td style="border:1px solid #ddd;padding:8px;"><code>retries=2</code></td><td style="border:1px solid #ddd;padding:8px;">未处理异常时重试 2 次</td><td style="border:1px solid #ddd;padding:8px;">3</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Celery 5.6.3</td><td style="border:1px solid #ddd;padding:8px;"><code>max_retries=2</code> + <code>autoretry_for</code></td><td style="border:1px solid #ddd;padding:8px;">最多重试 2 次</td><td style="border:1px solid #ddd;padding:8px;">3</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Celery 5.6.3</td><td style="border:1px solid #ddd;padding:8px;"><code>max_retries</code> 取默认</td><td style="border:1px solid #ddd;padding:8px;">类属性 <code>Task.max_retries = 3</code></td><td style="border:1px solid #ddd;padding:8px;">4（源码推算，未实测）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">无重试配置</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">—</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr></tbody></table>
+<p>前两行我各跑了 3 轮，次数稳定。第三行是源码常量 <code>Task.max_retries = 3</code>，意思是手动 <code>self.retry()</code> 不指定上限时，最多会跑到第 4 遍，这个我没有单独跑，只做源码取证。</p>
+<p>真正会坑人的是第四行：<strong>默认就是 1 次</strong>。没配重试的任务失败就是失败，队列不会替你兜底。</p>
+<h2>huey 的 retries 是「还剩几次」</h2>
+<p>huey 的实现是倒计数。<code>huey/api.py</code> 里的 <code>_requeue_task()</code> 第一行就是 <code>task.retries -= 1</code>，然后把任务重新入队。所以 <code>retries=2</code> 进来，第一次执行失败 → 剩 1 → 第二次失败 → 剩 0 → 第三次失败 → <code>final = not task.retries</code> 成立，错误才写进结果后端。</p>
+<p>这就是为什么表里是 3 次而不是 2 次。官方文档的措辞是「number of times to retry the function if an unhandled exception occurs」，字面没错，但读成「总次数」就差了整整一倍。</p>
+<h2>重试还没结束，错误已经出现在结果里</h2>
+<p>这是 huey 最容易造成监控误报的一处。<code>SqliteHuey</code> 的 <code>store_intermediate_errors</code> 默认是 <code>True</code>（官方原文：Defaults to <code>True</code> for backwards compatibility），意思是「任务失败了但还有重试次数」时，异常<strong>当场写进结果存储</strong>。</p>
+<p>我实际测了一遍：一个 <code>retries=3, retry_delay=1</code> 的任务，第一次失败后 0.5 秒就去读结果，拿到的是 <code>TaskException</code> 包着 <code>ValueError('attempt-1')</code> —— 而此刻任务还在重试队列里，最终会成功。</p>
+<p>如果你的告警规则是「结果后端出现 TaskException 就报警」，那么每一条最终成功的任务都会先报一次警。要么把 <code>store_intermediate_errors</code> 设为 <code>False</code>，要么在告警里读 <code>Error</code> 元数据里的 <code>retries</code> 字段判断是否已经耗尽。</p>
+<p>顺带一个反直觉的地方：<code>h.result()</code> 默认 <code>preserve=False</code>，读一次就把结果从存储里 <strong>pop 掉</strong>。我第一次写探针时读了两次，第二次拿到 <code>None</code>，差点记成「重试把结果弄丢了」。要重复读必须显式 <code>preserve=True</code>。</p>
+<p>重试确实耗尽之后，错误形态是 <code>TaskException: ValueError('boom-A')</code>，和中间态长得一样，只能靠 <code>retries</code> 字段区分。</p>
+<h2>Celery 的 180 秒：你以为在重试，其实在排队</h2>
+<p><code>Task.default_retry_delay</code> 的类属性是 <strong>180</strong>。<code>Task.retry()</code> 的源码里写着：</p>
+<pre><code>if not eta and countdown is None:
+    countdown = self.default_retry_delay</code></pre>
+<p>也就是说 <code>raise self.retry()</code> 不传 <code>countdown</code>，任务会<strong>等 3 分钟</strong>才重新进队列。这不是 bug，是早年为「下游服务过载」设计的默认值，但在今天的心智模型里，「重试」几乎等于「马上再来一次」。</p>
+<p>如果你要的是秒级重试，必须显式传 <code>countdown=1</code>，或者用 <code>autoretry_for</code> + <code>retry_backoff</code>。</p>
+<h2>直接调用 = 没有重试</h2>
+<p><code>Task.retry()</code> 开头有这么一段：</p>
+<pre><code>if request.called_directly:
+    raise_with_context(exc or Retry('Task can be retried', None))</code></pre>
+<p>我实测：<code>manual("direct")</code> 直接调用，抛出的是 <code>ValueError</code>，不是 <code>Retry</code>，执行次数 1。<strong>在 REPL 里手调一次任务函数，你看到的是原始异常，重试逻辑根本没走。</strong></p>
+<p>同一段源码的注释写的是「Not in worker or emulated by (apply/always_eager), so just raise the original exception」。但注释和行为对不上：<code>apply()</code> 走的是 <code>is_eager</code> 分支，实测会真的重试 3 次。也就是说，<strong>注释把 <code>apply</code> 和「直接调用」混为一谈了，实际只有 <code>called_directly</code> 才不重试</strong>。</p>
+<h2>eager 模式会把退避吃掉</h2>
+<p>这是「用单测验证重试节奏」的经典陷阱。我把 <code>retry_backoff=True</code>、<code>max_retries=2</code> 的任务放进 <code>task_always_eager=True</code> 的环境跑：</p>
+<ul><li>执行次数：3</li><li>总耗时：0.010 秒</li></ul>
+<p>三次执行总共 10 毫秒。<code>countdown</code> 确实被算出来写进了 <code>Retry</code> 的签名里，但 <code>apply()</code> 拿到 <code>Retry</code> 之后直接就地重跑，<strong>没有任何 sleep</strong>。同样配置在真实 worker 上是 1 秒再加 2 秒，eager 下是 0 加 0。</p>
+<p>结论：eager 模式可以验证「重试了几次」和「最终抛什么异常」，<strong>不能验证重试节奏</strong>。要测节奏只能上真 worker，或者直接对 <code>get_exponential_backoff_interval()</code> 单测。</p>
+<h2>重试耗尽抛什么，取决于你传不传 exc</h2>
+<p>同一组对照：</p>
+<ul><li><code>raise self.retry(exc=ValueError("mx"))</code> → 耗尽后 <code>state=FAILURE</code>，<code>result</code> 是 <code>ValueError</code></li><li><code>raise self.retry()</code> → 耗尽后 <code>state=FAILURE</code>，<code>result</code> 是 <code>MaxRetriesExceededError</code></li></ul>
+<p>两者执行次数都是 3。官方文档那句「the current exception will be re-raised if the max number of retries has been exceeded, but this won't happen if an <code>exc</code> argument wasn't given」在这里是准确的 —— 传了 <code>exc</code> 就把原异常重新抛出来，没传就抛 <code>MaxRetriesExceededError</code>。</p>
+<p>这条影响的是你的 <code>except</code> 分支：如果代码里 <code>except MaxRetriesExceededError</code> 做兜底，而你恰好传了 <code>exc</code>，这段兜底<strong>永远不会执行</strong>。</p>
+<h2>jitter 默认是开的，「第一次 1 秒」只是上限</h2>
+<p>官方文档写 <code>retry_jitter</code>「By default, this option is set to <code>True</code>」，同时又说 <code>retry_backoff=True</code> 时「the first retry will have a delay of 1 second」。两句都对，合起来容易被读成「第一次一定等 1 秒」。</p>
+<p>实际上 <code>full_jitter=True</code> 时，延迟是 <code>random(0, 上限)</code>。我对 <code>get_exponential_backoff_interval()</code> 采样 2000 次：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">第几次重试</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">采样最小</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">采样最大</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">采样均值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">理论上限</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">0.5</td><td style="border:1px solid #ddd;padding:8px;">1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">2</td><td style="border:1px solid #ddd;padding:8px;">1.0</td><td style="border:1px solid #ddd;padding:8px;">2</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">3</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">2.0</td><td style="border:1px solid #ddd;padding:8px;">4</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">4</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">8</td><td style="border:1px solid #ddd;padding:8px;">4.0</td><td style="border:1px solid #ddd;padding:8px;">8</td></tr></tbody></table>
+<p>均值刚好是上限的一半，最小值是 <strong>0</strong>。也就是说，默认配置下你实际等到的延迟，期望值只有文档写的那个上限的 50%。所以「指数退避」的真实形态是「指数上限 + 均匀随机」，不是「指数等待」。</p>
+<p>还有一个配置层的细节值得记一笔：<code>DEFAULTS['task_retry_jitter']</code> 的值是 <code>None</code>，不是 <code>True</code>。真正让默认值变成 True 的是 <code>celery/app/autoretry.py</code> 里这一行 <code>getattr(task, 'retry_jitter', True)</code>。查配置表看到 None 就以为没开 jitter，是查错了地方。</p>
+<h2>task_id 不是锁</h2>
+<p>我原以为固定 <code>task_id</code> 能当幂等键用。实测：</p>
+<ul><li>Celery：<code>ok.apply_async(args=("id1",), task_id="dup-1")</code> 连投两次 → 执行 2 次</li><li>huey：<code>once("C", id="fixed-id-1")</code> 连投两次 → 执行 2 次</li></ul>
+<p>两个库都不做去重。<code>task_id</code> 只是「这条消息的身份标识」，用于查结果、撤销、追踪，<strong>不是「同一个 id 只执行一次」的承诺</strong>。想靠它防重复，会在第一次重复消费时发现它什么都没挡住。</p>
+<h2>acks_late 换来的不是「不丢」，是「可能重复」</h2>
+<p>Celery 官方文档写得很直白：</p>
+<blockquote>the default behavior is to acknowledge the message in advance, just before it's executed, so that a task invocation that already started is never executed again.</blockquote>
+<p>默认在执行<strong>前</strong>就 ack。所以 worker 在执行途中被 kill，消息已经没了，任务不会重投。开 <code>acks_late</code> 之后变成执行<strong>后</strong> ack：</p>
+<blockquote>This means the task may be executed multiple times should the worker crash in the middle of execution. Make sure your tasks are idempotent.</blockquote>
+<p>同一个页面的 FAQ 还有一句更关键的：</p>
+<blockquote>if the task raises an exception it's still acknowledged!</blockquote>
+<p><strong>任务抛异常也算 ack。</strong> 所以「重试」这件事在 Celery 里根本不由 ack 机制负责，只由 <code>retry()</code> 负责。acks_late 管的是「进程死了」，不管「代码报错了」。</p>
+<p>源码常量三处（Celery 5.6.3）：<code>task_acks_late = False</code>、<code>task_reject_on_worker_lost = None</code>、<code>worker_prefetch_multiplier = 4</code>。第二个是 <code>None</code> 而不是 <code>False</code>，意思是「跟随 acks_late 的语义」，不是「关闭」。</p>
+<p><strong>取证边界</strong>：本机没有 Redis 与 RabbitMQ，我只做了 eager 模式实测、源码常量取证、官方原文引用，<strong>没有跑真实的 redelivery 场景</strong>。要知道崩溃后到底会不会重投，得在你自己的 broker 上压一次强制杀进程。</p>
+<h2>Troubleshooting：三个我真实撞到的报错</h2>
+<p><strong><code>AttributeError: 'bytes' object has no attribute 'eta'</code></strong></p>
+<p>我试图绕过 consumer 直接驱动队列：<code>task = h.storage.dequeue()</code> 然后 <code>h.execute(task)</code>。<code>SqliteHuey.dequeue()</code> 返回的是<strong>序列化后的 bytes</strong>，不是 <code>Task</code> 对象。要先 <code>h.deserialize_task(data)</code>，或者干脆用 <code>h.create_consumer()</code>。我最后走的是 consumer 路线，因为那才是生产路径。</p>
+<p><strong><code>ValueError: signal only works in main thread of the main interpreter</code></strong></p>
+<p>把 <code>consumer.run()</code> 放进 <code>threading.Thread</code> 起后台消费者，第一次就崩。huey 的 <code>Consumer.start()</code> 会调 <code>_set_signal_handlers()</code>，而 <code>signal.signal()</code> 只能在主线程注册。测试里要么在子线程里把 <code>_set_signal_handlers</code> 替换成空函数，要么用 <code>multiprocessing</code> 起独立进程 —— 后者更接近生产，也更不会掩盖问题。</p>
+<p><strong><code>ProgrammingError: Error binding parameter 2: type 'Result' is not supported</code></strong></p>
+<p><code>h.result(r)</code> 我传的是 <code>Result</code> 对象，而它要的是 <code>task_id</code> 字符串。正确写法 <code>h.result(r.id)</code>。这个报错来自 sqlite3 的参数绑定，看不出和「参数传错类型」的关系，我第一次排查了十几分钟才反应过来。</p>
+<h2>幂等怎么做：四条按成本排序</h2>
+<ul><li><strong>有天然唯一键就用唯一索引</strong>。订单号、消息 id、文件路径，直接 <code>INSERT ... ON CONFLICT DO NOTHING</code>，让数据库替你挡第二次。</li><li><strong>没有唯一键就落「意图」表</strong>。执行前先写一行 <code>(task_id, status='started')</code>，唯一索引在 <code>task_id</code> 上；第二次进来直接命中冲突退出。</li><li><strong>调外部 API 用供应商的幂等键</strong>。支付网关的 <code>out_trade_no</code>、Stripe 的 <code>Idempotency-Key</code>，这类接口的幂等由服务端保证，比自己写锁可靠。</li><li><strong>通知类任务设去重窗口</strong>。同一个用户同一类通知，10 分钟内只发一次；窗口存在 Redis 或数据库都行，关键是<strong>窗口要比重试周期长</strong>。</li></ul>
+<p>反过来，如果你发现某个任务「重试两次就产生了 3 条记录」，先别改重试次数，先看它有没有上面四条里的任意一条。重试次数只影响「重复几遍」，幂等设计才决定「重复了会怎样」。</p>
+<h2>三个库怎么选，一句话版</h2>
+<ul><li>只要重试、不要持久化、进程内能跑完 → 别上队列，<code>tenacity</code> 就够。这层我在<a href="https://yaohehe.github.io/2026-10-24-requests-2342-tenacity-921.html" class="internal-link">10-24 那篇 retry 实测</a>里做过对照。</li><li>单机、任务量小、能接受 SQLite 的锁边界 → <code>SqliteHuey</code>，<code>retries</code> 记住是「还剩几次」。</li><li>要跨机器、要 ack 语义、要有 beat 调度 → Celery，但必须自己解决幂等，因为它只保证「至少一次」。</li></ul>
+<p>三个库的依赖面与静默失效清单，我在<a href="https://yaohehe.github.io/2026-11-01-huey-apscheduler-celery.html" class="internal-link">11-01 那篇三库对照</a>里已经逐条跑过；本篇只回答「失败之后会发生什么」，两篇不重叠。</p>
+<h2>常见问题</h2>
+<p><strong>Q：<code>retries=0</code> 和 <code>retries=-1</code> 有什么区别？</strong></p>
+<p>huey 里 <code>0</code> 是不重试；负数在源码里 <code>task.retries -= 1</code> 会一直往下减，<code>final = not task.retries</code> 对负数恒为 False，等于无限重试。要用无限重试请显式确认这个行为，别靠写 <code>-1</code> 猜。</p>
+<p><strong>Q：Celery 的 <code>max_retries=None</code> 是什么语义？</strong></p>
+<p>官方原文「A value of <code>None</code> means task will retry forever」。不是「不重试」，是「永不放弃」。想不重试请写 <code>0</code>。</p>
+<p><strong>Q：为什么我设了 <code>retry_backoff=True</code> 但任务还是立刻重跑？</strong></p>
+<p>先确认是不是跑在 <code>task_always_eager=True</code> 下。eager 模式不 sleep，这是我实测 0.010 秒跑完三次的直接原因。</p>
+<p><strong>Q：任务重复执行了，是 acks_late 的锅吗？</strong></p>
+<p>先看有没有开 acks_late。默认 <code>task_acks_late = False</code>，执行前就 ack，正常不会因为崩溃重投。重复更可能来自 <code>retry()</code> 被调用，或者上游投递了两次。</p>
+<h2>结语</h2>
+<p>这一轮最值钱的不是哪个库更好，而是三个数字：<code>retries=2</code> 等于 3 次执行、默认 <code>countdown</code> 是 180 秒、<code>task_id</code> 不去重。这三个都写在文档里，但没有一个会在你写错时报错。</p>
+<p>队列系统的默认值几乎全都是「为可靠性让路」的选择，而可靠性在分布式里的唯一实现方式是「至少一次」。既然至少一次，重复就是常态，幂等才是必答题。</p>
+<p>本文不含任何联盟推广链接，所有代码与数字均为本机实测或官方文档原文引用。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

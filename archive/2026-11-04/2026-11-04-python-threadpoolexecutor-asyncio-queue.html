@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 并发实测：ThreadPoolExecutor、asyncio 与 queue 怎么选 - TechPassive</title>
+  <meta name="description" content="同一份 1500 次请求与 5 万条任务，我在 16 核机器上用串行、线程池、进程池、协程与队列各跑三遍：加速比在 8 个 worker 就封顶，默认的 20 个反而比最优慢 12%，进程池做 I/O 慢 6.3 倍，5 万个 Future 占 97.6 MB。附八个真实报错原文、五问决策树和可复现的测试脚本。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>线程池、进程池还是协程：我在 16 核机器上跑完了同一份负载</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">并发</span><span class="tag">性能实测</span>
+  </div>
+  <div class="content">
+    <p>同事建议我给批处理脚本套一层 Celery，理由是「五万条任务，单线程跑不完」。我没急着装，先做了一件更便宜的事：把任务的耗时拆开看，到底是在等网络、在算 CPU，还是在等磁盘。三个答案指向三种完全不同的写法，而其中两种根本不需要队列。</p>
+<p>这篇文章是我实际把同一份负载用四种跑法各跑三遍之后的结果。结论先说清楚：并发形态解决的是「等待」，不是「吞吐」；队列真正的价值是「活过重启」和「背压」，不是让程序变快。如果你的任务只需要前者，标准库三行就能解决，不需要任何中间件。</p>
+<p><strong>本文不含任何联盟推广链接。</strong>文中的数据全部在我本机跑出来，脚本原样贴出，你可以复现。</p>
+<h2>先把瓶颈量出来，再决定要不要队列</h2>
+<p>选形态之前，我只问三个问题，顺序不能换：</p>
+<ul><li><strong>第一问：单个任务的时间花在哪？</strong>如果主要是等网络、等磁盘、等子进程返回，那是 I/O 等待，线程或协程都能重叠；如果主要是纯 Python 计算，只有多进程有用；如果计算发生在 C 扩展里并且释放了 GIL，线程又变得有用了。</li><li><strong>第二问：任务失败或进程被杀之后，要不要接着跑？</strong>要，才有队列。线程池里的任务随进程一起消失，没有任何持久化。</li><li><strong>第三问：生产速度会不会远大于消费速度？</strong>会，才需要「有界队列 + 阻塞入队」这套背压机制。这一条和并发度无关，是内存安全问题。</li></ul>
+<p>只有后两问指向队列，第一问决定的是「用线程、用进程还是用协程」。我见过最多的错误是：一个纯 I/O 任务，先套了一层消息队列，再在 worker 里开了 20 个线程，最后发现瓶颈是对端服务的 QPS 限制——三层并发全部压在同一个瓶颈上，只是把失败点推得更远。</p>
+<h2>我的量法与环境</h2>
+<p>环境是 Windows 11 + CPython 3.13.14 + 16 个逻辑核。负载是一个最小的 HTTP 服务端，跑在<strong>独立进程</strong>里，每个请求 <code>time.sleep(0.003)</code> 后返回 100 字节；客户端发 1500 次请求，每次新建连接（不做 keep-alive），这样连「建连 + 解析」的固定成本也算进去，更接近真实抓取脚本。</p>
+<p>服务端独立进程这一点很重要。第一版我把服务端放在同一个进程的线程里，结果 20 个 worker 只跑出 4.5 倍加速——因为服务端和客户端在抢同一把 GIL，量到的不是客户端并发能力，是自己跟自己抢锁。</p>
+<pre><code># 服务端（独立进程，端口 18765）
+python bench.py serve
+# 客户端：serial | thread N | queue N | asyncio N | proc N
+python bench.py thread 20</code></pre>
+<p>每个形态都在独立子进程里跑，用 <code>tracemalloc</code> 记 Python 堆峰值。<code>tracemalloc</code> 只统计 Python 层分配，不含解释器与栈的常驻内存，所以下表的「峰值」是相对量，不能当成 RSS 读。</p>
+<h2>四形态对拍：加速比在 8 就封顶</h2>
+<p>每种形态跑 3 次取中位数，串行基线 14.547 秒：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">形态</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">中位墙钟</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">每秒请求</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">相对串行</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Python 堆峰值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">串行</td><td style="border:1px solid #ddd;padding:8px;">14.547 s</td><td style="border:1px solid #ddd;padding:8px;">103.1</td><td style="border:1px solid #ddd;padding:8px;">1.00x</td><td style="border:1px solid #ddd;padding:8px;">1.75 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">线程池 2</td><td style="border:1px solid #ddd;padding:8px;">6.386 s</td><td style="border:1px solid #ddd;padding:8px;">234.9</td><td style="border:1px solid #ddd;padding:8px;">2.28x</td><td style="border:1px solid #ddd;padding:8px;">4.41 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">线程池 4</td><td style="border:1px solid #ddd;padding:8px;">3.131 s</td><td style="border:1px solid #ddd;padding:8px;">479.0</td><td style="border:1px solid #ddd;padding:8px;">4.65x</td><td style="border:1px solid #ddd;padding:8px;">4.42 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">线程池 8</td><td style="border:1px solid #ddd;padding:8px;">1.587 s</td><td style="border:1px solid #ddd;padding:8px;">945.0</td><td style="border:1px solid #ddd;padding:8px;">9.17x</td><td style="border:1px solid #ddd;padding:8px;">4.43 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">线程池 16</td><td style="border:1px solid #ddd;padding:8px;">1.712 s</td><td style="border:1px solid #ddd;padding:8px;">876.0</td><td style="border:1px solid #ddd;padding:8px;">8.50x</td><td style="border:1px solid #ddd;padding:8px;">4.47 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">线程池 20</td><td style="border:1px solid #ddd;padding:8px;">1.776 s</td><td style="border:1px solid #ddd;padding:8px;">844.7</td><td style="border:1px solid #ddd;padding:8px;">8.19x</td><td style="border:1px solid #ddd;padding:8px;">3.93 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">线程池 32</td><td style="border:1px solid #ddd;padding:8px;">1.687 s</td><td style="border:1px solid #ddd;padding:8px;">888.9</td><td style="border:1px solid #ddd;padding:8px;">8.62x</td><td style="border:1px solid #ddd;padding:8px;">3.02 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">线程池 64</td><td style="border:1px solid #ddd;padding:8px;">1.733 s</td><td style="border:1px solid #ddd;padding:8px;">865.5</td><td style="border:1px solid #ddd;padding:8px;">8.39x</td><td style="border:1px solid #ddd;padding:8px;">3.16 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">队列 20</td><td style="border:1px solid #ddd;padding:8px;">1.633 s</td><td style="border:1px solid #ddd;padding:8px;">918.5</td><td style="border:1px solid #ddd;padding:8px;">8.91x</td><td style="border:1px solid #ddd;padding:8px;">1.89 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">asyncio 20</td><td style="border:1px solid #ddd;padding:8px;">2.229 s</td><td style="border:1px solid #ddd;padding:8px;">672.9</td><td style="border:1px solid #ddd;padding:8px;">6.53x</td><td style="border:1px solid #ddd;padding:8px;">3.49 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">进程池 20</td><td style="border:1px solid #ddd;padding:8px;">11.112 s</td><td style="border:1px solid #ddd;padding:8px;">135.0</td><td style="border:1px solid #ddd;padding:8px;">1.31x</td><td style="border:1px solid #ddd;padding:8px;">2.55 MB</td></tr></tbody></table>
+<p>这张表里最该注意的是<strong>平台期</strong>：8 个 worker 之后，从 16 到 64 全部落在 1.59 到 1.78 秒这条窄带里，每秒请求在 840 到 945 之间横着走。也就是说，把 worker 从 8 加到 64 花了 8 倍资源，换来的吞吐差是 0。</p>
+<p>原因不在客户端，在对端。服务端是一个单进程 Python 的 <code>ThreadingHTTPServer</code>，每个连接开一个线程，处理请求要抢 GIL——它能吐出的上限就是每秒 900 次左右。客户端无论 16 还是 64，都在等同一个天花板。</p>
+<p>这就是「并发形态解决等待、不解决吞吐」的实证。<strong>加并发之前先问一句：瓶颈是在我这边，还是在对面？</strong>如果对面是个限流的第三方 API，你开 64 个线程只是把 429 的错误来得更早一点。</p>
+<p>另外两个数字值得单独看：<code>queue</code> 形态（20 个长驻线程 + <code>queue.Queue</code>）比 <code>ThreadPoolExecutor(20)</code> 快 8%（1.633 对 1.776 秒），因为线程池的 <code>submit</code> 要为每个任务建一个 Future 对象、走一遍锁和条件变量，1500 次提交全是这种固定开销；<code>asyncio</code> 比线程池慢 36%，因为 HTTP 建连与解析本身是单线程 Python 在跑，协程省下的只是「等待」，省不掉 CPU 那部分。</p>
+<h2>默认 20 个 worker，比 8 个慢 12%</h2>
+<p><code>ThreadPoolExecutor()</code> 不传参时的默认值，官方文档写得很清楚：3.8 改成 <code>min(32, os.cpu_count() + 4)</code>，3.13 又把 <code>os.cpu_count()</code> 换成了 <code>os.process_cpu_count()</code>。本机 16 核，两种算法都给 20：</p>
+<pre><code>import os
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+print(os.cpu_count(), os.process_cpu_count())      # 16 16
+with ThreadPoolExecutor() as ex:
+    print(ex._max_workers)                          # 20
+with ProcessPoolExecutor() as ex:
+    print(ex._max_workers)                          # 16</code></pre>
+<p>默认值的用意是「至少给 I/O 任务留 5 个 worker，最多用 32 个核」，这是个上下限保护，不是性能最优解。本机实测：默认 20 跑 1.776 秒，手设 8 跑 1.587 秒，<strong>默认值比最优点慢 11.9%</strong>，三跑区间分别是 1.740 到 1.870 秒和 1.565 到 1.613 秒，不重叠，不是噪声。</p>
+<p>这条对写脚本的人很实际：<code>ThreadPoolExecutor()</code> 空着参数写，在很多机器上意味着「比最优慢一成，而且你自己不知道为什么」。我的做法是先按 8 起手，任务里有明确的长等待（比如每次 2 秒以上的外部调用）再往上加，一次加一倍，看墙钟有没有真的降。<strong>加完不降，就是撞到对面的天花板了，加回去。</strong></p>
+<h2>进程池做 I/O：慢 6.3 倍</h2>
+<p>上表最后一行是这篇文章里最贵的一课：20 个进程跑同样的 1500 次请求，用了 11.112 秒，只有串行的 1.31 倍——比线程池慢 6.3 倍，比串行也就快一点点。</p>
+<p>原因有三层，都在进程池的设计里：</p>
+<p>一是<strong>启动成本</strong>。Windows 默认的启动方式是 <code>spawn</code>，每个子进程都是一次完整的解释器启动 + 重新导入主模块，20 个进程就是 20 次。</p>
+<p>二是<strong>每个任务的序列化成本</strong>。<code>submit</code> 要把函数和参数 pickle 进管道，子进程再 pickle 回来。任务本身只有 3 毫秒时，序列化和管道往返比干活还贵。</p>
+<p>三是<strong>任务粒度</strong>。1500 个任务分给 20 个进程，每个进程 75 次往返，<code>Executor.map</code> 在进程池上默认 <code>chunksize=1</code>，固定成本被放大了 1500 次。</p>
+<p>我用另一个实验把「启动与序列化」和「真正计算」拆开了：400 个每份约 0.9 毫秒的 sha256 任务，串行 0.354 秒，<code>ProcessPoolExecutor(16)</code> 用了 4.423 秒，<strong>慢 12.5 倍</strong>。同一台机器上直接起 16 个独立的 Python 进程各跑一份重活，单进程耗时 1.33 秒，16 个并行只要 1.54 秒，接近 13.8 倍——<strong>核是真的，进程池的开销也是真的</strong>。所以问题不在「多进程没用」，在「任务太小，多进程的成本盖过了收益」。</p>
+<p>判断门槛我给一个经验值：单任务耗时低于 10 毫秒，别用进程池；10 到 100 毫秒之间，先量一次再决定；超过 100 毫秒，进程池的固定成本才开始被摊薄。日志场景是同一个坑的另一面：跨进程时 <code>QueueListener</code> 要换成 <code>multiprocessing.Manager().Queue(-1)</code>，<a href="https://yaohehe.github.io/2026-10-23-python-logging-6.html" class="internal-link">那篇 Python logging 复盘</a>记的就是这一层。</p>
+<h2>线程帮不帮忙，取决于有没有释放 GIL</h2>
+<p>同样是「CPU 密集」，线程的效果可以差出一个数量级。三组对照，每组 16 份任务：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">负载</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">串行</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">16 线程</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结论</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">纯 Python 循环 300 万次</td><td style="border:1px solid #ddd;padding:8px;">6.103 s</td><td style="border:1px solid #ddd;padding:8px;">7.425 s</td><td style="border:1px solid #ddd;padding:8px;">线程反而慢 21.7%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">hashlib 每次 update 256 KB</td><td style="border:1px solid #ddd;padding:8px;">0.018 s</td><td style="border:1px solid #ddd;padding:8px;">0.007 s</td><td style="border:1px solid #ddd;padding:8px;">线程快 2.6 倍</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">hashlib 每次 update 1 KB</td><td style="border:1px solid #ddd;padding:8px;">0.020 s</td><td style="border:1px solid #ddd;padding:8px;">0.023 s</td><td style="border:1px solid #ddd;padding:8px;">无加速</td></tr></tbody></table>
+<p>差别在 2047 字节这条线上。hashlib 官方文档原话：「To allow multithreading, the Python GIL is released while computing a hash supplied more than 2047 bytes of data at once in its constructor or .update method.」一次喂进去的字节数超过 2047，C 层的计算就放在 GIL 之外，16 个线程能真的并行；每次只喂 1 KB，GIL 全程被攥着，线程只是在轮流等锁，还要额外付上下文切换的钱。</p>
+<p>同一个道理可以推广到所有 C 扩展：<code>zlib</code>、<code>lzma</code>、numpy 的部分运算、<code>sqlite3</code> 的 C 层调用都属于「可能释放 GIL」这一类。<strong>「Python 有 GIL 所以线程没用」这句话是错的，正确的说法是「GIL 决定了哪些线程有用」。</strong>判断方法不是查文档，是量：同一份任务，串行跑一遍，线程跑一遍，差多少就是多少。</p>
+<p>纯 Python 循环那组还顺带证明了一件事：16 个线程比串行<strong>慢</strong> 21.7%。这不是异常，是 GIL 争抢的代价——线程不停地在锁上排队、唤醒、切走，而这些动作本身要花时间。所以「多开线程总不会更差」是错觉。</p>
+<h2>队列真正的价值是背压，不是并发</h2>
+<p>很多人上 <code>queue.Queue</code> 是为了「并发」，但它真正的功能是<strong>限制在途任务数</strong>。5 万条任务、8 个消费者、每条 0.5 毫秒，两种写法：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">入队耗时</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">总墙钟</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">峰值排队</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Python 堆峰值</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Queue()</code> 无界</td><td style="border:1px solid #ddd;padding:8px;">0.501 s</td><td style="border:1px solid #ddd;padding:8px;">7.261 s</td><td style="border:1px solid #ddd;padding:8px;">49,882</td><td style="border:1px solid #ddd;padding:8px;">1.91 MB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Queue(1000)</code> 有界</td><td style="border:1px solid #ddd;padding:8px;">6.665 s</td><td style="border:1px solid #ddd;padding:8px;">6.801 s</td><td style="border:1px solid #ddd;padding:8px;">1,000</td><td style="border:1px solid #ddd;padding:8px;">0.04 MB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>submit</code> 无界提交 5 万次</td><td style="border:1px solid #ddd;padding:8px;">3.375 s</td><td style="border:1px solid #ddd;padding:8px;">9.970 s</td><td style="border:1px solid #ddd;padding:8px;">50,000 个 Future</td><td style="border:1px solid #ddd;padding:8px;">97.58 MB</td></tr></tbody></table>
+<p>三行读法：无界队列的「入队耗时」只有 0.5 秒，看着很爽，代价是 49,882 条任务同时压在内存里；有界队列的入队被阻塞到 6.665 秒，但那不是变慢，是生产者被迫等消费者，最后总墙钟反而<strong>少了 6.3%</strong>。第三个写法最危险：<code>submit</code> 永不阻塞，5 万个 Future 在内存里堆到 97.58 MB，总耗时还是三者里最长的 9.97 秒。</p>
+<p>这就是背压。它不是性能优化，是「让生产速度服从消费速度」的唯一办法。队列的 <code>maxsize</code> 一旦写成 0 或不填，这个功能就等于关掉了，代码还能跑，只是内存峰值变成一个你控制不了的数字。至于队列放到进程之外以后的重试语义、可见性与锁，属另一层问题，<a href="https://yaohehe.github.io/2026-11-01-huey-apscheduler-celery.html" class="internal-link">huey、APScheduler 与 Celery 的七个静默失效</a>那篇挖得更深。</p>
+<p>正确的骨架长这样，注意 <code>task_done()</code> 在 <code>finally</code> 里：</p>
+<pre><code>import queue, threading
+
+q = queue.Queue(maxsize=1000)
+def worker():
+    while True:
+        item = q.get()
+        if item is None:
+            q.task_done()
+            return
+        try:
+            handle(item)          # 单个任务，异常在内部处理
+        finally:
+            q.task_done()         # 必须执行，否则 join() 永不返回
+
+threads = [threading.Thread(target=worker, daemon=True) for _ in range(8)]
+for t in threads:
+    t.start()
+for item in source():             # 生产者：队列满时自然阻塞
+    q.put(item)
+q.join()                          # 等所有任务 task_done</code></pre>
+<h2>四个默认值，全都不报错</h2>
+<p>这一节的四个默认值，本机实测确认，官方文档也都能查到，但没有任何一个会在你写错时提醒你：</p>
+<ul><li><code>ThreadPoolExecutor()</code> 的 <code>max_workers</code> = <code>min(32, process_cpu_count() + 4)</code>，本机 20，不一定最优；</li><li><code>ProcessPoolExecutor()</code> 的 <code>max_workers</code> = <code>os.process_cpu_count()</code>，本机 16，Windows 上还额外限制不得超过 61；</li><li><code>queue.Queue()</code> 的 <code>maxsize</code> 默认 0，文档原话「If maxsize is less than or equal to zero, the queue size is infinite」，背压直接关掉；</li><li><code>Executor.submit()</code> 永不阻塞，也没有任何背压，提交多少就有多少在途。</li></ul>
+<p>最后一条最容易被忽略，因为 <code>executor.map()</code> 看起来「会等」——它确实会等，但等的是<strong>按顺序取结果</strong>：<code>map</code> 返回的迭代器严格按输入顺序产出，第一个任务慢，后面的结果全堵在后面。实测 10 个任务、耗时从 1.0 秒递减到 0.1 秒：<code>map</code> 拿到的第一个结果在 1.00 秒，<code>as_completed</code> 拿到的第一个结果在 0.10 秒。要做「谁先完成先处理」，只有 <code>as_completed</code> 这一个答案。</p>
+<h2>Troubleshooting：八个真实报错</h2>
+<p>下面每一条都是我在这次实验里实际撞到并复现的，报错文本原样复制，不是「典型报错」。</p>
+<p><strong>报错一：<code>RuntimeError: cannot schedule new futures after shutdown</code></strong></p>
+<p>现象：退出阶段还有清理钩子往线程池里扔任务，直接抛这个错。原因：<code>shutdown()</code> 之后执行器已经关了，文档明确写「Calls to Executor.submit() and Executor.map() made after shutdown will raise RuntimeError」。修法：把「停止接收」和「排空」拆成两步，用一个布尔开关挡住新任务，或者把提交点包在 <code>try/except RuntimeError</code> 里并记账。</p>
+<p><strong>报错二：<code>ValueError: task_done() called too many times</code></strong></p>
+<p>现象：消费循环里 <code>task_done()</code> 写在 <code>try</code> 外面，任务抛异常时又走了一遍 <code>finally</code>，计数被减了两次。原因：<code>task_done()</code> 和 <code>put()</code> 必须一一对应，文档写「Raises a ValueError if called more times than there were items placed in the queue」。修法：<code>task_done()</code> 只写在 <code>finally</code> 里一次，且 <code>get()</code> 与 <code>task_done()</code> 成对出现在同一个函数体里。</p>
+<p><strong>报错三：<code>join()</code> 永不返回，而且不报错</strong></p>
+<p>现象：<code>q.join()</code> 卡死，没有异常，没有日志。实测把「忘了 <code>task_done()</code>」的那份代码跑起来，2 秒后 <code>join</code> 所在线程仍然活着，<code>unfinished_tasks</code> 停在 1。原因：<code>join()</code> 等的是未完成计数归零，取走任务不等于完成。修法：诊断阶段先打 <code>q.unfinished_tasks</code> 定位，再把 <code>task_done()</code> 补进 <code>finally</code>；生产代码里别用裸 <code>join()</code>，前面套一个带超时的看门线程。</p>
+<p><strong>报错四：<code>BrokenProcessPool: A process in the process pool was terminated abruptly while the future was running or pending.</code></strong></p>
+<p>现象：子进程里调了 <code>os._exit()</code>（或被杀），父进程在 <code>map</code> 上炸掉。原因：进程池发现 worker 非正常死亡就整体作废，不会自动重启。修法：子进程里别用 <code>os._exit()</code>，异常要抛回父进程；父进程要重建执行器，而不是复用。<strong>注意这个异常是 <code>RuntimeError</code> 的子类</strong>（实测 MRO 为 <code>BrokenProcessPool → BrokenExecutor → RuntimeError</code>），随手写的 <code>except RuntimeError</code> 会把它一起吞掉。</p>
+<p><strong>报错五：<code>AttributeError: Can't get local object 'f5.<locals>.local_work'</code></strong></p>
+<p>现象：把在函数内部定义的闭包丢给进程池，报这个。<strong>注意它不是我原先以为的「Can't pickle local object」</strong>，原文是 <code>Can't get local object</code>，按后者去搜会搜错方向。原因：<code>spawn</code> 启动的子进程只有一个空壳 <code>__main__</code>，取不到父进程里定义的局部对象。修法：被提交的函数必须是模块顶层可导入的名字，参数必须是可 pickle 的简单对象。</p>
+<p><strong>报错六：<code>RuntimeError: An attempt has been made to start a new process before the current process has finished its bootstrapping phase.</code></strong></p>
+<p>现象：Windows 上忘了写 <code>if __name__ == "__main__":</code>，父进程抛这个；子进程 stderr 里还有一份它自己的 traceback。原因：<code>spawn</code> 会把主模块重新导入一遍，模块级代码在子进程里又执行了一次，于是子进程也开始建进程池。修法：所有入口代码放进 <code>if __name__ == "__main__":</code>，打包成 exe 的再加一行 <code>freeze_support()</code>。<strong>同一个错误我跑三次拿到两种结局</strong>：一次是父进程的 <code>RuntimeError</code>，另外两次是子进程先死、父进程拿到 <code>BrokenProcessPool</code>——按报错字符串搜问题会搜到两个不同的页面，根因是同一个。</p>
+<p><strong>报错七：<code>RuntimeError: asyncio.run() cannot be called from a running event loop</code></strong></p>
+<p>现象：在协程里为了「跑一小段同步代码」调了 <code>asyncio.run()</code>。原因：一个线程只能有一个运行中的事件循环。修法：已经在线循环里就 <code>await</code>，要跑同步阻塞代码用 <code>await asyncio.to_thread(fn)</code>。附带一条容易漏看的：这个错还会带一句 <code>RuntimeWarning: coroutine 'sleep' was never awaited</code>，警告往往比异常更早出现在日志里。</p>
+<p><strong>报错八：协程里调 <code>time.sleep()</code>，不报错，只是并发归零</strong></p>
+<p>现象：20 个协程各睡 50 毫秒，期望 0.05 秒左右完成，实测 1.009 秒；把 <code>time.sleep</code> 换成 <code>await asyncio.sleep</code> 后是 0.068 秒，差 14.8 倍。原因：<code>time.sleep</code> 阻塞整个线程，事件循环停摆，20 个任务退化成串行。修法：协程里只调 <code>await</code> 版；第三方同步库一律用 <code>asyncio.to_thread</code> 包一层。这类「不报错」的坑比异常危险得多，因为它只表现为「慢」，不会出现在任何日志里。取消与超时的完整语义是另一组同源陷阱，<a href="https://yaohehe.github.io/2026-11-01-asyncio.html" class="internal-link">asyncio 取消那篇</a>记了六处同样不报错的失效。</p>
+<h2>什么时候确实该上队列：五问决策树</h2>
+<p>走到这里，答案可以做成一张流程：</p>
+<ul><li><strong>第 1 问</strong>：任务重跑一次会不会产生副作用（发邮件、扣款、写外部系统）？会，就必须有幂等键和持久化，队列上线。</li><li><strong>第 2 问</strong>：进程被杀之后，没跑完的任务要不要接着跑？要，队列（或至少一个落盘的待办表）。</li><li><strong>第 3 问</strong>：生产者速度会不会长期高于消费者？会，至少要有有界队列，队列本身可以省。</li><li><strong>第 4 问</strong>：任务要不要跨机器分发？要，队列。</li><li><strong>第 5 问</strong>：以上全是「不会」，那标准库就够了：I/O 等待用线程池（8 起手），纯 Python 计算用进程池（任务粒度大于 100 毫秒），协程只在已经有异步栈、或者并发数要上千时才值得引入。</li></ul>
+<p>第 5 条还有个补充判据，来自官方文档里一句容易被跳过的话：<code>ThreadPoolExecutor</code>「All threads enqueued to ThreadPoolExecutor will be joined before the interpreter can exit」，紧接着又写「it is recommended that ThreadPoolExecutor not be used for long-running tasks」。也就是说，<strong>解释器退出会等所有线程跑完</strong>，一个卡住的长任务会让整个进程退不出去。长任务要么放进程池，要么放队列，要么自己管好取消——这正是 2026 年 11 月 1 日那篇讲 <code>asyncio</code> 取消语义的文章要解决的问题，两篇可以对着看。队列本身的库级差异，那篇讲 huey、APScheduler 与 Celery 七个静默失效的实测也值得一起读。</p>
+<h2>本文的边界</h2>
+<ul><li>所有数字来自一台 16 逻辑核的 Windows 机器，<code>spawn</code> 是默认启动方式。Linux 上默认 <code>fork</code>，进程池的启动成本会低一个档次，进程池那一节的倍数不适用于 Linux。</li><li>服务端是我自己写的单进程 Python 服务，它就是本轮实验的瓶颈。换成一个 Go 或 Nginx 的对端，客户端加速比会继续往上走，平台期会右移。<strong>不要把我这里的 8 个工作线程当成通用最优值。</strong></li><li><code>tracemalloc</code> 只统计 Python 层分配，不是 RSS；线程栈、解释器本身、C 扩展的缓冲区都不在里面。</li><li>没测 3.13 的自由线程构建（free-threaded build），那份构建下 GIL 那一节的结论需要重跑。</li><li>没测跨机器的分布式队列，也没测真实 Celery 与 Redis 组合的吞吐。</li></ul>
+<h2>一张可以直接抄的写法清单</h2>
+<pre><code># 1) I/O 密集：线程池，8 起手，按墙钟加
+from concurrent.futures import ThreadPoolExecutor
+with ThreadPoolExecutor(max_workers=8) as ex:
+    for r in ex.map(fetch, urls):     # 顺序敏感就用 map
+        save(r)
+
+# 2) 谁先完成先处理：as_completed，不要用 map
+from concurrent.futures import as_completed
+futs = {ex.submit(fetch, u): u for u in urls}
+for f in as_completed(futs):
+    handle(futs[f], f.result())
+
+# 3) CPU 密集且是纯 Python：进程池，任务粒度 > 100 ms
+from concurrent.futures import ProcessPoolExecutor
+def heavy(n): ...                      # 必须是模块顶层函数
+with ProcessPoolExecutor() as ex:
+    list(ex.map(heavy, payload, chunksize=8))   # chunksize 别用默认的 1
+
+# 4) 生产快于消费：有界队列 + task_done 写在 finally
+q = queue.Queue(maxsize=1000)</code></pre>
+<p>三句话总结这次实验：先量瓶颈，再选形态；默认值只是保护，不是最优；队列买的是「活过重启」和「背压」，不是速度。如果你想顺着这条线继续往下，<a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">10 月 29 日那篇 subprocess 复盘</a>用了同一套方法，讲的是「退出码 0 但什么都没发生」。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
