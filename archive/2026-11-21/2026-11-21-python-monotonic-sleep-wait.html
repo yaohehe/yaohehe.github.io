@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Python 时钟八条：monotonic、sleep 与 wait 量出的三种毫秒 - TechPassive</title>
+  <meta name="description" content="本机实测 CPython 3.13.14 五个时钟：get_clock_info 报 1e-07 分辨率，process_time 实按 15.625 毫秒跳；同样等 1 毫秒，time.sleep 实付 1.5 毫秒，Event.wait 却要 15.6 毫秒；一百次 10 毫秒睡眠多付 9.3%，附三个真实报错。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Python 时钟八条：monotonic、sleep 与 wait 量出的三种毫秒</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">时钟</span><span class="tag">性能测量</span>
+  </div>
+  <div class="content">
+    <p>我把同一段「等一毫秒」的代码换了五种写法，在一台 Windows 11 build 26300 的机器上各跑二十到三十遍，用 CPython 3.13.14 记录实际耗时。结果不是「有点误差」，是<strong>同一个意图拿到了相差十倍的数字</strong>：<code>time.sleep(0.001)</code> 中位 1.56 毫秒，<code>threading.Event().wait(0.001)</code> 中位 15.62 毫秒，<code>kernel32.Sleep(1)</code> 中位 15.33 毫秒。</p>
+<p>这篇文章不讨论「哪个计时函数更快」，而是回答一个更靠前的问题：<strong>你用来测时间的那把尺子，本身准不准、量的是谁的时间</strong>。八条结论全部可以在你自己的机器上复现，代码在文末，报错原文全部来自本机实际抛出的文本。</p>
+<p><strong>TL;DR</strong>：测耗时用 <code>perf_counter_ns()</code>，测截止时间用 <code>monotonic()</code>，只统计 CPU 用 <code>process_time()</code>，三者不能互换；<code>get_clock_info().resolution</code> 报的数字不是实际粒度；短睡眠请按截止时间循环，不要指望单次 <code>sleep</code> 精确。</p>
+<ul><li><code>get_clock_info("process_time").resolution</code> 报 <code>1e-07</code>，实测量子是 <code>0.015625</code> 秒（15.625 毫秒），差五个数量级</li><li>用 <code>process_time()</code> 量 1 毫秒和 5 毫秒的忙循环，五次采样<strong>全部读回 0.0</strong></li><li><code>process_time()</code> 在 <code>sleep(1.0)</code> 期间增量是 <code>0.000000</code>，<code>perf_counter()</code> 同期是 <code>1.000696</code></li><li>等 1 毫秒：<code>time.sleep</code> 中位 1.56 毫秒，<code>Event.wait</code> 中位 15.62 毫秒，最快与最慢相差 15 倍</li><li>调用 <code>timeBeginPeriod(1)</code> 后两者同时塌到 1–2 毫秒，<code>timeEndPeriod(1)</code> 后 <code>Event.wait</code> 回到 14.66 毫秒，这是根因证据</li><li>一百次 <code>sleep(0.01)</code> 实付 1.093 秒（多 9.3%），两百次 <code>sleep(0.001)</code> 实付 0.280 秒（多 40.2%）</li><li>epoch 尺度下 <code>time.time()</code> 的 float 步长固定是 2⁻²² 秒（238 纳秒），20 万次背靠背调用只有 171,695 个不同值</li><li><code>perf_counter()</code> 与 <code>monotonic()</code> 在 3.13 上是同一只钟；Windows 上还没有 <code>time.CLOCK_*</code>，<code>clock_gettime</code> 直接报 AttributeError</li></ul>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="耗时数字不对时的排查顺序" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft0c02e0b8grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft0c02e0b8grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">耗时数字不对时的排查顺序</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">get_clock_info 看 implementation 与 adjustable</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">用忙循环测出最小正增量</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">换 perf_counter_ns 重测一遍</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">判断阻塞是 sleep 还是 Event.wait</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">按截止时间循环而不是单次睡</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>耗时数字不对时的排查顺序 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>八个现象摆在一张表里</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">现象</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">通常的假设</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">本机实测（Win11 26300 / CPython 3.13.14）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>process_time</code> 的粒度</td><td style="border:1px solid #ddd;padding:8px;">分辨率字段写的 100 纳秒</td><td style="border:1px solid #ddd;padding:8px;">量子 15.625 毫秒，1 毫秒忙循环读回 0.0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>process_time</code> 量等待</td><td style="border:1px solid #ddd;padding:8px;">能代表一次请求的耗时</td><td style="border:1px solid #ddd;padding:8px;">睡 1 秒，增量 0.000000</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">等 1 毫秒</td><td style="border:1px solid #ddd;padding:8px;">就是 1 毫秒</td><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep</code> 1.56 毫秒，<code>Event.wait</code> 15.62 毫秒</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">等待的稳定性</td><td style="border:1px solid #ddd;padding:8px;">误差在几微秒内</td><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.001)</code> 最快 1.14、最慢 17.63 毫秒</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">循环睡眠的精度</td><td style="border:1px solid #ddd;padding:8px;">误差不累积</td><td style="border:1px solid #ddd;padding:8px;">两百次 1 毫秒多付 40.2%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>time.time()</code> 的精度</td><td style="border:1px solid #ddd;padding:8px;">微秒级</td><td style="border:1px solid #ddd;padding:8px;">float 步长 238 纳秒，14% 的调用与前一次同值</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>perf_counter</code> 与 <code>monotonic</code></td><td style="border:1px solid #ddd;padding:8px;">两个独立的钟</td><td style="border:1px solid #ddd;padding:8px;">同一个 <code>QueryPerformanceCounter()</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>time.time()</code> 会不会倒退</td><td style="border:1px solid #ddd;padding:8px;">单调递增</td><td style="border:1px solid #ddd;padding:8px;"><code>adjustable=True</code>，文档写明可能返回更小值</td></tr></tbody></table>
+<h2>一、get_clock_info 报的分辨率，不是它实际跳动的步长</h2>
+<p>先看五个时钟的自述。这段代码不需要任何第三方库：</p>
+<pre><code>import time
+
+for name in ("time", "monotonic", "perf_counter", "process_time", "thread_time"):
+    ci = time.get_clock_info(name)
+    print(f"{name:13s} {ci.implementation:32s} mono={ci.monotonic} adj={ci.adjustable} res={ci.resolution}")</code></pre>
+<p>本机输出：</p>
+<pre><code>time          GetSystemTimePreciseAsFileTime() mono=False adj=True  res=1e-07
+monotonic     QueryPerformanceCounter()         mono=True  adj=False res=1e-07
+perf_counter  QueryPerformanceCounter()         mono=True  adj=False res=1e-07
+process_time  GetProcessTimes()                 mono=True  adj=False res=1e-07
+thread_time   GetThreadTimes()                  mono=True  adj=False res=1e-07</code></pre>
+<p>五个时钟，五个一模一样的 <code>1e-07</code>。这明显不可能是真的：<code>GetProcessTimes</code> 在 Windows 上由调度器的时钟中断驱动，怎么可能每 100 纳秒更新一次。于是我写了一个忙循环去量它的实际步长——不停读值，只记录「值变了」那一刻的增量，最后去重打印：</p>
+<pre><code>def quantum(fn, iterations=3_000_000):
+    prev = fn()
+    deltas = []
+    for _ in range(iterations):
+        cur = fn()
+        if cur != prev:
+            deltas.append(cur - prev)
+            prev = cur
+    return sorted(set(deltas))</code></pre>
+<p>跑了三百万次迭代（约 1.2 秒），<code>process_time</code> 一共变了 77 次，<strong>增量只有一个值：<code>0.015625</code></strong>。<code>thread_time</code> 同样，70 次变化，唯一的增量也是 <code>0.015625</code>。也就是 1/64 秒，正好是 Windows 默认时钟中断的 15.625 毫秒。</p>
+<p>对比一下 <code>time.time()</code> 在同样条件下的最小增量：<code>2.384185791015625e-07</code>，也就是 2⁻²² 秒。这个数字不是系统的精度，是 float64 在 1.79e9 这个量级上能表示的最小台阶——后面第六条会单独说。</p>
+<p>结论很直接：<code>resolution</code> 描述的是「这个返回值能表示到多细」，不是「它多久更新一次」。对 <code>process_time</code> 和 <code>thread_time</code>，这两个数字相差 156,250 倍。</p>
+<p>再补一刀。用 <code>process_time</code> 去量短忙循环，括号里第一个数字是 <code>process_time</code> 的增量，第二个是 <code>perf_counter</code> 的：</p>
+<pre><code>target=1 ms   -> (0.0, 0.001099) (0.0, 0.001173) (0.0, 0.001039) (0.0, 0.001020) (0.0, 0.001020)
+target=5 ms   -> (0.0, 0.005028) (0.0, 0.005097) (0.0, 0.005089) (0.0, 0.005305) (0.0, 0.005026)
+target=10 ms  -> (0.0, 0.010195) (0.0, 0.010060) (0.015625, 0.010045) (0.0, 0.010036) (0.015625, 0.010078)</code></pre>
+<p>五次采样，1 毫秒和 5 毫秒两档 <code>process_time</code> 全部读回 <code>0.0</code>；10 毫秒那档只有两次跨过 tick。如果你在写一个「单次请求 CPU 时间」的埋点，而请求只花几毫秒，这个字段会稳定地记 0——日志看起来像「几乎没消耗 CPU」，其实只是没跨过那个 15.625 毫秒的台阶。</p>
+<h2>二、process_time 量不到等待：睡一秒，增量为零</h2>
+<p>官方文档对 <code>process_time()</code> 的定义是「当前进程的系统 CPU 时间与用户 CPU 时间之和」，并明确写了一句 <code>It does not include time elapsed during sleep.</code></p>
+<p>这句话看着无害，直到你用错地方。实测：</p>
+<pre><code>sleep(1.0) 期间：process_time 增量 = 0.000000，perf_counter 增量 = 1.000696
+忙循环 0.73 秒：process_time = 0.734375，perf_counter = 0.731267</code></pre>
+<p><code>0.734375</code> 这个数值得盯一眼：它等于 47 × 0.015625，正好 47 个 tick。忙循环的真实耗时是 0.731 秒，<code>process_time</code> 报 0.734 秒，误差 3 毫秒——在秒级测量里这无所谓，在毫秒级测量里这就是全部误差。</p>
+<p>所以判断标准只有一条：<strong>你测的是「这段代码占了多少 CPU」还是「用户等了多久」</strong>。查询数据库、等网络、等锁、等磁盘，全都是第二种，用 <code>process_time</code> 会得到一个漂亮且完全错误的低数字。反过来说，如果你要判断一个进程是不是在空转，<code>process_time</code> 才是对的：它不会被十分钟的阻塞调用污染。</p>
+<h2>三、同样等一毫秒：一个 1.5 毫秒，一个 15.6 毫秒</h2>
+<p>这是本轮最值钱的一条。三次调用，意图完全相同——「等 1 毫秒」：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最快</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">中位</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">最慢</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.076 ms</td><td style="border:1px solid #ddd;padding:8px;">1.564 ms</td><td style="border:1px solid #ddd;padding:8px;">2.329 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>kernel32.Sleep(1)</code>（ctypes）</td><td style="border:1px solid #ddd;padding:8px;">1.375 ms</td><td style="border:1px solid #ddd;padding:8px;">15.326 ms</td><td style="border:1px solid #ddd;padding:8px;">16.881 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>threading.Event().wait(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.140 ms</td><td style="border:1px solid #ddd;padding:8px;">15.620 ms</td><td style="border:1px solid #ddd;padding:8px;">17.630 ms</td></tr></tbody></table>
+<p>把请求改成 10 毫秒，<code>time.sleep</code> 老老实实 10.33 毫秒，而 <code>Sleep(10)</code> 是 16.84 毫秒，<code>Event.wait(0.010)</code> 是 16.74 毫秒——仍然被抬到下一个 15.625 毫秒的边界。</p>
+<p>注意 <code>Event.wait</code> 的最快值 1.14 毫秒和中位 15.62 毫秒：<strong>同一个调用，落在 tick 边界附近就是 1 毫秒，落在边界刚过就是 17 毫秒</strong>。这种抖动比系统性偏慢更难查，因为它在采样里会呈现成「偶尔很快」，让人以为是偶发噪声。</p>
+<p>这对代码意味着什么？一个轮询循环里写 <code>event.wait(0.001)</code> 做「1 毫秒退避」，实际退避是 15 毫秒起步；批量跑起来更明显：</p>
+<pre><code>500 ms 内完成 46 次 Event.wait(0.001)，平均 10.886 ms/次（名义 1 ms）
+500 ms 内完成 319 次 time.sleep(0.001)，平均 1.568 ms/次</code></pre>
+<p>同一段时间，一个只能转 46 圈，一个能转 319 圈。如果你的 worker 用 <code>Condition.wait(timeout=0.001)</code> 做轮询、用 <code>Queue.get(timeout=0.001)</code> 做探测，这些地方都在按 15.6 毫秒的节拍走，而 <code>time.sleep</code> 那条路不是。</p>
+<h2>四、把系统计时器分辨率调高，两个数字一起塌下来</h2>
+<p>上面只是相关性。要坐实根因，得动一下变量：Windows 允许进程把系统计时器分辨率从默认的 15.625 毫秒改成 1 毫秒（<code>timeBeginPeriod</code>）。改完再测同一批调用，前后对比：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">默认分辨率</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>timeBeginPeriod(1)</code> 后</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;"><code>timeEndPeriod(1)</code> 后</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.564 ms</td><td style="border:1px solid #ddd;padding:8px;">1.566 ms</td><td style="border:1px solid #ddd;padding:8px;">未测</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>kernel32.Sleep(1)</code></td><td style="border:1px solid #ddd;padding:8px;">15.326 ms</td><td style="border:1px solid #ddd;padding:8px;">1.989 ms</td><td style="border:1px solid #ddd;padding:8px;">未测</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">15.620 ms</td><td style="border:1px solid #ddd;padding:8px;">1.107 ms</td><td style="border:1px solid #ddd;padding:8px;">14.662 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.010)</code></td><td style="border:1px solid #ddd;padding:8px;">16.742 ms</td><td style="border:1px solid #ddd;padding:8px;">10.383 ms</td><td style="border:1px solid #ddd;padding:8px;">未测</td></tr></tbody></table>
+<p>三个事实同时成立：第一，<code>Sleep(1)</code> 和 <code>Event.wait(1ms)</code> 的动作完全跟着分辨率走；第二，<code>time.sleep</code> 一动不动——它根本不走这条路径；第三，<code>timeEndPeriod</code> 之后立刻回弹。</p>
+<p>这和官方文档能对上。微软的 <code>Sleep</code> 文档写的是「系统时钟以固定速率跳，如果 <code>dwMilliseconds</code> 小于系统时钟的分辨率，线程可能睡得比要求的更短；如果大于一个 tick 小于两个 tick，等待就落在这两个 tick 之间」，并建议需要更精确时调用 <code>timeBeginPeriod</code>。这里有个细节值得记下来：文档说「可能更短」，我实测是「更长」——方向相反，但都指向同一件事，这个参数的单位是 tick 数，不是精确时间。</p>
+<p>Python 这一侧也能对上。<code>time.sleep</code> 的文档在 3.11 的变更里写着 <code>On Windows, a waitable timer is now used</code>，Windows 实现一节又写「Windows 10 及以上使用高分辨率计时器，分辨率 100 纳秒」。也就是说，3.11 之后的 <code>time.sleep</code> 绕开了系统计时器中断；而 <code>Event.wait</code>、<code>Condition.wait</code>、<code>Queue.get(timeout=)</code> 走的是锁的定时等待，仍然受系统分辨率约束。同一个标准库里，两条等待路径的精度差了十倍。</p>
+<h2>五、sleep 会累积：一百次 10 毫秒，实付 1.09 秒</h2>
+<p>单次睡眠「至少」是 N 毫秒，这个「至少」会累加。实测：</p>
+<pre><code>100 次 sleep(0.01)：名义 1.000000，实际 1.093047，多 9.30%
+200 次 sleep(0.001)：名义 0.200000，实际 0.280489，多 40.24%</code></pre>
+<p>从单次数据能看出钱花在哪：<code>sleep(0.01)</code> 的中位是 10.347 毫秒，每次多付约 0.35 毫秒；<code>sleep(0.001)</code> 的中位是 1.564 毫秒，每次多付约 0.56 毫秒。<strong>睡得越短，相对误差越大</strong>，因为开销是固定的，而被除数很小。</p>
+<p>这对限流器、心跳、轮询都是实际影响。一个「每秒 100 次」的令牌补充循环，如果写成 <code>for _ in range(100): time.sleep(0.01)</code>，实际周期是 1.09 秒而不是 1 秒；跑一小时就差了两分多钟，而且它不会报错，只会让下游觉得你补得慢。</p>
+<p>正确的写法是按截止时间睡，让误差自我抵消：</p>
+<pre><code>import time
+
+def sleep_until(deadline):
+    while True:
+        left = max(0.0, deadline - time.monotonic())
+        if left == 0.0:
+            return
+        time.sleep(left)
+
+t0 = time.monotonic()
+for i in range(100):
+    sleep_until(t0 + (i + 1) * 0.01)</code></pre>
+<p>这样每一轮都会把前面多睡的时间扣掉。本机用这个写法跑 100 轮 10 毫秒，总时长是 1.0003 秒，误差从 9.3% 降到 0.03%。</p>
+<h2>六、float 只给你 238 纳秒，20 万次调用有 14% 是同值</h2>
+<p><code>time.time()</code> 返回 float。epoch 秒现在大约是 1.795e9，换算成二进制需要 31 位整数部分，float64 的 52 位尾数只剩 21 位给小数——于是最小台阶就是 2⁻²² 秒。</p>
+<p>实测两次都印证了：</p>
+<pre><code>忙循环 0.5 秒内的最小正增量：2.384185791015625e-07（共 258 种不同增量，全是它的整数倍）
+200000 次背靠背 time.time()：171,695 个不同值（85.8%）
+200000 次背靠背 time.time_ns()：200,000 个不同值（100%）
+50000 次 datetime.now()：40,586 个不同值（81.2%）</code></pre>
+<p><code>time_ns()</code> 每次都不同，说明底层分辨率够；丢精度的是 float 这一步。毫秒级记录无所谓，但如果你拿 <code>time.time()</code> 当唯一键、做微秒级排序，或者用 <code>==</code> 比较两个时间戳是否相同，就会撞上这种「两个不同时刻，同一个 float」。</p>
+<p>用 <code>time_ns()</code>、<code>monotonic_ns()</code>、<code>perf_counter_ns()</code> 就没有这个问题，它们返回 int。顺带一个容易忽略的坑：<code>datetime.fromtimestamp(0.9999999)</code> 在本机返回 <code>1970-01-01 08:00:01</code>，不是 <code>08:00:00.999999</code>——它按四舍五入进位，跨秒边界时会跳到下一秒。</p>
+<h2>七、perf_counter 和 monotonic 在 3.13 上是同一只钟</h2>
+<p>看第一条的 <code>implementation</code> 列，<code>monotonic</code> 和 <code>perf_counter</code> 都是 <code>QueryPerformanceCounter()</code>。这不是巧合，<code>perf_counter()</code> 的文档在 3.13 的变更里写着：<code>Use the same clock as time.monotonic().</code></p>
+<p>实测两只钟在 2 秒睡眠上的读数也几乎重合：<code>monotonic</code> 走 2.000646，<code>perf_counter</code> 走 2.000665，差 19 微秒，来自两次读取之间的时间差。3 秒对比 <code>time.time()</code> 与 <code>perf_counter</code> 的漂移是 3 微秒。</p>
+<p>那为什么文档要把它们分成两个函数？因为这是<strong>平台契约</strong>，不是实现事实。文档给 <code>monotonic()</code> 写的是「不能被设置、不受系统时钟更新影响」，给 <code>perf_counter()</code> 写的是「可得最高分辨率、包含睡眠时间」。在 CPython 的某些平台和版本上，这两条会落到不同的底层时钟；只在 3.13 的 Windows 上才恰好是同一只。</p>
+<p>实践含义：不要把「反正这里两个一样」写进设计。要测时长，用 <code>perf_counter</code>；要算超时截止时间，用 <code>monotonic</code>。两者混用不会在本机出错，但换到别的解释器或平台就可能变味。</p>
+<p>另外，Windows 上根本不存在 <code>time.CLOCK_*</code> 系列常量，<code>time.clock_gettime</code> 这个属性也不存在：</p>
+<pre><code>hasattr(time, "CLOCK_MONOTONIC") = False
+dir(time) 里的 CLOCK_ 常量 = []
+time.clock_gettime -> AttributeError</code></pre>
+<p>文档对 <code>clock_gettime</code>、<code>clock_getres</code> 标注的是 <code>Availability: Unix</code>。所以从 Linux 抄过来的 <code>time.clock_gettime(time.CLOCK_MONOTONIC)</code> 在 Windows 上第一行就崩，而它崩的方式是属性不存在，不是「精度不同」。</p>
+<h2>八、time.time 可以被回拨，而且它的 Windows 时钟源刚换过</h2>
+<p><code>get_clock_info("time")</code> 的 <code>adjustable</code> 是 <code>True</code>。文档对这个字段的解释是「时钟能否向前或向后跳变」，并特意补了一句 <code>Does not refer to gradual NTP rate adjustments</code>——也就是说，<code>adjustable=False</code> 不代表 NTP 的慢速校正不存在，只代表这个钟不能被你一键改掉。</p>
+<p><code>time.time()</code> 的文档则直接写明了风险：<code>While this function normally returns non-decreasing values, it can return a lower value than a previous call if the system clock has been set back between the two calls.</code></p>
+<p>这意味着任何 <code>t1 - t0</code> 的写法，只要两端都是 <code>time.time()</code>，理论上就可能得到负数。我没有实测改系统钟（需要管理员权限，也会影响这台机器上的其他任务），所以这一条按官方口径写，不冒充实验结论。</p>
+<p>但有一个变化我可以实测确认：<code>time.time()</code> 在 Windows 上的时钟源，3.13 换过。文档的变更记录写着 <code>Changed in version 3.13: On Windows, calls GetSystemTimePreciseAsFileTime() instead of GetSystemTimeAsFileTime()</code>，而本机的 <code>implementation</code> 字段正是 <code>GetSystemTimePreciseAsFileTime()</code>。</p>
+<p>这条为什么重要？因为网上流传很广的一句「Windows 上 <code>time.time()</code> 只有 15.6 毫秒精度」，在 3.13 上已经不成立了。我实测的最小增量是 238 纳秒——限制它的是 float，不是系统时钟。老结论不是错，是过期了；判断依据应该是 <code>get_clock_info()</code> 的 <code>implementation</code>，而不是记忆里的数字。</p>
+<h2>Troubleshooting：三个真实报错</h2>
+<p>这三个都是我在写测试脚本时实际撞出来的，报错原文照抄。</p>
+<p><strong>报错一：<code>ValueError: sleep length must be non-negative</code></strong></p>
+<p>原因：把「剩余时间」直接传给了 <code>sleep()</code>。截止时间已经过去时，<code>deadline - now</code> 是负数。这在重试退避里很常见——第一次退避没做完，第二次算出来的剩余时间是负的。</p>
+<p>改法：先夹到 0，再判断是否还需要睡。</p>
+<pre><code>left = deadline - time.monotonic()
+if left == max(0.0, left) and left:
+    time.sleep(left)</code></pre>
+<p><strong>报错二：<code>TypeError: 'str' object cannot be interpreted as an integer</code></strong></p>
+<p>原因：<code>sleep()</code> 的参数来自配置文件或环境变量，值是字符串 <code>"1"</code> 或 <code>"0.5"</code>。<code>sleep</code> 不会替你转换，直接抛类型错误。同一条也适用于 <code>Event.wait("0.001")</code>。</p>
+<p>改法：入口处统一 <code>float(...)</code>，并且校验非负；负数会撞上第一条的 <code>ValueError</code>，两种错误藏在同一个字段里。</p>
+<p><strong>报错三：<code>AttributeError: module 'time' has no attribute 'clock_gettime'</code></strong></p>
+<p>原因：从 Linux 代码里继承了 <code>time.clock_gettime(time.CLOCK_MONOTONIC)</code>。Windows 没有这组接口，也没有 <code>CLOCK_*</code> 常量。</p>
+<p>改法：跨平台代码只用 <code>time.monotonic()</code> / <code>monotonic_ns()</code> 这一层封装；确实需要 <code>CLOCK_*</code> 的平台特定逻辑，用 <code>hasattr(time, "CLOCK_MONOTONIC")</code> 显式分支，而不是让它在运行时崩。</p>
+<h2>一份可以直接抄的测时代码</h2>
+<p>把上面的结论压成四条实践规则，对应四个函数：</p>
+<pre><code>import time
+
+def elapsed_ms(fn):
+    """测一段代码花了多久：用 perf_counter_ns，避开 float 精度"""
+    t0 = time.perf_counter_ns()
+    result = fn()
+    return (time.perf_counter_ns() - t0) / 1e6, result
+
+def cpu_ms(fn):
+    """只测 CPU 时间：等待、睡眠、阻塞 IO 都不计入"""
+    t0 = time.process_time_ns()
+    result = fn()
+    return (time.process_time_ns() - t0) / 1e6, result
+
+def sleep_until(deadline_monotonic):
+    """按截止时间睡，误差不累积"""
+    while True:
+        left = max(0.0, deadline_monotonic - time.monotonic())
+        if left == 0.0:
+            return
+        time.sleep(left)
+
+def wait_or_poll(cond, timeout):
+    """需要毫秒级轮询时，别用 Condition.wait，用 sleep 自己控节奏"""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        left = deadline - time.monotonic()
+        if left == max(0.0, left) and left:
+            time.sleep(left)
+        else:
+            return False
+    return True</code></pre>
+<p>选择顺序：先问「我在量什么」。量用户等待，用 <code>perf_counter_ns</code>；量 CPU 占用，用 <code>process_time_ns</code>；量是否超时，用 <code>monotonic</code> 算截止时间；需要等待，优先 <code>time.sleep</code>，因为它在本机比条件变量精确十倍。</p>
+<h2>本文的边界</h2>
+<ul><li>只测 Windows 11 build 26300 + CPython 3.13.14。Linux 与 macOS 的结论会不同：Linux 上 <code>time.sleep</code> 走 <code>clock_nanosleep</code>，<code>CLOCK_MONOTONIC</code> 存在，<code>time.time()</code> 的精度取决于 <code>clock_getres(CLOCK_REALTIME)</code></li><li>系统计时器分辨率可能被别的进程悄悄改过（浏览器、游戏、音视频软件都会调 <code>timeBeginPeriod</code>），所以同一台机器不同时刻的 <code>Event.wait</code> 数字可能不一样，这也是我每组跑 20 到 30 次取中位的原因</li><li>没有实测修改系统时钟，第八条里「可能返回更小值」引用的是官方文档口径，不是本机实验</li><li>睡眠与等待只测了毫秒级；秒级、亚毫秒级和跨进程共享内存的等待没有覆盖</li><li>没有涉及 asyncio 的 <code>call_later</code> 与事件循环时钟，那是另一条路径</li></ul>
+<p>同一类「返回值不等于结果」的坑，我另外测过几个相邻的层：用 profiler 读数而不是时钟本身判断热点，会踩<a href="https://yaohehe.github.io/2026-11-15-cprofile-py-spy-8.html" class="internal-link">八个剖析读数错误</a>；超时与取消在 asyncio 里的语义是<a href="https://yaohehe.github.io/2026-11-01-asyncio.html" class="internal-link">六个静默失效</a>；而「时刻」这一侧的比较与夏令时问题，在<a href="https://yaohehe.github.io/2026-11-06-python-zoneinfo-dst-6.html" class="internal-link">zoneinfo 的六处坑</a>里单独写过。这篇只管「时长」这一侧。</p>
+<p>本文不含任何联盟推广链接。</p>
+<h2>FAQ</h2>
+<p><strong>Q：<code>time.perf_counter()</code> 和 <code>time.monotonic()</code> 到底该用哪个？</strong></p>
+<p>测「这段代码花了多久」用 <code>perf_counter()</code>，它的文档承诺是最高可用分辨率；算「什么时候超时」用 <code>monotonic()</code>，它的承诺是不可倒退。在 3.13 的 Windows 上两者是同一个底层时钟，所以本机互换不会出错——但换平台就可能不同，不要把这个巧合写进设计。</p>
+<p><strong>Q：既然 <code>Event.wait</code> 要 15 毫秒，那所有 <code>Queue.get(timeout=0.001)</code> 都该改成 sleep 轮询？</strong></p>
+<p>不该。带超时的阻塞等待本来就不是精密计时器，它的语义是「等到有数据或超时」，不是「精确睡 N 毫秒」。只有当你的逻辑依赖「1 毫秒后立刻回来」时，才需要换成 <code>time.sleep</code> 自己控节奏。反过来，忙等会烧 CPU，也不该拿来替代阻塞。</p>
+<p><strong>Q：为什么同一台机器上两次测出来的 <code>Event.wait</code> 差别很大？</strong></p>
+<p>因为系统计时器分辨率是全局的，任何进程调用 <code>timeBeginPeriod</code> 都会把它改掉；另外你的调用落在 tick 边界的哪一侧也决定了这次是 1 毫秒还是 17 毫秒。要稳定复现，先固定分辨率（或用 <code>clockres</code> 之类工具看当前值），并且每组多跑几次取中位，别看单次。</p>
+<p><strong>Q：<code>process_time</code> 既然量不到等待，为什么还留着它？</strong></p>
+<p>因为它恰好能回答另一个问题：这段代码是真的在算，还是在等。一个进程占了多少 CPU、一段解析逻辑有没有空转、批处理是不是被 IO 拖住——这些用 <code>perf_counter</code> 会被等待污染，用 <code>process_time</code> 才干净。前提是你知道它按 15.625 毫秒跳，别拿它测短请求。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
