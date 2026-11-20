@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Eight Ways Python Clocks Disagree on One Millisecond - TechPassive</title>
+  <meta name="description" content="Measured on CPython 3.13.14: process_time steps in 15.625 ms while its resolution claims 1e-07; waiting 1 ms costs 1.5 ms with time.sleep but 15.6 ms with Event.wait.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Eight Ways Python Clocks Disagree on One Millisecond</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">clocks</span><span class="tag">performance</span>
+  </div>
+  <div class="content">
+    <p>I took the same "wait one millisecond" intent and wrote it five different ways, then ran each twenty to thirty times on a Windows 11 build 26300 machine with CPython 3.13.14 recording the actual elapsed time. The spread is not noise. It is <strong>the same intent getting numbers ten times apart</strong>: <code>time.sleep(0.001)</code> lands at a 1.56 ms median, <code>threading.Event().wait(0.001)</code> at 15.62 ms, and <code>kernel32.Sleep(1)</code> at 15.33 ms.</p>
+<p>This is not an article about which timer function is faster. It answers the question that comes before that one: <strong>is the ruler you measure time with accurate, and whose time is it measuring</strong>? Every number here is reproducible on your own machine, the code is at the end, and every error message is copied from what this machine actually raised.</p>
+<p><strong>TL;DR</strong>: measure elapsed time with <code>perf_counter_ns()</code>, measure deadlines with <code>monotonic()</code>, measure CPU only with <code>process_time()</code>, and never swap them. The number reported by <code>get_clock_info().resolution</code> is not the real step size. Short sleeps must be driven by a deadline loop, not by a single <code>sleep</code> call.</p>
+<ul><li><code>get_clock_info("process_time").resolution</code> reports <code>1e-07</code>, but the measured quantum is <code>0.015625</code> seconds (15.625 ms), five orders of magnitude apart</li><li>Using <code>process_time()</code> to time a 1 ms and a 5 ms busy loop returned <strong>0.0 in all ten samples</strong></li><li><code>process_time()</code> grows by <code>0.000000</code> across <code>sleep(1.0)</code> while <code>perf_counter()</code> grows by <code>1.000696</code></li><li>Waiting 1 ms: <code>time.sleep</code> median 1.56 ms, <code>Event.wait</code> median 15.62 ms, a 15x spread between fastest and slowest</li><li>After <code>timeBeginPeriod(1)</code> both collapse to 1–2 ms, and after <code>timeEndPeriod(1)</code> <code>Event.wait</code> returns to 14.66 ms, which is the root-cause evidence</li><li>One hundred <code>sleep(0.01)</code> calls take 1.093 s (+9.3%); two hundred <code>sleep(0.001)</code> calls take 0.280 s (+40.2%)</li><li>At epoch scale the float step of <code>time.time()</code> is fixed at 2⁻²² seconds (238 ns), and 200,000 back-to-back calls produced only 171,695 distinct values</li><li><code>perf_counter()</code> and <code>monotonic()</code> are the same clock on 3.13; Windows has no <code>time.CLOCK_*</code> at all, so <code>clock_gettime</code> raises AttributeError</li></ul>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Order of checks when a duration looks wrong" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftc38ab60dgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ftc38ab60dgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Order of checks when a duration looks wrong</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">get_clock_info to read implementation and adjustable</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">measure the smallest positive delta in a busy loop</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">re-measure with perf_counter_ns</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">decide whether the block is sleep or Event.wait</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">loop on a deadline instead of a single sleep</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Order of checks when a duration looks wrong · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>The eight behaviours in one table</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Symptom</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">The usual assumption</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Measured here (Win11 26300 / CPython 3.13.14)</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Granularity of <code>process_time</code></td><td style="border:1px solid #ddd;padding:8px;">the 100 ns its resolution field reports</td><td style="border:1px solid #ddd;padding:8px;">quantum 15.625 ms; a 1 ms busy loop reads 0.0</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>process_time</code> on a wait</td><td style="border:1px solid #ddd;padding:8px;">represents the cost of a request</td><td style="border:1px solid #ddd;padding:8px;">1 s of sleep adds 0.000000</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Waiting 1 ms</td><td style="border:1px solid #ddd;padding:8px;">it takes 1 ms</td><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep</code> 1.56 ms, <code>Event.wait</code> 15.62 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Stability of that wait</td><td style="border:1px solid #ddd;padding:8px;">error within microseconds</td><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.001)</code> from 1.14 ms to 17.63 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Accuracy of a sleep loop</td><td style="border:1px solid #ddd;padding:8px;">error does not accumulate</td><td style="border:1px solid #ddd;padding:8px;">200 iterations of 1 ms overshoot by 40.2%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Precision of <code>time.time()</code></td><td style="border:1px solid #ddd;padding:8px;">microsecond level</td><td style="border:1px solid #ddd;padding:8px;">float step 238 ns, 14% of calls repeat the previous value</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>perf_counter</code> vs <code>monotonic</code></td><td style="border:1px solid #ddd;padding:8px;">two independent clocks</td><td style="border:1px solid #ddd;padding:8px;">the same <code>QueryPerformanceCounter()</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Whether <code>time.time()</code> can go back</td><td style="border:1px solid #ddd;padding:8px;">always increasing</td><td style="border:1px solid #ddd;padding:8px;"><code>adjustable=True</code>, docs say a smaller value can be returned</td></tr></tbody></table>
+<h2>One: the resolution reported by get_clock_info is not the step it actually moves in</h2>
+<p>Start with what the five clocks say about themselves. No third-party package needed:</p>
+<pre><code>import time
+
+for name in ("time", "monotonic", "perf_counter", "process_time", "thread_time"):
+    ci = time.get_clock_info(name)
+    print(f"{name:13s} {ci.implementation:32s} mono={ci.monotonic} adj={ci.adjustable} res={ci.resolution}")</code></pre>
+<p>Output on this machine:</p>
+<pre><code>time          GetSystemTimePreciseAsFileTime() mono=False adj=True  res=1e-07
+monotonic     QueryPerformanceCounter()         mono=True  adj=False res=1e-07
+perf_counter  QueryPerformanceCounter()         mono=True  adj=False res=1e-07
+process_time  GetProcessTimes()                 mono=True  adj=False res=1e-07
+thread_time   GetThreadTimes()                  mono=True  adj=False res=1e-07</code></pre>
+<p>Five clocks, five identical <code>1e-07</code> values. That cannot be literally true: <code>GetProcessTimes</code> on Windows is driven by the scheduler tick, and it does not update every 100 nanoseconds. So I wrote a busy loop that only records the delta at the moment the value changes, then prints the distinct deltas:</p>
+<pre><code>def quantum(fn, iterations=3_000_000):
+    prev = fn()
+    deltas = []
+    for _ in range(iterations):
+        cur = fn()
+        if cur != prev:
+            deltas.append(cur - prev)
+            prev = cur
+    return sorted(set(deltas))</code></pre>
+<p>Three million iterations take about 1.2 seconds. <code>process_time</code> changed 77 times, and <strong>the only delta in the set is <code>0.015625</code></strong>. <code>thread_time</code> behaved the same way, 70 changes, again a single distinct delta of <code>0.015625</code>. That is 1/64 of a second, exactly the 15.625 ms default Windows clock interrupt.</p>
+<p>Compare the smallest increment of <code>time.time()</code> under the same treatment: <code>2.384185791015625e-07</code>, which is 2⁻²² seconds. That number is not the system precision, it is the smallest step a float64 can represent around 1.79e9. Section six deals with that separately.</p>
+<p>So the <code>resolution</code> field describes how finely the returned value can be expressed, not how often it changes. For <code>process_time</code> and <code>thread_time</code> those two numbers differ by a factor of 156,250.</p>
+<p>One more cut. Timing short busy loops with <code>process_time</code> gives this, where the first number in each pair is <code>process_time</code> and the second is <code>perf_counter</code>:</p>
+<pre><code>target=1 ms   -> (0.0, 0.001099) (0.0, 0.001173) (0.0, 0.001039) (0.0, 0.001020) (0.0, 0.001020)
+target=5 ms   -> (0.0, 0.005028) (0.0, 0.005097) (0.0, 0.005089) (0.0, 0.005305) (0.0, 0.005026)
+target=10 ms  -> (0.0, 0.010195) (0.0, 0.010060) (0.015625, 0.010045) (0.0, 0.010036) (0.015625, 0.010078)</code></pre>
+<p>At 1 ms and 5 ms, <code>process_time</code> read <code>0.0</code> in every single sample. At 10 ms only two of five crossed a tick. If you instrument a per-request CPU metric and the request takes a few milliseconds, that field will reliably report zero. The log then looks like "this endpoint barely uses CPU", when in reality it never crossed the 15.625 ms step.</p>
+<h2>Two: process_time cannot see a wait, one second of sleep adds zero</h2>
+<p>The documentation for <code>process_time()</code> is explicit: it returns the sum of system and user CPU time of the process, and <code>It does not include time elapsed during sleep.</code></p>
+<p>That sentence looks harmless until you use it in the wrong place. Measured:</p>
+<pre><code>across sleep(1.0): process_time delta = 0.000000, perf_counter delta = 1.000696
+0.73 s busy loop: process_time = 0.734375, perf_counter = 0.731267</code></pre>
+<p><code>0.734375</code> deserves a second look: it equals 47 times 0.015625, exactly 47 ticks. The loop really took 0.731 s, <code>process_time</code> reported 0.734 s, a 3 ms error. At second granularity that is irrelevant; at millisecond granularity it is the entire error budget.</p>
+<p>So there is exactly one question to answer first: <strong>are you measuring how much CPU this code consumed, or how long the user waited</strong>? A database query, a network call, a lock, a disk read are all the second kind. Timing them with <code>process_time</code> yields a beautiful, completely wrong, very small number. The reverse also holds: to decide whether a process is spinning, <code>process_time</code> is the right tool because ten minutes of blocked I/O cannot contaminate it.</p>
+<h2>Three: waiting one millisecond costs 1.5 ms one way and 15.6 ms the other</h2>
+<p>This is the most valuable result of the round. Three calls, identical intent, wait one millisecond:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Call</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Fastest</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Median</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Slowest</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.076 ms</td><td style="border:1px solid #ddd;padding:8px;">1.564 ms</td><td style="border:1px solid #ddd;padding:8px;">2.329 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>kernel32.Sleep(1)</code> via ctypes</td><td style="border:1px solid #ddd;padding:8px;">1.375 ms</td><td style="border:1px solid #ddd;padding:8px;">15.326 ms</td><td style="border:1px solid #ddd;padding:8px;">16.881 ms</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>threading.Event().wait(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.140 ms</td><td style="border:1px solid #ddd;padding:8px;">15.620 ms</td><td style="border:1px solid #ddd;padding:8px;">17.630 ms</td></tr></tbody></table>
+<p>Raise the request to 10 ms and <code>time.sleep</code> obeys at 10.33 ms, while <code>Sleep(10)</code> takes 16.84 ms and <code>Event.wait(0.010)</code> takes 16.74 ms. Both are still being pushed to the next 15.625 ms boundary.</p>
+<p>Note the fastest <code>Event.wait</code> sample, 1.14 ms, against a 15.62 ms median. <strong>The same call takes 1 ms when it lands near a tick edge and 17 ms when it lands just after one.</strong> That jitter is harder to diagnose than a systematic bias, because in a sample it shows up as "sometimes fast" and gets dismissed as noise.</p>
+<p>What does that do to real code? A polling loop that calls <code>event.wait(0.001)</code> as a "1 ms backoff" is really backing off by at least 15 ms. In bulk it is obvious:</p>
+<pre><code>500 ms budget: 46 iterations of Event.wait(0.001), 10.886 ms each (nominal 1 ms)
+500 ms budget: 319 iterations of time.sleep(0.001), 1.568 ms each</code></pre>
+<p>Same wall-clock budget, 46 laps versus 319. If your worker polls with <code>Condition.wait(timeout=0.001)</code> or probes with <code>Queue.get(timeout=0.001)</code>, those paths are marching to a 15.6 ms beat, while <code>time.sleep</code> is not.</p>
+<h2>Four: raise the system timer resolution and both numbers collapse together</h2>
+<p>Up to here this is correlation. To pin the cause, change one variable: Windows lets a process raise the system timer resolution from the default 15.625 ms to 1 ms with <code>timeBeginPeriod</code>. Same calls, before and after:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Call</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Default</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">After <code>timeBeginPeriod(1)</code></th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">After <code>timeEndPeriod(1)</code></th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>time.sleep(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">1.564 ms</td><td style="border:1px solid #ddd;padding:8px;">1.566 ms</td><td style="border:1px solid #ddd;padding:8px;">not measured</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>kernel32.Sleep(1)</code></td><td style="border:1px solid #ddd;padding:8px;">15.326 ms</td><td style="border:1px solid #ddd;padding:8px;">1.989 ms</td><td style="border:1px solid #ddd;padding:8px;">not measured</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.001)</code></td><td style="border:1px solid #ddd;padding:8px;">15.620 ms</td><td style="border:1px solid #ddd;padding:8px;">1.107 ms</td><td style="border:1px solid #ddd;padding:8px;">14.662 ms</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>Event.wait(0.010)</code></td><td style="border:1px solid #ddd;padding:8px;">16.742 ms</td><td style="border:1px solid #ddd;padding:8px;">10.383 ms</td><td style="border:1px solid #ddd;padding:8px;">not measured</td></tr></tbody></table>
+<p>Three things hold at once. First, <code>Sleep(1)</code> and <code>Event.wait(1 ms)</code> track the resolution exactly. Second, <code>time.sleep</code> does not move at all, because it is not on that path. Third, <code>timeEndPeriod</code> snaps everything back immediately.</p>
+<p>The official docs line up. Microsoft's <code>Sleep</code> page says the system clock ticks at a constant rate, that if <code>dwMilliseconds</code> is less than the clock resolution the thread may sleep for less than the requested time, that a value between one and two ticks lands anywhere in that window, and that you should call <code>timeBeginPeriod</code> when you need more accuracy. One detail is worth recording: the doc says "may sleep for less", while I measured longer. The direction differs, but both point at the same fact, which is that the parameter counts ticks, not seconds.</p>
+<p>The Python side lines up too. The <code>time.sleep</code> docs note under the 3.11 change that <code>On Windows, a waitable timer is now used</code>, and the Windows implementation section states that on Windows 10 and newer the implementation uses a high-resolution timer with 100 ns resolution. In other words, <code>time.sleep</code> since 3.11 bypasses the system tick, while <code>Event.wait</code>, <code>Condition.wait</code> and <code>Queue.get(timeout=)</code> go through timed lock waits that are still bound by it. Inside one standard library, two waiting paths differ in precision by a factor of ten.</p>
+<h2>Five: sleeps accumulate, one hundred 10 ms naps cost 1.09 s</h2>
+<p>A single sleep is "at least" N milliseconds, and that "at least" compounds:</p>
+<pre><code>100 x sleep(0.01): nominal 1.000000, actual 1.093047, +9.30%
+200 x sleep(0.001): nominal 0.200000, actual 0.280489, +40.24%</code></pre>
+<p>The per-call data shows where the money goes: <code>sleep(0.01)</code> has a 10.347 ms median, about 0.35 ms of overhead each time; <code>sleep(0.001)</code> has a 1.564 ms median, about 0.56 ms of overhead. <strong>The shorter the sleep, the worse the relative error</strong>, because the overhead is fixed while the divisor is tiny.</p>
+<p>That matters for rate limiters, heartbeats and pollers. A token refill loop meant to run 100 times per second, written as <code>for _ in range(100): time.sleep(0.01)</code>, actually has a 1.09 s period. Run it for an hour and you are more than two minutes behind, and nothing raises an error; downstream just notices you refill slowly.</p>
+<p>The fix is to sleep toward a deadline so the error cancels itself:</p>
+<pre><code>import time
+
+def sleep_until(deadline):
+    while True:
+        left = max(0.0, deadline - time.monotonic())
+        if left == 0.0:
+            return
+        time.sleep(left)
+
+t0 = time.monotonic()
+for i in range(100):
+    sleep_until(t0 + (i + 1) * 0.01)</code></pre>
+<p>Each round subtracts whatever the previous round overshot. On this machine, 100 rounds of 10 ms finished in 1.0003 s, taking the error from 9.3% down to 0.03%.</p>
+<h2>Six: float gives you 238 nanoseconds, and 14% of calls repeat</h2>
+<p><code>time.time()</code> returns a float. Epoch seconds are around 1.795e9, which needs 31 bits for the integer part, leaving 21 bits of the 52-bit mantissa for the fraction. The smallest step is therefore 2⁻²² seconds.</p>
+<p>Both measurements confirm it:</p>
+<pre><code>smallest positive delta in a 0.5 s busy loop: 2.384185791015625e-07 (258 distinct deltas, all multiples of it)
+200000 back-to-back time.time() calls: 171,695 distinct values (85.8%)
+200000 back-to-back time.time_ns() calls: 200,000 distinct values (100%)
+50000 datetime.now() calls: 40,586 distinct values (81.2%)</code></pre>
+<p><code>time_ns()</code> is distinct every time, so the underlying resolution is fine; float is what throws precision away. At millisecond logging nobody cares, but if you use <code>time.time()</code> as a unique key, sort at microsecond level, or compare two timestamps with <code>==</code>, you will hit the case where two different instants share one float.</p>
+<p><code>time_ns()</code>, <code>monotonic_ns()</code> and <code>perf_counter_ns()</code> return ints and do not have this problem. One adjacent trap: <code>datetime.fromtimestamp(0.9999999)</code> returned <code>1970-01-01 08:00:01</code> here, not <code>08:00:00.999999</code>, because it rounds and jumps across the second boundary.</p>
+<h2>Seven: perf_counter and monotonic are the same clock on 3.13</h2>
+<p>Look again at the <code>implementation</code> column from section one: <code>monotonic</code> and <code>perf_counter</code> both report <code>QueryPerformanceCounter()</code>. That is not a coincidence. The <code>perf_counter()</code> docs carry a 3.13 change note reading <code>Use the same clock as time.monotonic().</code></p>
+<p>The two also agree over a 2 second sleep: <code>monotonic</code> advanced 2.000646, <code>perf_counter</code> advanced 2.000665, a 19 microsecond gap that comes from reading them at slightly different moments. Over 3 seconds, <code>time.time()</code> and <code>perf_counter</code> drifted by 3 microseconds.</p>
+<p>So why does the documentation keep them as two functions? Because these are <strong>platform contracts</strong>, not implementation facts. <code>monotonic()</code> promises a clock that cannot be set and is unaffected by system clock updates; <code>perf_counter()</code> promises the highest available resolution and includes time spent sleeping. On some platforms and some CPython versions those promises resolve to different underlying clocks. They happen to be the same clock on Windows in 3.13.</p>
+<p>The practical consequence: do not design around the coincidence. Measure duration with <code>perf_counter</code>, compute deadlines with <code>monotonic</code>. Swapping them will not break on this machine, but it can on another interpreter or platform.</p>
+<p>There is a harder platform difference too: Windows has no <code>time.CLOCK_*</code> constants at all, and no <code>time.clock_gettime</code> attribute:</p>
+<pre><code>hasattr(time, "CLOCK_MONOTONIC") = False
+CLOCK_ constants in dir(time) = []
+time.clock_gettime -> AttributeError</code></pre>
+<p>The docs mark <code>clock_gettime</code> and <code>clock_getres</code> as <code>Availability: Unix</code>. Code copied from Linux that calls <code>time.clock_gettime(time.CLOCK_MONOTONIC)</code> dies on its first line on Windows, and it dies because the attribute does not exist, not because precision differs.</p>
+<h2>Eight: time.time can be set back, and its Windows source just changed</h2>
+<p><code>get_clock_info("time")</code> reports <code>adjustable=True</code>. The documentation defines that field as whether the clock can be set to jump forward or backward, and adds <code>Does not refer to gradual NTP rate adjustments</code>. In other words, <code>adjustable=False</code> would not mean NTP slewing is absent; it only means you cannot move the clock yourself.</p>
+<p>The <code>time.time()</code> docs state the risk directly: <code>While this function normally returns non-decreasing values, it can return a lower value than a previous call if the system clock has been set back between the two calls.</code></p>
+<p>Which means any <code>t1 - t0</code> where both ends come from <code>time.time()</code> can in theory come out negative. I did not actually change the system clock here (it needs administrator rights and would disturb other work on this machine), so treat that point as the documented contract rather than an experiment.</p>
+<p>There is one change I can confirm by measurement: the Windows clock source behind <code>time.time()</code> changed in 3.13. The changelog says <code>Changed in version 3.13: On Windows, calls GetSystemTimePreciseAsFileTime() instead of GetSystemTimeAsFileTime()</code>, and this machine's <code>implementation</code> field reads <code>GetSystemTimePreciseAsFileTime()</code>.</p>
+<p>Why does that matter? Because the widely repeated claim that "<code>time.time()</code> on Windows only has 15.6 ms precision" no longer holds on 3.13. My measured smallest increment is 238 ns, limited by float rather than by the system clock. The old claim was not wrong, it expired. Check the <code>implementation</code> field instead of trusting a remembered number.</p>
+<h2>Troubleshooting: three real exceptions</h2>
+<p>All three came up while I was writing the probe scripts. The messages are copied verbatim.</p>
+<p><strong>Error one: <code>ValueError: sleep length must be non-negative</code></strong></p>
+<p>Cause: passing "time remaining" straight into <code>sleep()</code>. Once the deadline has passed, <code>deadline - now</code> is negative. This is common in retry backoff, where the first attempt overruns and the second computes a negative remainder.</p>
+<p>Fix: clamp to zero first, then decide whether to sleep at all.</p>
+<pre><code>left = deadline - time.monotonic()
+if left == max(0.0, left) and left:
+    time.sleep(left)</code></pre>
+<p><strong>Error two: <code>TypeError: 'str' object cannot be interpreted as an integer</code></strong></p>
+<p>Cause: the sleep argument came from a config file or environment variable as the string <code>"1"</code> or <code>"0.5"</code>. <code>sleep</code> will not coerce it and raises a type error. The same applies to <code>Event.wait("0.001")</code>.</p>
+<p>Fix: convert once at the boundary with <code>float(...)</code> and validate non-negative, because a negative number then raises the <code>ValueError</code> from error one. Two failure modes hiding in one field.</p>
+<p><strong>Error three: <code>AttributeError: module 'time' has no attribute 'clock_gettime'</code></strong></p>
+<p>Cause: inheriting <code>time.clock_gettime(time.CLOCK_MONOTONIC)</code> from Linux code. Windows has neither the function nor the constants.</p>
+<p>Fix: keep cross-platform code on the <code>time.monotonic()</code> and <code>monotonic_ns()</code> layer. If you genuinely need platform-specific <code>CLOCK_*</code> logic, branch on <code>hasattr(time, "CLOCK_MONOTONIC")</code> explicitly instead of crashing at runtime.</p>
+<h2>A set of timing helpers you can copy</h2>
+<p>Four rules, four functions:</p>
+<pre><code>import time
+
+def elapsed_ms(fn):
+    """Elapsed time of a call: perf_counter_ns avoids the float loss"""
+    t0 = time.perf_counter_ns()
+    result = fn()
+    return (time.perf_counter_ns() - t0) / 1e6, result
+
+def cpu_ms(fn):
+    """CPU time only: sleeps, waits and blocking IO are excluded"""
+    t0 = time.process_time_ns()
+    result = fn()
+    return (time.process_time_ns() - t0) / 1e6, result
+
+def sleep_until(deadline_monotonic):
+    """Sleep toward a deadline so the error cannot accumulate"""
+    while True:
+        left = max(0.0, deadline_monotonic - time.monotonic())
+        if left == 0.0:
+            return
+        time.sleep(left)
+
+def wait_or_poll(cond, timeout):
+    """For millisecond polling, drive the cadence yourself instead of Condition.wait"""
+    deadline = time.monotonic() + timeout
+    while not cond():
+        left = deadline - time.monotonic()
+        if left == max(0.0, left) and left:
+            time.sleep(left)
+        else:
+            return False
+    return True</code></pre>
+<p>The order of choice: ask what you are measuring. User-visible latency, use <code>perf_counter_ns</code>. CPU consumption, use <code>process_time_ns</code>. Whether something timed out, compute a deadline with <code>monotonic</code>. Anything that has to wait, prefer <code>time.sleep</code>, because on this machine it is ten times more precise than a condition variable.</p>
+<h2>Where this stops</h2>
+<ul><li>Windows 11 build 26300 with CPython 3.13.14 only. Linux and macOS will differ: on Linux <code>time.sleep</code> uses <code>clock_nanosleep</code>, <code>CLOCK_MONOTONIC</code> exists, and <code>time.time()</code> precision comes from <code>clock_getres(CLOCK_REALTIME)</code></li><li>The system timer resolution can be raised by any other process (browsers, games and audio tools all call <code>timeBeginPeriod</code>), so <code>Event.wait</code> numbers on the same machine can differ between runs. That is why every group here ran 20 to 30 times and reports medians</li><li>The system clock was not actually changed, so the "may return a lower value" point in section eight is the documented contract, not a local experiment</li><li>Only millisecond-scale sleeps and waits were tested. Second-scale, sub-millisecond and cross-process shared-memory waits are not covered</li><li>asyncio's <code>call_later</code> and the event loop clock are a separate path and are not covered here</li></ul>
+<p>The same "the return value is not the result" family shows up in neighbouring layers. Reading profiler output instead of the clock itself leads to <a href="https://yaohehe.github.io/2026-11-15-cprofile-vs-py-spy-8-profiling-reads-i-got-wrong-en.html" class="internal-link">eight profiling misreads</a>; timeouts and cancellation in asyncio have <a href="https://yaohehe.github.io/2026-11-01-asyncio-cancellation-six-silent-failures-reproduce-en.html" class="internal-link">six silent failures</a>; and comparisons of instants, including DST, are covered in <a href="https://yaohehe.github.io/2026-11-06-python-zoneinfo-tested-6-silent-dst-errors-en.html" class="internal-link">six zoneinfo traps</a>. This article only covers the duration side.</p>
+<p>This article contains no affiliate links.</p>
+<h2>FAQ</h2>
+<p><strong>Q: So which one should I use, <code>time.perf_counter()</code> or <code>time.monotonic()</code>?</strong></p>
+<p><code>perf_counter()</code> for "how long did this take", because its documented promise is the highest available resolution. <code>monotonic()</code> for "when does this time out", because its promise is that it cannot go backwards. On Windows with 3.13 they are the same underlying clock, so swapping them will not fail here, and that is exactly why you should not encode the coincidence into a design.</p>
+<p><strong>Q: Given that <code>Event.wait</code> costs 15 ms, should every <code>Queue.get(timeout=0.001)</code> become a sleep poll?</strong></p>
+<p>No. A blocking wait with a timeout is not a precision timer; its contract is "return when there is work or the timeout expires", not "sleep exactly N milliseconds". Rewrite only the places where the logic genuinely depends on coming back within a millisecond. Busy polling burns CPU and is not a substitute for blocking.</p>
+<p><strong>Q: Why do two runs on the same machine give very different <code>Event.wait</code> numbers?</strong></p>
+<p>Because the timer resolution is global and any process calling <code>timeBeginPeriod</code> changes it for everyone. The other half is where your call lands relative to a tick edge, which decides between roughly 1 ms and 17 ms. To reproduce reliably, pin the resolution first (or check it with a tool such as <code>clockres</code>) and take medians over many runs rather than trusting one sample.</p>
+<p><strong>Q: If <code>process_time</code> cannot see waits, why keep it at all?</strong></p>
+<p>Because it answers a different question cleanly: is this code computing, or is it waiting? How much CPU a process consumed, whether a parsing loop is spinning, whether a batch job is actually blocked on I/O. <code>perf_counter</code> gets polluted by waits in those questions; <code>process_time</code> does not. The prerequisite is knowing it moves in 15.625 ms steps, so never use it on short requests.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
