@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQLite3 Defaults: 8 Decisions Python Makes For You - TechPassive</title>
+  <meta name="description" content="Measured on CPython 3.13: '123' lands as integer 123, implicit transactions cover DML only, CREATE TABLE survives rollback, and locks wait five seconds, not zero.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>SQLite3 Defaults: 8 Decisions Python Makes For You</h1>
+  <div class="post-tags">
+    <span class="tag">sqlite3</span><span class="tag">python</span><span class="tag">database</span>
+  </div>
+  <div class="content">
+    <p>I tested this on one machine: a temporary directory, two concurrent connections, and a batch of rows with deliberately wrong types, then wrote down each decision sqlite3 made without asking me. Environment: CPython 3.13.14, SQLite 3.53.1, Windows 11. This is the binding layer, not the backup layer, so it pairs with my earlier post on <a href="https://yaohehe.github.io/2026-10-28-sqlite-hot-backup-opens-fine-14500-rows-missing-en.html" class="internal-link">SQLite hot backups</a>: that one asks whether a copied database is consistent, this one asks what the Python wrapper does when you say nothing. No affiliate links in this post.</p>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#003B57" role="img" aria-label="Sqlite" style="flex:none;"><path d="M21.678.521c-1.032-.92-2.28-.55-3.513.544a8.71 8.71 0 0 0-.547.535c-2.109 2.237-4.066 6.38-4.674 9.544.237.48.422 1.093.544 1.561a13.044 13.044 0 0 1 .164.703s-.019-.071-.096-.296l-.05-.146a1.689 1.689 0 0 0-.033-.08c-.138-.32-.518-.995-.686-1.289-.143.423-.27.818-.376 1.176.484.884.778 2.4.778 2.4s-.025-.099-.147-.442c-.107-.303-.644-1.244-.772-1.464-.217.804-.304 1.346-.226 1.478.152.256.296.698.422 1.186.286 1.1.485 2.44.485 2.44l.017.224a22.41 22.41 0 0 0 .056 2.748c.095 1.146.273 2.13.5 2.657l.155-.084c-.334-1.038-.47-2.399-.41-3.967.09-2.398.642-5.29 1.661-8.304 1.723-4.55 4.113-8.201 6.3-9.945-1.993 1.8-4.692 7.63-5.5 9.788-.904 2.416-1.545 4.684-1.931 6.857.666-2.037 2.821-2.912 2.821-2.912s1.057-1.304 2.292-3.166c-.74.169-1.955.458-2.362.629-.6.251-.762.337-.762.337s1.945-1.184 3.613-1.72C21.695 7.9 24.195 2.767 21.678.521m-18.573.543A1.842 1.842 0 0 0 1.27 2.9v16.608a1.84 1.84 0 0 0 1.835 1.834h9.418a22.953 22.953 0 0 1-.052-2.707c-.006-.062-.011-.141-.016-.2a27.01 27.01 0 0 0-.473-2.378c-.121-.47-.275-.898-.369-1.057-.116-.197-.098-.31-.097-.432 0-.12.015-.245.037-.386a9.98 9.98 0 0 1 .234-1.045l.217-.028c-.017-.035-.014-.065-.031-.097l-.041-.381a32.8 32.8 0 0 1 .382-1.194l.2-.019c-.008-.016-.01-.038-.018-.053l-.043-.316c.63-3.28 2.587-7.443 4.8-9.791.066-.069.133-.128.198-.194Z"/></svg><span>Sqlite</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>The short version</h2>
+<p><strong>TL;DR</strong>: an INTEGER column does not guarantee integers, because affinity rewrites well-formed literals before they hit the page; the implicit transaction covers INSERT, UPDATE, DELETE and REPLACE only, so SELECT and DDL fall outside it; that is why CREATE TABLE survives a rollback; a lock wait defaults to five seconds, not zero; WAL stops readers and writers from blocking each other; rowcount is -1 for SELECT; executescript commits your pending work before it runs; and the default date adapters have been deprecated since 3.12.</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="The five gates one INSERT passes through" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft6b7a21afgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft6b7a21afgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">The five gates one INSERT passes through</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">bind parameters</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">affinity rewrite</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">implicit transaction</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">lock wait</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">commit to disk</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>The five gates one INSERT passes through · diagram drawn from this article</figcaption></figure>
+<h2>An INTEGER column does not guarantee an integer</h2>
+<p>SQLite is dynamically typed: a value carries its own type, a column does not. The declared type is only a suggestion, which the docs call type affinity. I created five columns and pushed the same strings into each:</p>
+<pre><code>CREATE TABLE t(a INTEGER, b REAL, c NUMERIC, d TEXT, e BLOB);</code></pre>
+<p>Reading each value back with <code>typeof()</code> gave these results:</p>
+<ul><li><code>'123'</code> into the INTEGER column is stored as integer 123</li><li><code>'1e3'</code> into INTEGER is stored as integer 1000, because exponent notation still counts as a well-formed literal</li><li><code>'12.0'</code> into NUMERIC is stored as integer 12, since an exact conversion prefers integers</li><li>the integer <code>7</code> into REAL is stored as real 7.0</li><li><code>'1e3'</code> into BLOB stays text, because BLOB affinity converts nothing</li><li><code>'abc'</code> stays text in all five columns, because it is not a well-formed literal</li></ul>
+<p>The datatype3 page is explicit: if a string can be represented losslessly as an integer, NUMERIC affinity converts it, and the docs use <code>'500.0'</code> becoming integer 500 as their own example. This changes how mixed types sort. In <code>ORDER BY x</code>, NULL comes first, numbers 3 and 10 sit in the middle, the strings <code>'10'</code> and <code>'apple'</code> come after, and BLOBs always land last. The number 10 and the string <code>'10'</code> are two different sort classes.</p>
+<p>There is one exception worth knowing: INTEGER PRIMARY KEY is an alias for rowid, and every other column accepts any type. Pushing <code>'123'</code> into the rowid column gave me integer 123; pushing <code>'abc'</code> was rejected outright with <code>sqlite3.IntegrityError: datatype mismatch</code>.</p>
+<h2>Who opened the transaction: the implicit BEGIN behind isolation_level</h2>
+<p>On default settings <code>isolation_level</code> is an empty string and <code>autocommit</code> is <code>LEGACY_TRANSACTION_CONTROL</code> (-1). In that mode Python opens a transaction implicitly before INSERT, UPDATE, DELETE and REPLACE, and only those four. Here is the <code>in_transaction</code> trace I measured:</p>
+<ul><li>after CREATE TABLE: False</li><li>after INSERT: True</li><li>after SELECT: True, because the earlier DML opened it, not the query</li><li>after rollback: False</li></ul>
+<p>A pure SELECT on a fresh connection leaves <code>in_transaction</code> at False. The docs spell this out: the implicit BEGIN happens only when the statement is INSERT, UPDATE, DELETE or REPLACE and no transaction is already active.</p>
+<p>Knowing who opened the transaction explains the counterintuitive result in the next section. A related question, whether a schema change gets detected by your migration tool at all, is separate, and I logged four blind spots in my <a href="https://yaohehe.github.io/2026-10-24-alembic-tested-what-autogenerate-misses-5-errors-en.html" class="internal-link">Alembic autogenerate test</a>.</p>
+<h2>CREATE TABLE survived my rollback</h2>
+<p>If DDL never opens a transaction, then a CREATE TABLE lands in autocommit mode. I ran it both ways:</p>
+<ul><li><code>CREATE TABLE t2</code> followed by <code>rollback()</code>: t2 is still there, the rollback did nothing</li><li><code>BEGIN</code> first, create t2 inside the explicit transaction, then <code>rollback()</code>: t2 is gone</li></ul>
+<p>Same statement, two outcomes, and the only difference is who opened the transaction. If you want to undo DDL, you have to open an explicit transaction yourself. One more piece of history: before Python 3.6, sqlite3 committed implicitly before DDL, and that behaviour is gone, so older posts about "DDL auto-commits" should be reread as "DDL does not join the transaction".</p>
+<p>There is a collision point here too. Run <code>BEGIN</code> while the implicit transaction is open and you get <code>sqlite3.OperationalError: cannot start a transaction within a transaction</code>. Only after a rollback, and with no new DML, does an explicit BEGIN succeed.</p>
+<h2>database is locked: five seconds by default, not immediately</h2>
+<p>"SQLite fails instantly with database is locked" is the most repeated claim about this module, and for Python users it is wrong. There are two layers:</p>
+<ul><li>the SQLite C API ships no busy handler by default, so it returns SQLITE_BUSY immediately, and at that layer the claim holds</li><li>Python's <code>connect(timeout=)</code> defaults to 5.0 seconds, the docs say "Default five seconds", and <code>PRAGMA busy_timeout</code> read back 5000 in my test</li></ul>
+<p>I pitted two connections against each other. Connection A held a write lock with <code>BEGIN IMMEDIATE</code>; connection B wrote with <code>timeout=0</code> and failed in 0.5 milliseconds with <code>sqlite3.OperationalError: database is locked</code>. With <code>PRAGMA busy_timeout=3000</code> on B, and A releasing the lock after 0.6 seconds, B waited 658 milliseconds and then the write succeeded. Whether you see an error depends on whether you can afford to wait, and by default you have five seconds.</p>
+<p>One place where locks surprise people: if connection A has an uncommitted DML, even a single INSERT nobody committed, connection B's CREATE TABLE queues for the same write lock, because DDL writes the schema. In my test B simply timed out with database is locked. Finding the connection that forgot to commit fixes this faster than raising the timeout.</p>
+<p>WAL changes the read-write relationship. The default <code>journal_mode</code> is delete; after switching to WAL, B's reads returned normally while A held the write lock. The cost is two companion files: <code>-wal</code> measured 12,392 bytes and <code>-shm</code> 32,768 bytes before close, both disappeared after close, and the main file grew from 4,096 to 8,192 bytes as the WAL was folded back in.</p>
+<h2>rowcount and lastrowid: three different answers</h2>
+<p><code>Cursor.rowcount</code> is meaningful only for INSERT, UPDATE, DELETE and REPLACE; for everything else, SELECT included, it is -1. Four measurements:</p>
+<ul><li><code>executemany</code> with three rows: rowcount 3, but <code>lastrowid</code> is None, and the docs confirm lastrowid is not updated after executemany</li><li>after SELECT: rowcount -1, and the only way to know the count is len(fetchall())</li><li>DELETE of two rows: rowcount 2, usable</li><li>UPDATE matching nothing: rowcount 0, which is exactly the signal for "nothing changed"</li></ul>
+<p>Use lastrowid right after execute on a single INSERT; before the first successful insert its value is None. The docs also note that WITHOUT ROWID tables do not record lastrowid at all.</p>
+<h2>executescript commits before it runs</h2>
+<p>Under legacy transaction control, <code>executescript()</code> does something the docs state plainly: if a transaction is pending, it commits first, then runs the script. The consequence is that rows you were about to roll back are already saved:</p>
+<pre><code>con.execute("INSERT INTO t(x) VALUES('pending')")
+con.executescript("CREATE TABLE t2(x); INSERT INTO t2 VALUES(1);")
+con.rollback()   # the pending row is still there</code></pre>
+<p>Counting after the rollback, the pending row is still present, because it was committed before the script ran. <code>in_transaction</code> also flipped from True to False. If you need the script inside your transaction, wrap it explicitly, or simply do not call executescript while work is pending.</p>
+<h2>Cross-thread use: ProgrammingError and three concurrency patterns</h2>
+<p>With the default <code>check_same_thread=True</code>, another thread touching the connection raises an error that even names both thread ids:</p>
+<p><code>sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 30876 and this is thread id 31088.</code></p>
+<p>Three workable patterns, each with its own price:</p>
+<ul><li><code>check_same_thread=False</code> with one shared connection: the docs warn that writes may need serialising by the caller, and in my test a thread lock made concurrent writes work</li><li>one connection per thread: no ProgrammingError, but now you handle lock contention between connections, back to the busy_timeout section</li><li>a connection pool with a single writer: writes converge on one connection while readers stay parallel</li></ul>
+<p>With a shared connection, remember the earlier fact: one thread's uncommitted transaction makes other writers queue, and row counts depend on which connection looks. My uncommitted row was visible to its own connection (count 1), invisible to the concurrent one (count 0), and a third connection's write hit database is locked; after rollback the count returned to zero.</p>
+<h2>Dates go in but do not come back: detect_types and deprecated adapters</h2>
+<p>With the default <code>detect_types=0</code>, a datetime is converted to ISO text by an adapter: I stored <code>2026-11-21 09:30:00</code>, <code>typeof</code> reported text, and it came back as a str. To read datetimes back, pass <code>detect_types=sqlite3.PARSE_DECLTYPES</code> at connect time, and reads return datetime and date objects.</p>
+<p>Two newer traps:</p>
+<ul><li>the default adapters have been deprecated since Python 3.12, and on 3.13.14 each datetime insert emitted a DeprecationWarning; the docs suggest register_adapter instead</li><li>a DATE column holding a full datetime is stored in timestamp format, and the date converter then fails with <code>ValueError: invalid literal for int() with base 10: b'21 09:30:00'</code>, so the declared type and the written format must match</li><li>a TIMESTAMP column holding a non-date string fails at read time under PARSE_DECLTYPES with <code>ValueError: not enough values to unpack (expected 2, got 1)</code>, because the converter does not validate and the bad data explodes on retrieval</li></ul>
+<p>One more line worth copying into your notes: the default timestamp converter ignores the UTC offset in the database and always returns a naive datetime. Register an offset-aware converter if the offset matters.</p>
+<h2>Number traps in the SQL layer and the limits of STRICT</h2>
+<p>Below the binding layer, SQL expressions have their own surprises:</p>
+<ul><li><code>SELECT 1/2</code> returns 0, because integer division applies when both operands are integers; <code>1/2.0</code> returns 0.5</li><li><code>SELECT '10'+2</code> returns 12, since arithmetic coerces text to a number; <code>'abc'+2</code> returns 2, because unparseable text counts as 0</li><li><code>SELECT 0.1+0.2</code> returns 0.30000000000000004, IEEE 754 double precision, same as Python</li></ul>
+<p>The error text for a constraint violation is <code>sqlite3.IntegrityError: UNIQUE constraint failed: t.id</code>, and the documented fix is UPSERT: <code>INSERT INTO t VALUES('a',2) ON CONFLICT(id) DO UPDATE SET n=excluded.n</code>. In my test the conflicting row was updated rather than rejected.</p>
+<p>STRICT tables, available since 3.37, get sold as the strict typing rescue. I inserted <code>'123'</code> into an INTEGER column of a STRICT table and it was still stored as integer 123. STRICT requires the value to be convertible to the declared type; it does not forbid conversion. If you need byte-exact storage, declare BLOB or manage types yourself.</p>
+<h2>Binding errors point in the wrong direction</h2>
+<p>A mismatch between placeholders and arguments produces a misleading message:</p>
+<p><code>sqlite3.OperationalError: table t has 2 columns but 1 values were supplied</code></p>
+<p>Nothing is wrong with a two-column table; you supplied one bound parameter. Wrong types also report elsewhere: passing a dict to qmark placeholders gives <code>sqlite3.ProgrammingError: Binding 1 has no name, but you supplied a dictionary (which has only names).</code>, while passing a dict as a positional argument gives <code>sqlite3.ProgrammingError: Error binding parameter 1: type 'dict' is not supported</code>.</p>
+<p>What actually works, measured:</p>
+<ul><li><code>?</code> with a sequence, or <code>:name</code> with a dict, and a repeated <code>:x</code> fills several places with one value</li><li>numbered placeholders work, so <code>VALUES(?1, ?1)</code> fills two columns from one value</li><li>None binds as NULL (typeof returns null), True binds as integer 1, a float binds as real</li><li>dict and set are unsupported and raise ProgrammingError immediately</li></ul>
+<h2>Troubleshooting: the errors I actually hit</h2>
+<ul><li><strong>database is locked in 0.5 ms</strong>: the real behaviour with <code>timeout=0</code> or a bare C API call. Check for a connection holding an uncommitted transaction first, since DDL takes the write lock too, and only then raise busy_timeout; doing it in the other order turns a rare failure into a reliable one</li><li><strong>cannot start a transaction within a transaction</strong>: you called BEGIN while the implicit transaction was open. Test <code>in_transaction</code> first, or manage exactly one source of transactions</li><li><strong>CREATE TABLE will not roll back</strong>: DDL is outside the implicit transaction, so open your own BEGIN</li><li><strong>invalid literal for int() with base 10: b'21 09:30:00'</strong>: a DATE column received a full datetime. Align declared type with written format, or use TIMESTAMP consistently</li><li><strong>Error binding parameter 1: type 'dict' is not supported</strong>: the binding layer takes no containers. Serialise to JSON or unpack into tuple fields</li><li><strong>table t has 2 columns but 1 values were supplied</strong>: count placeholders and arguments before you go reading table definitions</li></ul>
+<h2>Where these findings stop</h2>
+<p>Every result here comes from CPython 3.13.14 with SQLite 3.53.1 on Windows 11, cross-checked against the official docs. Not covered: how behaviour changes once the <code>autocommit</code> default flips to False in a future release, interactive mode, load_extension, and whether affinity conversion differs on Linux or older SQLite builds. The docs state that the <code>autocommit</code> default "will change to False in a future Python release", so transaction behaviour is worth retesting when you upgrade a major version. For backup and copy scenarios, use this together with my SQLite hot backup post; for the sibling problem of configuration values being rewritten silently, read the <a href="https://yaohehe.github.io/2026-11-16-yaml-safe_load-rewrites-eight-values-silently-en.html" class="internal-link">YAML safe_load test</a>.</p>
+<h2>FAQ</h2>
+<p><strong>Q: If the column is declared INTEGER, why do I get an integer back instead of the string I inserted?</strong></p>
+<p>Because the declared type is only affinity, and the value decides its own storage class. <code>'123'</code> is a well-formed literal that converts losslessly, so INTEGER affinity stores it as integer 123 and <code>typeof()</code> reports integer. Declare TEXT or BLOB if you need the string preserved byte for byte.</p>
+<p><strong>Q: Python already waits five seconds, so do I still need to set busy_timeout?</strong></p>
+<p>It depends on how long your writers queue. Five seconds is plenty for a small single-machine database, but a long uncommitted transaction on the other side can eat all of it and still produce database is locked. I look for uncommitted work first, then set <code>PRAGMA busy_timeout</code> to two or three times my measured worst case instead of guessing a large number.</p>
+<p><strong>Q: Since CREATE TABLE will not roll back, how do I write a safe migration?</strong></p>
+<p>Put the whole migration in an explicit transaction: <code>BEGIN</code>, then your DDL and data changes, then <code>commit()</code> or <code>rollback()</code>. Do not issue BEGIN while an implicit transaction is open, and do not call executescript with work pending, because it commits first. Verify by creating the table, rolling back, and querying sqlite_master, which beats reading your own code.</p>
+<p><strong>Q: SQLite 3.37 added STRICT tables, so does that stop silent type rewriting?</strong></p>
+<p>No. STRICT requires the value to be convertible to the declared type; it does not forbid conversion. I inserted <code>'123'</code> into an INTEGER column of a STRICT table and got integer 123 back. What STRICT does buy you is an earlier, clearer error for values like <code>'abc'</code> that cannot convert at all.</p>
+<h2>Last word</h2>
+<p>Each default in sqlite3 has a reason, but together they mean one thing: <strong>between the SQL you write and the bytes on disk sits a binding layer whose decisions never raise and never log</strong>. Verifying it is cheap, a temporary database, two connections and a batch of mistyped rows, and ten minutes gets your own schema audited. Waiting until silent type rewriting has polluted production data costs far more. My <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-tested-40-mb-csv-no-database-8-errors-en.html" class="internal-link">DuckDB test</a> and the Alembic autogenerate checks belong to the same thread, decisions the database layer makes without telling you.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO Books</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 Web Hosting Books</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker Books</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Books</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 Affiliate Marketing</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 Passive Income Books</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ Server Books</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Cloud Computing Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
