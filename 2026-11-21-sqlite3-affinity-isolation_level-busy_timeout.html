@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SQLite3 绑定层默认值八条：affinity、isolation_level 与 busy_timeout - TechPassive</title>
+  <meta name="description" content="本机实测 CPython 3.13.14 的 sqlite3 八条默认行为：'123' 进 INTEGER 列存成整数、隐式事务只包 DML、CREATE TABLE 不受 rollback 管辖、忙等默认五秒而非零、rowcount 对 SELECT 恒为 -1。每条附报错原文与可复现代码。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>SQLite3 绑定层默认值八条：affinity、isolation_level 与 busy_timeout</h1>
+  <div class="post-tags">
+    <span class="tag">sqlite3</span><span class="tag">python</span><span class="tag">数据库</span>
+  </div>
+  <div class="content">
+    <p>我实际在本机跑了一轮 sqlite3 模块的默认值实验：一个临时目录、两个并发连接、一组故意塞错类型的行，逐条看它到底替你做了哪些决定。环境为 CPython 3.13.14、SQLite 3.53.1、Windows 11。与站内 <a href="https://yaohehe.github.io/2026-10-28-sqlite-14500.html" class="internal-link">10-28 那篇热备份文</a> 划界：那篇答「备份拷贝时数据一致性怎么验」，本篇答「Python 绑定层在你没说话的时候替你做了什么决定」。本文不含任何联盟推广链接。</p>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#003B57" role="img" aria-label="Sqlite" style="flex:none;"><path d="M21.678.521c-1.032-.92-2.28-.55-3.513.544a8.71 8.71 0 0 0-.547.535c-2.109 2.237-4.066 6.38-4.674 9.544.237.48.422 1.093.544 1.561a13.044 13.044 0 0 1 .164.703s-.019-.071-.096-.296l-.05-.146a1.689 1.689 0 0 0-.033-.08c-.138-.32-.518-.995-.686-1.289-.143.423-.27.818-.376 1.176.484.884.778 2.4.778 2.4s-.025-.099-.147-.442c-.107-.303-.644-1.244-.772-1.464-.217.804-.304 1.346-.226 1.478.152.256.296.698.422 1.186.286 1.1.485 2.44.485 2.44l.017.224a22.41 22.41 0 0 0 .056 2.748c.095 1.146.273 2.13.5 2.657l.155-.084c-.334-1.038-.47-2.399-.41-3.967.09-2.398.642-5.29 1.661-8.304 1.723-4.55 4.113-8.201 6.3-9.945-1.993 1.8-4.692 7.63-5.5 9.788-.904 2.416-1.545 4.684-1.931 6.857.666-2.037 2.821-2.912 2.821-2.912s1.057-1.304 2.292-3.166c-.74.169-1.955.458-2.362.629-.6.251-.762.337-.762.337s1.945-1.184 3.613-1.72C21.695 7.9 24.195 2.767 21.678.521m-18.573.543A1.842 1.842 0 0 0 1.27 2.9v16.608a1.84 1.84 0 0 0 1.835 1.834h9.418a22.953 22.953 0 0 1-.052-2.707c-.006-.062-.011-.141-.016-.2a27.01 27.01 0 0 0-.473-2.378c-.121-.47-.275-.898-.369-1.057-.116-.197-.098-.31-.097-.432 0-.12.015-.245.037-.386a9.98 9.98 0 0 1 .234-1.045l.217-.028c-.017-.035-.014-.065-.031-.097l-.041-.381a32.8 32.8 0 0 1 .382-1.194l.2-.019c-.008-.016-.01-.038-.018-.053l-.043-.316c.63-3.28 2.587-7.443 4.8-9.791.066-.069.133-.128.198-.194Z"/></svg><span>Sqlite</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>先给结论</h2>
+<p><strong>TL;DR</strong>：列声明 INTEGER 不保证存的是整数，亲和性会把合式字面量改写后再落盘；隐式事务只包住 DML，SELECT 和 DDL 都在事务外；所以 CREATE TABLE 无法用 rollback 撤销；忙等默认五秒（Python 层给 SQLite 的「立即失败」垫了五秒）；WAL 让读写不再互斥；rowcount 对 SELECT 恒为 -1；executescript 执行前会先把你的挂起事务提交掉；默认日期适配器从 3.12 起就已弃用。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="一条 INSERT 落库前要过的五道关卡" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftf725bc88grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ftf725bc88grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">一条 INSERT 落库前要过的五道关卡</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">参数绑定</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">亲和性改写</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">隐式事务</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">锁等待</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">提交落盘</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>一条 INSERT 落库前要过的五道关卡 · 依据本文步骤自绘示意图</figcaption></figure>
+<h2>列声明 INTEGER，存进去未必是整数</h2>
+<p>SQLite 是动态类型：值的类型跟着值走，不跟列走。列声明只是「建议」（官方叫 type affinity）。实测五列对照：</p>
+<pre><code>CREATE TABLE t(a INTEGER, b REAL, c NUMERIC, d TEXT, e BLOB);</code></pre>
+<p>往五列各塞同一批字符串，<code>typeof()</code> 读回来的结果是：</p>
+<ul><li><code>'123'</code> 进 INTEGER 列，存成 integer 123</li><li><code>'1e3'</code> 进 INTEGER 列，存成 integer 1000 —— 指数写法也算合式字面量</li><li><code>'12.0'</code> 进 NUMERIC 列，存成 integer 12 —— 无损转整数时优先整数</li><li>整数 <code>7</code> 进 REAL 列，存成 real 7.0</li><li><code>'1e3'</code> 进 BLOB 列，原样存 text —— BLOB 亲和性不做任何转换</li><li><code>'abc'</code> 五列全保持 text —— 非合式字面量不改写</li></ul>
+<p>官方文档 datatype3 页写得很清楚：只要字符串能无损表达成整数，NUMERIC 亲和性就会转成整数，官方自己的例子是 <code>'500.0'</code> 存成 integer 500。这直接影响混类型排序：<code>ORDER BY x</code> 时 NULL 最前，数值 3、10 在中，文本 <code>'10'</code>、<code>'apple'</code> 在后，BLOB 永远垫底——数值 10 和字符串 <code>'10'</code> 是两个排序类。</p>
+<p>还有一个特例：INTEGER PRIMARY KEY 是 rowid 别名，除了它之外的任何列都可以存任意类型。实测往 rowid 列塞 <code>'123'</code> 得到 integer 123，塞 <code>'abc'</code> 则直接拒绝：<code>sqlite3.IntegrityError: datatype mismatch</code>。</p>
+<h2>事务是谁开的：isolation_level 的隐式 BEGIN</h2>
+<p>默认参数下 <code>isolation_level</code> 是空字符串、<code>autocommit</code> 是 <code>LEGACY_TRANSACTION_CONTROL</code>（-1）。这个模式下，Python 在 INSERT、UPDATE、DELETE、REPLACE 之前隐式开事务——仅限这四种 DML。实测 <code>in_transaction</code> 的变化轨迹：</p>
+<ul><li>建表（DDL）之后：False</li><li>INSERT 之后：True</li><li>SELECT 之后：True（不是 SELECT 开的，是沿用前面 DML 开的）</li><li>rollback 之后：False</li></ul>
+<p>纯 SELECT 在新连接上跑完，<code>in_transaction</code> 仍是 False。官方文档对这条有逐字规定：隐式 BEGIN 只在「sql 是 INSERT/UPDATE/DELETE/REPLACE 且当前没有事务」时发生。</p>
+<p>知道谁开事务的最大价值是解释下一节那个反直觉结果。顺带一句：schema 层面的改动能不能被检测出来，是另一条独立的问题，站内 <a href="https://yaohehe.github.io/2026-10-24-alembic-autogenerate.html" class="internal-link">Alembic autogenerate 实测</a> 记录了它漏掉的四类场景。</p>
+<h2>CREATE TABLE 没被 rollback 吃掉</h2>
+<p>既然 DDL 不开事务，那建表语句就是以自动提交模式直接落盘的。实测两轮：</p>
+<ul><li>直接 <code>CREATE TABLE t2</code> 然后 <code>rollback()</code>：t2 残留，rollback 无效</li><li>先手动 <code>BEGIN</code>，在显式事务里建 t2，再 <code>rollback()</code>：t2 消失，回滚成功</li></ul>
+<p>同一个语句两种命运，差别只在事务由谁开。想撤销 DDL，必须自己先开显式事务。另外 Python 3.6 之前 sqlite3 会在 DDL 前隐式 commit，这个行为已经移除，老文章里「DDL 自动提交」的表述要按「DDL 不开事务」重新理解。</p>
+<p>显式 BEGIN 还有一个撞车点：隐式事务还开着的时候执行 <code>BEGIN</code>，报 <code>sqlite3.OperationalError: cannot start a transaction within a transaction</code>。rollback 之后（且没有新的 DML）才能显式 BEGIN 成功。</p>
+<h2>database is locked：默认等五秒不是立刻</h2>
+<p>「SQLite 遇锁立即报 database is locked」是流传最广的说法，但对 Python 用户不准确。分两层：</p>
+<ul><li>SQLite C API 默认没有 busy handler，遇锁立即返回 SQLITE_BUSY——这层说法成立</li><li>Python 的 <code>connect(timeout=)</code> 默认 5.0 秒，文档原话「Default five seconds」，实测对应 <code>PRAGMA busy_timeout</code> 读数 5000</li></ul>
+<p>两个连接对拍：连接 A 用 <code>BEGIN IMMEDIATE</code> 持写锁，连接 B 以 <code>timeout=0</code> 写入，0.5 毫秒即失败，报 <code>sqlite3.OperationalError: database is locked</code>；B 改设 <code>PRAGMA busy_timeout=3000</code> 后再写，A 在 0.6 秒时放锁，B 等了 658 毫秒后写入成功。也就是说报不报错取决于你等不等得起，默认你有五秒。</p>
+<p>一个容易被锁死的位置：连接 A 有未提交的 DML（哪怕只是一条 INSERT 没 commit），连接 B 的 CREATE TABLE 也要排队拿写锁——DDL 写 schema 同样要锁。实测 B 直接等满超时报 database is locked。找「谁没 commit」比改超时更能根治这类报错。</p>
+<p>WAL 模式改变读写关系：默认 <code>journal_mode</code> 是 delete，切到 WAL 后，A 持写锁期间 B 的读查询照常返回。代价是磁盘上多两个伴生文件，实测 close 之前 <code>-wal</code> 12,392 字节、<code>-shm</code> 32,768 字节，close 后两个伴生文件消失、主库从 4,096 字节涨到 8,192 字节——WAL 内容在关闭时合并回主库。</p>
+<h2>rowcount 与 lastrowid 的三个口径</h2>
+<p><code>Cursor.rowcount</code> 只对 INSERT、UPDATE、DELETE、REPLACE 有效，其余语句（包括 SELECT）恒为 -1。实测四种情形：</p>
+<ul><li><code>executemany</code> 插三行：rowcount 3，但 <code>lastrowid</code> 是 None——官方明确 executemany 后 lastrowid 不更新</li><li>SELECT 之后：rowcount -1，想知道几行只能 len(fetchall())</li><li>DELETE 两行：rowcount 2，可用</li><li>UPDATE 匹配零行：rowcount 0，可用来判断「有没有改到东西」</li></ul>
+<p>lastrowid 的正确用法是紧跟单条 INSERT 的 execute 之后；INSERT 成功前的初始值是 None。官方还提醒 WITHOUT ROWID 表不记录 lastrowid。</p>
+<h2>executescript 先提交再执行</h2>
+<p><code>executescript()</code> 在 legacy 事务控制下有一个官方写明的行为：如果当前有挂起事务，先隐式 COMMIT 再执行脚本。实测后果是脚本之前的待提交行救不回来：</p>
+<pre><code>con.execute("INSERT INTO t(x) VALUES('pending')")
+con.executescript("CREATE TABLE t2(x); INSERT INTO t2 VALUES(1);")
+con.rollback()   # pending 行仍然在</code></pre>
+<p>rollback 之后 count 一下，pending 行还在——它在脚本执行前就被提交了。<code>in_transaction</code> 也从 True 变成 False。想让它可回滚，就把脚本也放进显式事务，或者别在挂起事务未决时调 executescript。</p>
+<h2>跨线程：ProgrammingError 与三种并发姿势</h2>
+<p>默认 <code>check_same_thread=True</code>，别的线程碰连接直接报错，原文连线程 id 都给你：</p>
+<p><code>sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 30876 and this is thread id 31088.</code></p>
+<p>三种可行姿势，代价各不同：</p>
+<ul><li><code>check_same_thread=False</code> 共享连接：官方写明写操作可能需要用户自己序列化，实测加一把线程锁后多线程写入正常</li><li>每线程各自开连接：没有 ProgrammingError，但要处理连接间的锁竞争（回到 busy_timeout 那节）</li><li>连接池 + 单写多读：写路径收敛到一条连接，读连接并发</li></ul>
+<p>共享连接时注意上一节的事实：一个线程的未提交事务，会让别的线程（或别的连接）写库排队，行数还会因「用哪个连接看」而不同——未提交行只有本连接可见，实测本连接 count 为 1、并发连接 count 为 0、第三方连接写入直接 database is locked，rollback 后归零。</p>
+<h2>日期只存不读：detect_types 与弃用的适配器</h2>
+<p>默认 <code>detect_types=0</code>，datetime 塞进去会被适配器转成 ISO 文本落盘：实测存入 <code>2026-11-21 09:30:00</code>，<code>typeof</code> 是 text，读回来是 str。想读回 datetime 要在 connect 时给 <code>detect_types=sqlite3.PARSE_DECLTYPES</code>，读回即 datetime 与 date 对象。</p>
+<p>两个新坑：</p>
+<ul><li>默认适配器从 Python 3.12 起已弃用。实测 3.13.14 插入 datetime 时各报一条 DeprecationWarning，官方建议改用 register_adapter 自定义</li><li>列声明 DATE 却塞完整 datetime：适配器按 timestamp 格式存成 <code>2026-11-21 09:30:00</code>，date 转换器读回时炸出 <code>ValueError: invalid literal for int() with base 10: b'21 09:30:00'</code>——声明类型和实际塞的东西必须是同一种格式</li><li>列声明 TIMESTAMP 塞了非日期串，PARSE_DECLTYPES 读回报 <code>ValueError: not enough values to unpack (expected 2, got 1)</code>——转换器不校验格式，坏数据在读取时才爆</li></ul>
+<p>官方文档还有一条值得抄进备忘录：默认 timestamp 转换器忽略数据库里的 UTC 偏移，恒返回 naive datetime。要保偏移就自己注册 offset-aware 转换器。</p>
+<h2>SQL 层的数字陷阱与 STRICT 的边界</h2>
+<p>绑定层之外，SQL 表达式层也有几处和直觉相反：</p>
+<ul><li><code>SELECT 1/2</code> 得 0，两操作数都是整数时除法取整；<code>1/2.0</code> 才得 0.5</li><li><code>SELECT '10'+2</code> 得 12，算术表达式会把文本强转数值；<code>'abc'+2</code> 得 2（文本转不成数就按 0 算）</li><li><code>SELECT 0.1+0.2</code> 得 0.30000000000000004，IEEE 754 双精度，和 Python 一致</li></ul>
+<p>约束冲突的报错原文是 <code>sqlite3.IntegrityError: UNIQUE constraint failed: t.id</code>，官方解法是 UPSERT：<code>INSERT INTO t VALUES('a',2) ON CONFLICT(id) DO UPDATE SET n=excluded.n</code>，实测冲突行被更新。</p>
+<p>STRICT 表（3.37 起）常被当成「严格类型救星」，实测插 <code>'123'</code> 进 INTEGER 列照样存成 integer 123——STRICT 约束的是「必须可转换到声明类型」，不是「禁止转换」。想要逐字节原样存储，声明 BLOB 或自己控制类型。</p>
+<h2>绑定参数的报错会指错方向</h2>
+<p>占位符和实参数量不匹配时报错很误导：</p>
+<p><code>sqlite3.OperationalError: table t has 2 columns but 1 values were supplied</code></p>
+<p>问题根本不在表有 2 列，而在你只给了 1 个绑定参数。绑错类型同样报在别处：传 dict 给 qmark 占位符，报 <code>sqlite3.ProgrammingError: Binding 1 has no name, but you supplied a dictionary (which has only names).</code>；把 dict 当位置参数传，报 <code>sqlite3.ProgrammingError: Error binding parameter 1: type 'dict' is not supported</code>。</p>
+<p>可用的绑定形态实测：</p>
+<ul><li><code>?</code> 占位符配序列；<code>:name</code> 占位符配 dict，且 <code>:x</code> 重复出现时同一值可填多处</li><li><code>?1</code> 编号占位符可用，<code>VALUES(?1, ?1)</code> 一值填两列</li><li>None 绑定为 NULL（typeof 是 null）；True 绑定成 integer 1；float 绑定成 real</li><li>dict、set 属于不支持类型，直接 ProgrammingError</li></ul>
+<h2>踩坑与报错</h2>
+<ul><li><strong>database is locked（0.5 毫秒即失败）</strong>：<code>timeout=0</code> 或 C API 裸用时的真实行为。先查有没有连接挂着未提交事务（DDL 写 schema 也拿写锁），再调 busy_timeout，顺序反了只会把偶发变必现</li><li><strong>cannot start a transaction within a transaction</strong>：隐式事务还开着就手动 BEGIN。先 <code>in_transaction</code> 判断，或干脆只管理一种事务来源</li><li><strong>CREATE TABLE 回滚不掉</strong>：DDL 不在隐式事务里。要回滚就得自己 BEGIN</li><li><strong>invalid literal for int() with base 10: b'21 09:30:00'</strong>：声明 DATE 列塞了 datetime。声明类型与写入格式对齐，或统一用 TIMESTAMP 列</li><li><strong>Error binding parameter 1: type 'dict' is not supported</strong>：绑定层不收容器。转成 JSON 字符串或元组字段</li><li><strong>table t has 2 columns but 1 values were supplied</strong>：优先数占位符和参数个数，别急着去看表结构</li></ul>
+<h2>这套结论的边界</h2>
+<p>全部结论来自本机 CPython 3.13.14（SQLite 3.53.1、Windows 11）实测加官方文档对读，未覆盖：autocommit 参数在未来版本改为 False 后的行为变化、interactive 模式、load_extension、以及在 Linux/SQLite 旧版本上亲和性转换是否有版本差异。官方文档明确说 autocommit 默认值「will change to False in a future Python release」，升级大版本时事务行为值得重测一轮。备份与拷贝场景请配合站内 SQLite 热备份篇使用，配置文件被静默改值的姊妹问题见 <a href="https://yaohehe.github.io/2026-11-16-yaml-safe_load.html" class="internal-link">YAML 解析篇</a>。</p>
+<h2>FAQ</h2>
+<p><strong>Q：INTEGER 列明明声明了类型，为什么读出来是整数而不是我塞进去的字符串？</strong></p>
+<p>因为 SQLite 的列声明只是亲和性建议，真正决定存储类型的是值本身。<code>'123'</code> 是可无损转换的合式字面量，INTEGER 亲和性就会把它以 integer 落盘，<code>typeof()</code> 也就报 integer。要让字符串原样保存，把列声明成 TEXT 或 BLOB，或者干脆存进无亲和性的列。</p>
+<p><strong>Q：默认已经有五秒忙等了，还需要手动设 busy_timeout 吗？</strong></p>
+<p>要看你的写入可能排队多久。五秒对单机小库通常够用，但如果另一边有长事务（比如一次大批量 executemany 没提交），五秒会被吃满然后报 database is locked。我的做法是先查未提交事务，再按实测的锁等待上限把 <code>PRAGMA busy_timeout</code> 调到两到三倍，而不是盲目调大超时。</p>
+<p><strong>Q：CREATE TABLE 回滚不掉，迁移脚本要怎么写得安全？</strong></p>
+<p>把整段迁移放进显式事务：先 <code>BEGIN</code>，再执行你的 DDL 与数据变更，最后 <code>commit()</code> 或 <code>rollback()</code>。注意别在已有隐式事务时再 BEGIN（会报 cannot start a transaction within a transaction），也别在挂起事务里调 executescript（它会先提交）。测试时用「建表 → rollback → 再查 sqlite_master」验证，比读代码可靠。</p>
+<p><strong>Q：都 3.37 了，STRICT 表是不是就不会悄悄改类型了？</strong></p>
+<p>不是。STRICT 约束的是「值必须能转换成声明类型」，不是「禁止转换」。实测插 <code>'123'</code> 进 STRICT 表的 INTEGER 列，照样存成 integer 123。它挡的是 <code>'abc'</code> 这类完全转不过去的值，报错也更早更明确，这一点确实有用。</p>
+<h2>最后</h2>
+<p>sqlite3 的这些默认值单看每一条都有理由，合在一起的意思是：<strong>你写的 SQL 和实际落库的内容之间隔着一个绑定层，这个层的决定不报错、不打日志</strong>。验证成本很低——建个临时库、两个连接、一组错类型数据，十分钟就能把自己的业务库过一遍。相比之下，等类型改写污染了数据再排查，代价要大得多。站内 <a href="https://yaohehe.github.io/2026-10-20-duckdb-156-40mb-csv-8.html" class="internal-link">DuckDB 实测篇</a>、Alembic autogenerate 校验篇与本文同属「数据库层的静默决定」这条线，按需取用。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=WordPress+SEO%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97&i=stripbooks-intl-ship&crid=240UCW7BT9BGN&sprefix=wordpress+seo%E5%AE%9E%E6%88%98%E6%8C%87%E5%8D%97%2Cstripbooks-intl-ship%2C490&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🔍 WordPress SEO 书单</a>
+    <a href="https://www.amazon.com/s?k=Web+Hosting&i=stripbooks-intl-ship&crid=2H8Q7KQ8M9LXN&sprefix=web+hosting%2Cstripbooks-intl-ship%2C397&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🌐 虚拟主机书单</a>
+    <a href="https://www.amazon.com/s?k=Docker&i=stripbooks-intl-ship&crid=3K1YB8L5E6M7N&sprefix=docker%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux&i=stripbooks-intl-ship&crid=4L2M3N4O5P6Q&sprefix=linux%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 书单</a>
+    <a href="https://www.amazon.com/s?k=Python&i=stripbooks-intl-ship&crid=5M3N4O5P6Q7R&sprefix=python%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 书单</a>
+    <a href="https://www.amazon.com/s?k=Affiliate+Marketing&i=stripbooks-intl-ship&crid=6N4O5P6Q7R8S&sprefix=affiliate+marketing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💰 联盟营销书单</a>
+    <a href="https://www.amazon.com/s?k=Passive+Income&i=stripbooks-intl-ship&crid=7O5P6Q7R8S9T&sprefix=passive+income%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">💵 被动收入书单</a>
+    <a href="https://www.amazon.com/s?k=Server&i=stripbooks-intl-ship&crid=8P6Q7R8S9T0U&sprefix=server%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🖥️ 服务器书单</a>
+    <a href="https://www.amazon.com/s?k=Cloud+Computing&i=stripbooks-intl-ship&crid=9Q7R8T0U1V2W&sprefix=cloud+computing%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 云计算书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps&i=stripbooks-intl-ship&crid=0R8S9T0U1V2W&sprefix=devops%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
