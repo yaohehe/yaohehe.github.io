@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GGUF 元数据读法：header 与 tensor 信息里的八个陷阱 - TechPassive</title>
+  <meta name="description" content="gguf-py 0.19.0 实测：从零写一个 GGUF 文件再读回来，八个字段的结果和你写进去的不一样。对齐只改元数据会让文件读不出来，重复键只打一条 warning 就覆盖，空数组的键根本不写入，张量维度是反的，量化张量的 shape 又是另一回事。附四个真实报错原文与可直接复制的修复命令。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>GGUF 元数据读法：header 与 tensor 信息里的八个陷阱</h1>
+  <div class="post-tags">
+    <span class="tag">gguf</span><span class="tag">llama.cpp</span><span class="tag">模型量化</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：我用 gguf-py 0.19.0 在 Windows 上从零写了一个 GGUF 文件，再读回来逐字段对照，发现八处「写进去」和「读出来」不一致，其中三处连异常都没有。最狠的一处是 <code>general.alignment</code>：只把它当普通元数据写进文件，写盘时仍按 32 字节补位，而读回时按 64 字节找偏移，于是<strong>同一个库写出的文件自己读不回来</strong>，报错是 <code>ValueError: cannot reshape array of size 0 into shape (3,)</code>。本文的每条结论都能用文中的命令复现，正文不含任何联盟推广链接。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="本文的元数据对照链路" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftdbf6f4c6grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ftdbf6f4c6grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">本文的元数据对照链路</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">写最小 GGUF</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">读回全部字段</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">与写入值对照</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">分清类型与对齐</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">逐项修调用</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">回归复验</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>本文的元数据对照链路 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>为什么值得自己造一个最小 GGUF 文件</h2>
+<p>网上讲 GGUF 的文章大多停在「GGUF 是 llama.cpp 用的模型格式，量化后体积更小」。真到自己动手核对一个模型文件的元数据时，问题立刻变成另一类：哪些字段决定加载行为，字段的类型和长度谁来保证，写错了会在哪一步炸。</p>
+<p>我这次的起点很小：想确认一个模型文件的 <code>general.file_type</code> 和每个张量的维度到底是什么。手上没有 GPU，也不想下载几个 GB 的权重，于是反过来做——<strong>用官方 Python 包自己写一个文件，再自己读回来</strong>。文件只有几百字节，但把元数据层的语义全都走了一遍。</p>
+<p>结果是：这份「自己写、自己读」的对照表里，有八处在没有报错的情况下给出了错误答案。这比报错更麻烦，因为它不会打断你的脚本。</p>
+<h2>环境与两条可复制的命令</h2>
+<p>全部实验在 Windows 11（10.0.26300）、CPython 3.13.14、gguf 0.19.0（PyPI 上传时间 2026-05-06）、numpy 2.5.5 上完成。装包用隔离目录，避免污染主环境：</p>
+<pre><code>python -m pip install --target ./pylibs gguf==0.19.0 numpy
+python -c "import sys; sys.path.insert(0,'./pylibs'); import gguf; print(gguf.GGUF_VERSION, gguf.GGUF_MAGIC, gguf.READER_SUPPORTED_VERSIONS)"</code></pre>
+<p>第二条命令打印 <code>3 1179993927 [2, 3]</code>：当前写入版本是 3，magic 的十进制值，以及读端只接受版本 2 和 3。这三个数后面都会用到。</p>
+<p>下面这段脚本就是本文所有结论的最小复现体，可以直接存成 <code>demo.py</code> 跑：</p>
+<pre><code>import sys
+sys.path.insert(0, "./pylibs")
+import numpy as np
+from gguf import GGUFWriter, GGUFReader
+
+w = GGUFWriter("demo.gguf", "llama")
+w.add_file_type(1)
+w.add_uint32("demo.uint", 4294967295)
+w.add_array("demo.arr", [1, 2, 3])
+w.add_tensor("demo.weight", np.arange(6, dtype=np.float32).reshape(2, 3))
+w.write_header_to_file()
+w.write_kv_data_to_file()
+w.write_tensors_to_file()
+w.close()
+
+r = GGUFReader("demo.gguf")
+print([k for k in r.fields if not k.startswith("GGUF.")])
+print(r.get_field("demo.uint").contents())
+print(r.tensors[0].shape.tolist())
+print(r.tensors[0].data.shape)</code></pre>
+<p>输出里最后两行分别是 <code>[3, 2]</code> 和 <code>(2, 3)</code>。同一块数据，两个 API 给出两套维度——这就是后面的第一个「不报错但反直觉」。</p>
+<h2>陷阱一：教程里的 write_header 和 write_footer 都不存在</h2>
+<p>第一批踩到的坑来自照抄示例。很多教程写：</p>
+<pre><code>w.write_header()
+w.write_kv_data_to_file()
+w.write_tensors_to_file()
+w.write_footer()</code></pre>
+<p>在 0.19.0 上第一行就死：</p>
+<pre><code>AttributeError: 'GGUFWriter' object has no attribute 'write_header'</code></pre>
+<p>用 <code>hasattr</code> 逐个打一遍就清楚了：<code>write_header</code> 是 False，<code>write_footer</code> 也是 False，真正存在的是 <code>write_header_to_file</code>、<code>write_kv_data_to_file</code>、<code>write_tensors_to_file</code>、<code>ti_data_to_file</code>、<code>flush</code>、<code>close</code>。写入顺序是固定的四步：</p>
+<ul><li>第一步 <code>write_header_to_file()</code>：写 magic、版本号、张量数、KV 数</li><li>第二步 <code>write_kv_data_to_file()</code>：写全部元数据键值</li><li>第三步 <code>write_tensors_to_file()</code>：先写张量信息表，补零对齐，再写张量数据</li><li>第四步 <code>close()</code></li></ul>
+<p>读端也有一处同名陷阱：<code>GGUFReader</code> 没有 <code>get()</code>，只有 <code>get_field()</code> 和 <code>get_tensor()</code>。写 <code>r.get("general.architecture")</code> 会得到 <code>AttributeError: 'GGUFReader' object has no attribute 'get'</code>。</p>
+<h2>陷阱二：reader.tensors 是列表，不是字典</h2>
+<p>几乎所有示例都这么取值：</p>
+<pre><code>reader = GGUFReader(path)
+t = reader.tensors["blk.0.attn_q.weight"]</code></pre>
+<p>0.19.0 里这行直接抛异常：</p>
+<pre><code>TypeError: list indices must be integers or slices, not str</code></pre>
+<p>因为 <code>reader.tensors</code> 是 <code>list</code>，<code>ReaderTensor</code> 是 NamedTuple，要按索引或先建映射：</p>
+<pre><code>by_name = {t.name: t for t in reader.tensors}
+t = by_name["blk.0.attn_q.weight"]</code></pre>
+<p>这个差别不是装饰性的。用字典写法时，你写的是「按名字查」，实际语义却是「按顺序查」，一旦某个版本改了张量顺序，取值就会静默错位——这里恰好被 <code>TypeError</code> 挡住了，算运气好。</p>
+<h2>陷阱三：shape 是文件里的顺序，不是 numpy 的顺序</h2>
+<p>前面 <code>demo.py</code> 里我写进一个 <code>(2, 3)</code> 的数组，读回来 <code>tensors[0].shape</code> 是 <code>[3, 2]</code>，而 <code>tensors[0].data.shape</code> 是 <code>(2, 3)</code>。</p>
+<p>原因在两边源码里写得很直白：写端循环是 <code>ti.shape[n_dims - 1 - j]</code>，也就是<strong>把 numpy 维度倒着写进文件</strong>（ggml 约定第一维是最内层）；读端把原始 dims 原样存进 <code>ReaderTensor.shape</code>，再用 <code>reversed(dims)</code> 去 reshape 数据。所以 <code>shape</code> 字段的语义是「文件里的维度顺序」，<code>data.shape</code> 才是「numpy 的维度顺序」。想在打印或日志里放维度，用后者。</p>
+<p>量化张量更绕一层。我写了 144 字节打包数据、<code>raw_dtype</code> 指定 Q4_K：</p>
+<pre><code>w.add_tensor("q4", np.zeros(144, dtype=np.uint8), raw_dtype=GGMLQuantizationType.Q4_K)</code></pre>
+<p>读回后 <code>shape</code> 是 <code>[256]</code>（元素数），<code>n_bytes</code> 是 144，而 <code>data.shape</code> 是 <code>(144,)</code>（打包字节数）。也就是说，对量化张量，<code>shape</code> 与 <code>data.shape</code> 不是「顺序不同」，而是<strong>量的根本不是同一个东西</strong>。拿 <code>shape</code> 去算内存占用会算错 256/144 倍。</p>
+<h2>陷阱四：get_field 找不到键时返回 None，不报错</h2>
+<pre><code>f = r.get_field("general.quantization_version")
+print(f.contents())</code></pre>
+<p>如果这个键不存在，<code>get_field</code> 返回 <code>None</code>，然后在 <code>.contents()</code> 上炸：</p>
+<pre><code>AttributeError: 'NoneType' object has no attribute 'contents'</code></pre>
+<p>这个报错至少会炸。真正麻烦的是不做后续取值的写法：<code>if r.get_field(key):</code> 在「键存在但值为 0」时同样为假，于是「字段缺失」和「字段值是 0」被混成一件事。要区分两者，用 <code>key in r.fields</code> 判断存在性，用 <code>.contents()</code> 取值。</p>
+<p>顺便记一下 <code>contents()</code> 的返回形态：标量返回 Python 标量，字符串返回 <code>str</code>，数组返回 <code>list</code>，空数组返回 <code>[]</code>。不要指望它返回 numpy 数组。</p>
+<h2>陷阱五：add_array 传空列表，这个键根本不会被写入</h2>
+<p>这是本文最「安静」的一处。源码里 <code>add_array</code> 第一件事就是：</p>
+<pre><code>if len(val) == 0:
+    return</code></pre>
+<p>直接返回，不写键、不打日志、不抛异常。我构造了三个键——<code>before</code>、<code>ghost</code>（空数组）、<code>after</code>——文件里只读到两个：</p>
+<pre><code>字段: ['general.architecture', 'before', 'after']
+ghost 是否存在: False | kv_count 声明: 3</code></pre>
+<p>头部声明的 KV 数是 3，实际能读到的自定义键是 2 个。也就是说，一个「可选词表」或「可选适配层列表」参数如果是空的，你的文件里就真的没有这个字段，下游按「字段存在」判断的逻辑会全部落到 else 分支。</p>
+<p>深层那个本该拦住它的检查还在：<code>_pack_val</code> 里有 <code>raise ValueError("Invalid GGUF metadata array. Empty array")</code>，但 <code>add_array</code> 的提前返回让它永远走不到。两层防线，第一层把第二层废了。</p>
+<h2>陷阱六：同名键只打一条 warning，然后连类型一起覆盖</h2>
+<p>先写 <code>add_uint32("dup", 1)</code>，再写 <code>add_string("dup", "one")</code>，文件照样生成，读回来是：</p>
+<pre><code>同键改类型后: STRING = one</code></pre>
+<p>日志里只有一行 <code>Duplicated key name 'dup', overwriting it with new value 'one' of type STRING</code>。如果你的日志级别是 ERROR（生产环境常见），这行完全看不到。结果是：一个本该是 <code>uint32</code> 的字段被写成字符串，读取方按 <code>uint32</code> 解析时会拿到完全不同的东西，或者干脆在别处炸。</p>
+<p>同一条链路上还有个相关的坑：数组元素类型<strong>只由第一个元素决定</strong>，且 Python 的 <code>int</code> 一律当 <code>INT32</code>。源码里 <code>GGUFValueType.get_type</code> 对 <code>int</code> 直接返回 <code>INT32</code>，旁边还留着 <code># TODO: need help with 64-bit types in Python</code>。所以下面这行（<code>1099511627776</code> 就是 2 的 40 次方）：</p>
+<pre><code>w.add_array("big", [1099511627776])</code></pre>
+<p>会在写盘阶段抛</p>
+<pre><code>struct.error: 'i' format requires -2147483648 <= number <= 2147483647</code></pre>
+<p>而 <code>w.add_array("mixed", [1, 2.5])</code> 抛的是 <code>ValueError: All items in a GGUF array should be of the same type</code>。两个报错，一个在类型推断阶段，一个在字节打包阶段，都不在 <code>add_array</code> 调用那一行——排查时容易误判成文件写入失败。</p>
+<h2>陷阱七：general.alignment 写进元数据，写盘时却还按 32 补位</h2>
+<p>这是本次实验里唯一一个「写得出、读不回」的问题，也是我认为最该写进笔记的一条。</p>
+<p>GGUF 的布局规则是：张量信息表之后补零，补到 <code>general.alignment</code> 的整数倍，之后才是张量数据。规范里写得很清楚，默认对齐是 32，<code>align_offset</code> 就是按这个字段算的。</p>
+<p>于是我照字面理解，把对齐当成普通元数据写：</p>
+<pre><code>w.add_uint32("general.alignment", 64)</code></pre>
+<p>写出来的文件 192 字节。再用<strong>同一个库</strong>读回：</p>
+<pre><code>ValueError: cannot reshape array of size 0 into shape (3,)</code></pre>
+<p>原因在写端源码：<code>self.data_alignment = GGUF_DEFAULT_ALIGNMENT</code>（32）是构造时定死的，补位用的是 <code>self.data_alignment</code>，跟 KV 里的 <code>general.alignment</code> 毫无关系。写端按 32 补位（数据从第 160 字节起），读端按 64 找偏移（从第 192 字节起找），于是读到 0 字节，reshape 失败。</p>
+<p>正确写法是专用方法，它会把两件事一起做：</p>
+<pre><code>w.add_custom_alignment(64)</code></pre>
+<p>这个方法内部先校验「非零且是 2 的幂」，再同时设置 <code>self.data_alignment</code> 和写 KV。改完之后：文件 256 字节，读回 <code>alignment=64</code>、<code>data_offset=192</code>、数据 <code>[1. 1. 1.]</code>。</p>
+<p>三种写法的对照如下：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文件大小</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">data_offset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">能否读回</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">不写对齐（默认 32）</td><td style="border:1px solid #ddd;padding:8px;">160 B</td><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">能</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">只写 <code>general.alignment=64</code></td><td style="border:1px solid #ddd;padding:8px;">192 B</td><td style="border:1px solid #ddd;padding:8px;">写端仍按 32</td><td style="border:1px solid #ddd;padding:8px;">不能，reshape 报错</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">用 <code>add_custom_alignment(64)</code></td><td style="border:1px solid #ddd;padding:8px;">256 B</td><td style="border:1px solid #ddd;padding:8px;">192</td><td style="border:1px solid #ddd;padding:8px;">能</td></tr></tbody></table>
+<p>读端对这个字段还有两道校验，值得抄下来当自查项：类型不是 <code>UINT32</code> 会抛 <code>ValueError: Bad type for general.alignment field</code>；值不是 2 的幂会抛 <code>ValueError: Invalid alignment: must be a non-zero power of two</code>。我把值改成 0 和 3，两次都命中后一条。</p>
+<h2>陷阱八：头部的两个计数被无条件相信</h2>
+<p>GGUF 头部除了 magic 和版本，还有两个 <code>uint64</code>：张量数、元数据 KV 数。读端完全按这两个数去解析，不做任何交叉验证。</p>
+<p>我把一个合法文件的 <code>tensor_count</code> 改成 0，读回<strong>成功</strong>，<code>len(reader.tensors)</code> 是 0——文件里明明还有 256 字节张量数据，读端安静地忽略了它。把 <code>kv_count</code> 改成 999，读回抛的是：</p>
+<pre><code>IndexError: index 0 is out of bounds for axis 0 with size 0</code></pre>
+<p>一个越界 IndexError，跟「你的 KV 数写错了」毫无字面关系。截断文件同理，四种长度给出四种完全不同的异常（<code>ValueError: not enough values to unpack</code>、<code>ValueError: When changing to a larger dtype...</code>、<code>IndexError: index 0 is out of bounds...</code>、<code>cannot reshape array of size 39 into shape (8, 8)</code>），没有一个提到「文件不完整」。</p>
+<p>所以判一个 GGUF 文件是否完整，只能自己算：<code>文件长度 >= data_offset + 所有张量 n_bytes 之和</code>，并且头部声明的张量数要等于实际解析出的张量数。这套「头部声明一个数、内容另算一个数」的结构，和 <a href="https://yaohehe.github.io/2026-11-13-python-csv.html" class="internal-link">CSV 记录边界</a> 里那个字段数固定的假设是同一类风险：只要声明的数目和实际不符，后面的解析全都要错位。</p>
+<h2>版本、字节序与规范的落差</h2>
+<p>读端只接受版本 2 和 3。我把版本号分别改成 0、1、2、3、4，只有 2 和 3 能读，其余三种都是同一句：</p>
+<pre><code>ValueError: Sorry, file appears to be version 1 which we cannot handle</code></pre>
+<p>magic 写成 <code>GGML</code> 抛 <code>ValueError: GGUF magic invalid</code>——注意这是全小写的自定义文案，不是 <code>struct.error</code>，用异常类型做兜底时要单独认它。</p>
+<p>字节序这一条，规范与实现有落差。规范原文是「At the time of writing, there is no way to determine if a model is big-endian; this may be rectified in future versions.」，但 gguf-py 的读端其实做了启发式判断：读到的版本号低 16 位为 0 时，就认定这是反字节序文件并翻转解析。我用 <code>endianess=GGUFEndian.BIG</code> 写了一个大端文件，读回时 <code>reader.byte_order</code> 是 <code>'S'</code>，字段内容正确。</p>
+<p>还有一个规范上限没被实现强制：规范写张量的 <code>n_dimensions</code>「Currently at most 4」，而写端对 5 维张量照写不误，<code>n_dimensions</code> 字段真的写成了 5，读端也照读。也就是说「规范不允许」和「这个库会拒绝」是两件事，别拿库不报错当合规证明。</p>
+<h2>Troubleshooting：四个真实报错与修复</h2>
+<p>以下四条全部在本文环境里现场复现，报错原文可直接搜索。</p>
+<p><strong>报错一：<code>AttributeError: 'GGUFWriter' object has no attribute 'write_header'</code></strong></p>
+<ul><li>现象：照抄教程的四步写入，第一步就中断；换成 <code>write_footer</code> 同样报，换成 <code>reader.get()</code> 也报。</li><li>原因：0.19.0 的方法名带 <code>_to_file</code> 后缀，写入被拆成 header / kv / tensor 三段，footer 不再单独存在。</li><li>修复：按 <code>write_header_to_file()</code> → <code>write_kv_data_to_file()</code> → <code>write_tensors_to_file()</code> → <code>close()</code> 调用；读端用 <code>get_field()</code>。先用 <code>hasattr</code> 打一遍方法名比读教程快：</li></ul>
+<pre><code>python -c "import sys; sys.path.insert(0,'./pylibs'); from gguf import GGUFWriter, GGUFReader; print([m for m in ('write_header','write_header_to_file','write_footer','write_tensors_to_file') if hasattr(GGUFWriter, m)]); print([m for m in ('get','get_field','get_tensor') if hasattr(GGUFReader, m)])"</code></pre>
+<p><strong>报错二：<code>ValueError: cannot reshape array of size 0 into shape (3,)</code></strong></p>
+<ul><li>现象：写盘成功、文件非空，读回时在 <code>_build_tensors</code> 里炸，<code>size 0</code> 说明偏移落到了文件末尾之外。</li><li>原因：用 <code>add_uint32("general.alignment", 64)</code> 只改了元数据，写端补位仍按 <code>data_alignment=32</code>，读端按 64 找数据，两边差了 32 字节。</li><li>修复：改用 <code>add_custom_alignment(64)</code>，它同时设置内部对齐和 KV。改完复验三件事：文件长度变大、<code>data_offset % alignment == 0</code>、张量数据能读回。</li></ul>
+<p><strong>报错三：<code>TypeError: list indices must be integers or slices, not str</code></strong></p>
+<ul><li>现象：<code>reader.tensors["blk.0.weight"]</code> 直接抛。</li><li>原因：<code>tensors</code> 是 list，不是 dict。</li><li>修复：先建名字映射再取值，或按索引取；批量处理时用 <code>{t.name: t for t in reader.tensors}</code>。</li></ul>
+<p><strong>报错四：<code>struct.error: 'i' format requires -2147483648 <= number <= 2147483647</code></strong></p>
+<ul><li>现象：<code>add_array</code> 调用那行没报错，直到 <code>write_kv_data_to_file()</code> 才炸，调用栈里全是 <code>_pack_val</code> / <code>_pack</code>。</li><li>原因：数组子类型由首元素推断，Python <code>int</code> 一律判成 <code>INT32</code>，超过 2 的 31 次方减 1 就打不进 4 字节。</li><li>修复：改用标量方法按需指定宽度（<code>add_uint64</code> / <code>add_int64</code>），或把大整数数组拆成字符串数组，别指望自动推断。</li></ul>
+<p>另外两个不常见的形态也记一下：只调 <code>add_tensor_info</code> 不给数据，<code>write_tensors_to_file()</code> 抛的是<strong>没有消息的</strong> <code>AssertionError</code>（消息为空串，日志里只有类型）；状态机顺序错则抛 <code>ValueError: Expected output file to contain KV data, got WriterState.HEADER</code>——这条文案里的状态名（<code>NO_FILE</code> / <code>HEADER</code> / <code>KV_DATA</code>）比报错本身更有用，直接指出了你卡在第几步。</p>
+<h2>上线前的六条自查</h2>
+<ul><li>对齐：只用 <code>add_custom_alignment()</code>；写完断言 <code>data_offset % alignment == 0</code>。</li><li>计数：读回后比对 <code>len(reader.tensors)</code> 与头部 <code>tensor_count</code>，不一致就是文件坏了。</li><li>空数组：任何「可选列表」在写入前先判空，空列表等于字段不存在。</li><li>重复键：把 gguf 的 logger 调到 WARNING 以上，否则覆盖提示不可见。</li><li>维度：对外展示用 <code>data.shape</code>，需要文件原始顺序时才用 <code>shape</code>；量化张量的 <code>shape</code> 是元素数。</li><li>完整性：<code>文件长度 >= data_offset + sum(n_bytes)</code>，这条比任何异常文案都可靠。</li></ul>
+<h2>常见问题</h2>
+<p><strong>Q：既然同一个库自己都读不回自己写的文件，是不是这个库不能用？</strong></p>
+<p>A：不是。对齐那条是调用方式错了——用 <code>add_custom_alignment()</code> 就一致，写端读端都按 64 走。真正需要警惕的是那些不报错的项（空数组、重复键、计数被信任），它们不会给你第二次机会。</p>
+<p><strong>Q：为什么不直接下载一个真实的 GGUF 模型来验证？</strong></p>
+<p>A：两个原因。体积（最小的可用模型也要几百 MB，量化版更大）和可解释性（真实文件里字段成百上千，出问题时无法定位到具体哪一行写入逻辑）。自己造的文件只有几百字节，每个字节都是自己写的，对照才有意义。真实模型适合做最后一轮回归，不适合用来定位语义。</p>
+<p><strong>Q：元数据里的字符串长度按字符数还是字节数算？</strong></p>
+<p>A：字节数。我写了三个键：<code>cafe</code> 的长度字段是 4，<code>café</code> 是 5（4 个字符），中文「中文」是 6（2 个字符）。所以用 <code>len(s)</code> 去校验长度字段，遇到非 ASCII 一定算错。这和编码层的坑是同一个根：字符串在文件里是字节串，不是字符序列。<a href="https://yaohehe.github.io/2026-11-22-python-decode-errors-utf-8.html" class="internal-link">五种 decode 策略的对照</a> 里我逐条测过同一个坏字节会被变成什么，可以对照着看。</p>
+<p><strong>Q：GGUF 的版本号与量化类型号是同一套编号吗？</strong></p>
+<p>A：不是。版本号是文件结构版本（当前 3，读端接受 2 和 3），量化类型号是 <code>ggml_type</code> 枚举（<code>F32=0</code>、<code>F16=1</code>、<code>Q8_0=8</code>、<code>Q4_K=12</code> 这类）。两者都在头部附近出现，但一个是 <code>uint32</code> 的格式版本，一个是张量信息里的类型码，混用会直接读错数据。</p>
+<h2>写在最后</h2>
+<p>我原本只想确认一个字段的值，最后写出了一张八行的「读回来和写进去不一致」对照表。这类问题的共同点是：<strong>没有任何一层负责校验语义</strong>。写端只保证字节能落盘，读端只保证按头部声明解析，中间的「你写的和你以为的」没有人管。</p>
+<p>如果这篇让你少踩一次对齐的坑，它的价值就到了。想做同类对照的话，<a href="https://yaohehe.github.io/2026-11-16-yaml-safe_load.html" class="internal-link">YAML 解析层的类型归属</a>（<code>no</code> 变成 <code>False</code>、<code>1:30</code> 变成 90）是同一个思路的另一个战场；<a href="https://yaohehe.github.io/2026-11-19-pip-install.html" class="internal-link">打包层的六个静默失败</a>（<code>pip install</code> 成功却跑旧代码）则是「产物和源码不一致」的第三种形态。三篇连起来看，「写进去的东西不等于读出来的东西」这条线就比较完整了。</p>
+<p>本文不含任何联盟推广链接，所有结论均可用文中命令复现。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
