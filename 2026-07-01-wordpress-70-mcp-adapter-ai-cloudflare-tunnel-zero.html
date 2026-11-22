@@ -84,11 +84,11 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   <div class="content">
     <p>把 mcp-adapter 装上之后，AI 真的可以直接读写你的站点——但同时你刚把 <code>/wp-json/mcp/mcp-adapter-default-server</code> 暴露到了公网。这条 REST 端点接受任何带 Application Password 的请求，包括来自 bot、扫描器、以及 prompt injection 攻击者的请求。</p>
 <p>如果你不打算给整个站点加一道 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Zero Trust，mcp-adapter 就是一个被精心包装的、可被批量枚举的 REST API。</p>
-<p>这篇接 6/17 的「<a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel 零端口方案」和 6/30 的「<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 MCP 集成实战」，是「AI 集成层」的安全收尾篇。我会讲清楚 6 个真实陷阱，以及如何用 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel + Zero Trust Service Auth + mcp-adapter 自带的能力白名单，把 MCP 端点压缩到「只有我本机的 Claude Code 才调得动」。</p>
+<p>这篇接 6/17 的「<a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel 零端口方案」和 6/30 的「<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 MCP 集成实战」，是「AI 集成层」的安全收尾篇。我会讲清楚 6 个真实陷阱，以及如何用 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel + Zero Trust Service Auth + mcp-adapter 自带的能力白名单，把 MCP 端点压缩到「只有我本机的 Claude Code 才调得动」。</p>
 <h2>架构预览：从 mcp-adapter 默认暴露到 Zero Trust 后的零信任通道</h2>
-<p>默认部署下，mcp-adapter 走 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 内置 REST API 路由：</p>
+<p>默认部署下，mcp-adapter 走 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 内置 REST API 路由：</p>
 <pre><code>/wp-json/mcp/mcp-adapter-default-server</code></pre>
-<p>这个端点的鉴权靠 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Application Password。任何拿到用户名 + Application Password 的人（包括 bot）都可以调用你注册的所有 Abilities，比如 <code>site-audit/find-broken-links</code>、<code>content/bulk-update-meta</code>。</p>
+<p>这个端点的鉴权靠 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Application Password。任何拿到用户名 + Application Password 的人（包括 bot）都可以调用你注册的所有 Abilities，比如 <code>site-audit/find-broken-links</code>、<code>content/bulk-update-meta</code>。</p>
 <p>接入 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel 之后，流量走向变成：</p>
 <pre><code>Claude Code (本机) → <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Edge (Zero Trust 自助登录) → cloudflared (内网回环) → 127.0.0.1/wp-json/mcp</code></pre>
 <p>关键的改变是：</p>
@@ -98,7 +98,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>4. <strong>mcp-adapter 0.5.0 的能力白名单</strong>——只把必要的 Abilities 暴露给 default server</p>
 <h2>🛠️ 前置准备</h2>
 <p>在开始之前确认你的环境：</p>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0+（2026-05-20 发布，mcp-adapter 已并入核心）</li><li>`<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/mcp-adapter` plugin v0.5.0（GitHub releases，2026-06 引入 observability 子系统）</li><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Abilities API（6.9+ 已合并到核心，`<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/abilities-api` 仓库 2026-02 归档）</li><li><a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> 账户（Free 套餐就够，Zero Trust 不要求付费）</li><li>一个域名已托管到 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a>（mcp.example.com 这种子域名）</li><li>已在 6/17 配置过 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel（如果没配过，参考 6/17 那篇的 cloudflared 安装步骤）</li></ul>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0+（2026-05-20 发布，mcp-adapter 已并入核心）</li><li>`<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/mcp-adapter` plugin v0.5.0（GitHub releases，2026-06 引入 observability 子系统）</li><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Abilities API（6.9+ 已合并到核心，`<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>/abilities-api` 仓库 2026-02 归档）</li><li><a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> 账户（Free 套餐就够，Zero Trust 不要求付费）</li><li>一个域名已托管到 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a>（mcp.example.com 这种子域名）</li><li>已在 6/17 配置过 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> Tunnel（如果没配过，参考 6/17 那篇的 cloudflared 安装步骤）</li></ul>
 <p>验证命令：</p>
 <pre><code># 验证 mcp-adapter 安装
 wp plugin list --allow-root | grep mcp-adapter
@@ -172,7 +172,7 @@ sudo systemctl status cloudflared</code></pre>
 <h3>Step 3：给 mcp.example.com 加 Zero Trust Self-Hosted Application</h3>
 <p>在 Zero Trust 控制台：</p>
 <p>1. Access → Applications → Add an application → Self-hosted</p>
-<p>2. Name: <code><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> MCP (Personal)</code></p>
+<p>2. Name: <code><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> MCP (Personal)</code></p>
 <p>3. Session duration: <code>24 hours</code>（不要选 Always，Service Token 会失效）</p>
 <p>4. Application domain: <code>mcp.example.com</code></p>
 <p>5. Identity providers: 选 <code>One-time PIN</code>（邮箱验证码）</p>
@@ -217,7 +217,7 @@ Apply to: Emails - your-email@example.com</code></pre>
 <pre><code>claude mcp list
 # 预期输出 wordpress-mcp: https://mcp.example.com/wp-json/mcp/mcp-adapter-default-server  (14 tools)</code></pre>
 <h3>Step 5：开启 mcp-adapter observability 写审计日志</h3>
-<p>v0.5.0 的 observability handler 会在 <code>tools/call</code> 之后回调 <code>record_event()</code>，把它接进 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自带的 debug log：</p>
+<p>v0.5.0 的 observability handler 会在 <code>tools/call</code> 之后回调 <code>record_event()</code>，把它接进 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自带的 debug log：</p>
 <pre><code>add_action( 'mcp_adapter_observability_event', function( $handler, $event, $payload ) {
     if ( 'mcp.request' !== $event ) {
         return;
@@ -239,12 +239,12 @@ Apply to: Emails - your-email@example.com</code></pre>
 <p>**修复**：必须装 Step 1 那个 mu-plugin。如果你跳过了这一步，mcp-adapter 就是一个被精心包装的、可被批量枚举的 REST API——任何能拿到 Application Password 的人（包括 prompt injection 攻击者）都能调 <code>plugin/install</code> 给你的站装后门。</p>
 <h3>陷阱 2：Application Password 配错导致 /wp-json/mcp 401 风暴</h3>
 <p>**症状**：nginx access log 大量 <code>401</code>，Claude Code 反复重试，mcp-adapter observability 里全是 <code>auth_failed</code>。</p>
-<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+ 引入了 <code>application_password_is_api_request</code> filter，要求 Application Password 请求必须命中特定 REST 路径，并且 HTTP Basic Auth 的用户名必须用 <code>user_login</code> 而不是 <code>user_email</code>。</p>
+<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+ 引入了 <code>application_password_is_api_request</code> filter，要求 Application Password 请求必须命中特定 REST 路径，并且 HTTP Basic Auth 的用户名必须用 <code>user_login</code> 而不是 <code>user_email</code>。</p>
 <p><strong>修复</strong>：</p>
 <pre><code>// 不要用 email，用 login
 $auth = 'Basic ' . base64_encode( 'my_wp_login:abcd EFGH ijkl MNOP qrst UVWX' );
 // 注意 Application Password 里的空格要保留</code></pre>
-<p>在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9 以下用 email 没事，但 7.0+ 会 401。验证命令：</p>
+<p>在 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9 以下用 email 没事，但 7.0+ 会 401。验证命令：</p>
 <pre><code>curl -s -o /dev/null -w "%{http_code}" -u "your_login:your_app_pwd" \
   "https://your-domain.com/wp-json/mcp/mcp-adapter-default-server" \
   -H "Content-Type: application/json" \
@@ -279,7 +279,7 @@ curl -s -H "CF-Access-Client-Id: xxx" -H "CF-Access-Client-Secret: yyy" \
 # 必须直接拿到 JSON，不能出现 302 重定向到 login 页</code></pre>
 <p>如果仍然 302，policy 顺序错了。或者你的 Service Token 名字是 <code>default</code>——<a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> 不允许用 <code>default</code> 这种保留字作 service token 名字。</p>
 <h3>陷阱 5：Abilities API 检测不到，mcp-adapter 启动静默失败</h3>
-<p>**症状**：装完 mcp-adapter 后 <code>tools/list</code> 返回空数组，但 <code>mcp-adapter-default-server</code> 已注册。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+ 站点，且 <code>wp_register_ability</code> 函数存在，但 <code>wp_get_abilities()</code> 返回 <code>[]</code>。</p>
+<p>**症状**：装完 mcp-adapter 后 <code>tools/list</code> 返回空数组，但 <code>mcp-adapter-default-server</code> 已注册。<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9+ 站点，且 <code>wp_register_ability</code> 函数存在，但 <code>wp_get_abilities()</code> 返回 <code>[]</code>。</p>
 <p>**根因**：Abilities 注册 hook 时机问题。多数 plugin 在 <code>init</code> hook 里注册，但 mcp-adapter 在 <code>plugins_loaded</code> 就开始抓了——注册的时机晚于 mcp-adapter 抓取时机。</p>
 <p><strong>修复</strong>：把 Abilities 注册 hook 提前：</p>
 <pre><code>// 不要用 init
@@ -319,7 +319,7 @@ sudo apt update && sudo apt install cloudflared</code></pre>
 }</code></pre>
 <p>这样即使有人绕过 <a href="/2026-06-17-wordpress-cloudflare-tunnel-5.html" class="internal-link">Cloudflare</a> 直接打 nginx，公网也调不到。</p>
 <p><strong>2. rate-limit mcp-adapter 端点</strong></p>
-<p>mcp-adapter 走 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API，但你可以在 nginx 给 <code>/wp-json/mcp/</code> 加独立 limit_req：</p>
+<p>mcp-adapter 走 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> REST API，但你可以在 nginx 给 <code>/wp-json/mcp/</code> 加独立 limit_req：</p>
 <pre><code>limit_req_zone $binary_remote_addr zone=mcp_limit:10m rate=10r/m;
 
 location /wp-json/mcp/ {
@@ -337,7 +337,7 @@ location /wp-json/mcp/ {
 <p>完整 checklist：</p>
 <ul><li>[ ] Step 1：`mcp_adapter_server_config` filter 限定 read-only Abilities</li><li>[ ] Step 2：cloudflared ingress 加 `mcp.example.com`</li><li>[ ] Step 3：Zero Trust Self-hosted App + Service Auth policy</li><li>[ ] Step 4：Service Token 嵌入 Claude Code MCP headers</li><li>[ ] Step 5：observability handler 写错误日志到 debug.log</li><li>[ ] 进阶：nginx IP 白名单 + rate-limit + transport method 锁定</li></ul>
 <p>mcp-adapter 0.5.0（2026-06 release）的 observability 子系统是这套架构的关键，之前版本没有 <code>mcp_adapter_observability_event</code> hook，所有 MCP 调用都是黑盒。</p>
-<p>下一篇方向：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 协作编辑实战（HTTP polling sync provider 与多人同时编辑冲突解决），或者 mcp-adapter 0.5.0 完整 benchmark（不同 Abilities 的延迟对比）。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：API 体验金 + 首单 9 折优惠</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<p>下一篇方向：<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 协作编辑实战（HTTP polling sync provider 与多人同时编辑冲突解决），或者 mcp-adapter 0.5.0 完整 benchmark（不同 Abilities 的延迟对比）。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：API 体验金 + 首单 9 折优惠</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
 <div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
   <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
   <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>

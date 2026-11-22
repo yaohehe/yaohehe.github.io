@@ -86,13 +86,13 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   </div>
   <div class="content">
     <p># <a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> 单 VPS IaC 实战 2026：从零到生产环境版本化的 5 个真实踩坑与修复</p>
-<p>去年我把个人项目的 2 台 VPS（1 台跑 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + 1 台跑 <a href="/2026-06-14-n8nlangfuse自托管踩坑实录5个真实问题让我的vps连崩3次.html" class="internal-link">n8n</a>）的配置全部塞进了一个 <code>setup.sh</code> 脚本，再加 <code>~/.bash_history</code> 里 6 个月沉淀下来的 200 多行 ad-hoc <code>apt install</code>/<code>ufw allow</code>/<code>certbot --nginx</code> 命令。然后我第二次想恢复 staging 环境的时候发现：脚本里写的 <code>ufw allow 443/tcp</code> 后面有人手动加过一行 <code>ufw allow 80/tcp</code>，但仓库里没提交。结果就是 nginx 用了 Let's Encrypt HTTP-01 验证时偶然还能跑，但任何想复刻这套环境的尝试都会卡 20 分钟。</p>
+<p>去年我把个人项目的 2 台 VPS（1 台跑 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + 1 台跑 <a href="/2026-06-14-n8nlangfuse自托管踩坑实录5个真实问题让我的vps连崩3次.html" class="internal-link">n8n</a>）的配置全部塞进了一个 <code>setup.sh</code> 脚本，再加 <code>~/.bash_history</code> 里 6 个月沉淀下来的 200 多行 ad-hoc <code>apt install</code>/<code>ufw allow</code>/<code>certbot --nginx</code> 命令。然后我第二次想恢复 staging 环境的时候发现：脚本里写的 <code>ufw allow 443/tcp</code> 后面有人手动加过一行 <code>ufw allow 80/tcp</code>，但仓库里没提交。结果就是 nginx 用了 Let's Encrypt HTTP-01 验证时偶然还能跑，但任何想复刻这套环境的尝试都会卡 20 分钟。</p>
 <p>这次彻底切到 <a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a>。1 台 VPS、一个博客、1 套 <a href="/2026-06-14-n8nlangfuse自托管踩坑实录5个真实问题让我的vps连崩3次.html" class="internal-link">n8n</a> 流水线，1 个月跑下来稳定无事故。**本文复盘 5 个真实踩坑**：state 锁跟本地 fs 冲突、provider 版本漂移把已配资源删掉、变量优先级错乱、<code>import</code> 块吞错导入路径、<code>terraform apply</code> 后没有人脑回路的「回滚」。每坑都有可复制的修复命令。</p>
 <p>承接 6/25《Ansible 自托管实战 5 个真实坑》和 7/3《Ansible Molecule 25.x 实战》。如果你的 ansible.cfg 还在写 <code>inventory = /etc/ansible/hosts</code>，是时候把这层也版本化进 Git。</p>
 <p>---</p>
 <h2>🛠️ 前置准备（Prerequisites）</h2>
 <p>我用的是这套组合（2026 年 7 月实测）：</p>
-<ul><li>**OS**：Ubuntu 24.04 LTS（<a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> / <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored">Vultr</a> / 自建 KVM 都可）</li><li>**VPS 规格**：1 vCPU / 2 GB RAM / 50 GB NVMe（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + <a href="/2026-06-14-n8nlangfuse自托管踩坑实录5个真实问题让我的vps连崩3次.html" class="internal-link">n8n</a> + Watchtower 跑完后空闲 800 MB 内存）</li><li>**<a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a>**：1.11.4（hashicorp/terraform v1.11.4，2026-05 release，IBM 收购后首个 LTS 候选）</li><li>**Provider**：`kreuzwerker/docker` 3.0.2（同版本锁定，禁止 `~>` 浮版本）</li><li>**后端**：本地文件系统（不是 S3，单 VPS 不需要 remote state——这点很多教程会误导）</li><li>**CI**：GitHub Actions ubuntu-24.04 runner（自带 <a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> CLI 缓存）</li></ul>
+<ul><li>**OS**：Ubuntu 24.04 LTS（<a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored">DigitalOcean</a> / <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored">Vultr</a> / 自建 KVM 都可）</li><li>**VPS 规格**：1 vCPU / 2 GB RAM / 50 GB NVMe（<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> + <a href="/2026-06-14-n8nlangfuse自托管踩坑实录5个真实问题让我的vps连崩3次.html" class="internal-link">n8n</a> + Watchtower 跑完后空闲 800 MB 内存）</li><li>**<a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a>**：1.11.4（hashicorp/terraform v1.11.4，2026-05 release，IBM 收购后首个 LTS 候选）</li><li>**Provider**：`kreuzwerker/docker` 3.0.2（同版本锁定，禁止 `~>` 浮版本）</li><li>**后端**：本地文件系统（不是 S3，单 VPS 不需要 remote state——这点很多教程会误导）</li><li>**CI**：GitHub Actions ubuntu-24.04 runner（自带 <a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> CLI 缓存）</li></ul>
 <p>验证命令：</p>
 <pre><code>terraform version          # <a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> v1.11.4
 terraform -install-autocomplete  # 可选，shell 提示
@@ -146,7 +146,7 @@ terraform {
 <pre><code>$ terraform plan
   # docker_container.wordpress will be destroyed and recreated
   # docker_container.wordpress: image_sha256 changed from "abc..." to "def..."</code></pre>
-<p>不是版本号改的，是我 push 了 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 镜像 tag=stable，30 分钟后上游发布了一个新 sha256，<a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> 觉得「容器变了要重建」。重建 = 数据卷短暂失联 + 容器 IP 变化 + nginx upstream 重启。</p>
+<p>不是版本号改的，是我 push 了 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 镜像 tag=stable，30 分钟后上游发布了一个新 sha256，<a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> 觉得「容器变了要重建」。重建 = 数据卷短暂失联 + 容器 IP 变化 + nginx upstream 重启。</p>
 <h3>根因</h3>
 <p><code>kreuzwerker/docker</code> 3.0.x 的 <code>image_id</code> 默认每次都重算。**<code>~></code> 范围选择器是必要的，但不够**——还得锁定 <code>docker_image</code> 的 <code>keep_remotely</code> 和 <code>keep_locally</code>。</p>
 <h3>修复（3 行救数据）</h3>
@@ -292,7 +292,7 @@ output "wordpress_container_name" {
 [wordpress]
 localhost ansible_connection=docker ansible_docker_container=wordpress-prod</code></pre>
 <p>这样的好处：<strong><a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> 管 system，Ansible 管 app，分层之后两边各自 5 行内就能迁移</strong>。</p>
-<h3>一个具体场景：跑 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 怎么拆</h3>
+<h3>一个具体场景：跑 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 怎么拆</h3>
 <p><strong><a href="/2026-07-16-terraform-vps-iac-2026-5.html" class="internal-link">Terraform</a> 跑（这层每月动 1 次）</strong>：</p>
 <pre><code># modules/wordpress/main.tf
 resource "docker_network" "blog" {

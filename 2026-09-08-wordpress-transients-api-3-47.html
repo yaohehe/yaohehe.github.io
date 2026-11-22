@@ -100,13 +100,13 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   </div>
   <div class="content">
     <p>说实话，在这次事故之前我从来没关注过 <code>wp_options</code> 表里 <code>transient_timeout_</code> 开头的那些行。直到某天早上客户打电话来说"后台加载要 15 秒"，我登上去一看，Perfmatters 的数据库分析面板里 <code>wp_options</code> 已经膨胀到 213MB，其中 82% 的行都是 <code>transient_timeout_</code> 和 <code>_transient_</code> 前缀的缓存条目。</p>
-<p>我当时的第一反应是"这不可能吧"。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 Transients API 不是有过期机制吗？过期了不就自动清掉了？</p>
+<p>我当时的第一反应是"这不可能吧"。<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 Transients API 不是有过期机制吗？过期了不就自动清掉了？</p>
 <p>后来我花了 3 天时间排查、清理、重写缓存策略，才彻底搞明白 Transients 的"过期"到底是什么意思——以及为什么它在生产环境里几乎从来不会自动消失。</p>
 <p>先说结论：<strong>Transients 的"过期"只在读取时检查，不会主动清理。</strong> 如果你的站点有大量插件写入 transient 但很少读取，这些过期数据就会永久堆积在数据库里，直到把你的查询速度拖垮。</p>
 <h2>Transient 机制到底怎么运作的——源码拆解</h2>
-<p>我翻了 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9 的 <code>wp-includes/option.php</code> 源码，发现 Transients 的存储逻辑比大多数人想的要复杂得多：</p>
+<p>我翻了 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9 的 <code>wp-includes/option.php</code> 源码，发现 Transients 的存储逻辑比大多数人想的要复杂得多：</p>
 <p><strong>有对象缓存（Redis/APCu）时</strong>：transient 存在内存里，过期时间也存在内存里。Redis 自己会处理 TTL，这是最理想的情况。</p>
-<p>**没有对象缓存时**（大多数共享主机）：transient 存在 <code>wp_options</code> 表里，但过期时间是单独的一行——<code>transient_timeout_{key}</code> 存的是 Unix 时间戳，<code>_transient_{key}</code> 存的是实际数据。当你调用 <code>get_transient()</code> 时，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 先查 <code>transient_timeout_{key}</code> 的值，如果 <code>time() > timeout</code>，就删掉这一行并返回 <code>false</code>。</p>
+<p>**没有对象缓存时**（大多数共享主机）：transient 存在 <code>wp_options</code> 表里，但过期时间是单独的一行——<code>transient_timeout_{key}</code> 存的是 Unix 时间戳，<code>_transient_{key}</code> 存的是实际数据。当你调用 <code>get_transient()</code> 时，<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 先查 <code>transient_timeout_{key}</code> 的值，如果 <code>time() > timeout</code>，就删掉这一行并返回 <code>false</code>。</p>
 <p>关键问题来了：**如果从来没有人调用 <code>get_transient()</code> 去读这个 key，过期检查就永远不会触发，数据就永远留在数据库里。**</p>
 <p>我在客户的站点上跑了这个 SQL，结果让我倒吸一口凉气：</p>
 <pre><code>SELECT COUNT(*) as total,
@@ -209,14 +209,14 @@ add_filter('pre_set_transient_wpseo_sitemap_', function($value, $transient) {
 <p>我在客户的 WooCommerce 站点（5.2 万产品、日均 3000 UV）上做了完整记录：</p>
 <table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">指标</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">清理前</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">清理后</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">改善幅度</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">wp_options 表大小</td><td style="border:1px solid #ddd;padding:8px;">213MB</td><td style="border:1px solid #ddd;padding:8px;">34MB</td><td style="border:1px solid #ddd;padding:8px;">-84%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">wp_options autoload 行数</td><td style="border:1px solid #ddd;padding:8px;">18.2MB</td><td style="border:1px solid #ddd;padding:8px;">3.2MB</td><td style="border:1px solid #ddd;padding:8px;">-82%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">wp_options 查询时间（avg）</td><td style="border:1px solid #ddd;padding:8px;">47ms</td><td style="border:1px solid #ddd;padding:8px;">8ms</td><td style="border:1px solid #ddd;padding:8px;">-83%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">首页 TTFB（Lighthouse）</td><td style="border:1px solid #ddd;padding:8px;">2.8s</td><td style="border:1px solid #ddd;padding:8px;">0.9s</td><td style="border:1px solid #ddd;padding:8px;">-68%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">wp-admin 后台加载</td><td style="border:1px solid #ddd;padding:8px;">15s</td><td style="border:1px solid #ddd;padding:8px;">2.1s</td><td style="border:1px solid #ddd;padding:8px;">-86%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">MySQL `SELECT` QPS（峰值）</td><td style="border:1px solid #ddd;padding:8px;">1,200</td><td style="border:1px solid #ddd;padding:8px;">380</td><td style="border:1px solid #ddd;padding:8px;">-68%</td></tr></tbody></table>
 <h2>一个容易踩的坑：autoload = yes 的过期 transient</h2>
-<p>这是我排查过程中发现的最隐蔽的陷阱。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 在删除过期 transient 时，只删 <code>_transient_{key}</code> 和 <code>transient_timeout_{key}</code> 两行，**但不会清理 autoload 标记**。也就是说，如果你的 wp_options 表里积累了大量过期 transient，即使它们的 <code>option_value</code> 已经被清空，<code>autoload = yes</code> 的行仍然会被 MySQL 加载到 <code>innodb_buffer_pool</code> 里，白白占用内存。</p>
+<p>这是我排查过程中发现的最隐蔽的陷阱。<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 在删除过期 transient 时，只删 <code>_transient_{key}</code> 和 <code>transient_timeout_{key}</code> 两行，**但不会清理 autoload 标记**。也就是说，如果你的 wp_options 表里积累了大量过期 transient，即使它们的 <code>option_value</code> 已经被清空，<code>autoload = yes</code> 的行仍然会被 MySQL 加载到 <code>innodb_buffer_pool</code> 里，白白占用内存。</p>
 <p>我在清理后跑了一个检查：</p>
 <pre><code>SELECT COUNT(*) as autoload_stale_transients
 FROM wp_options
 WHERE option_name LIKE 'transient_timeout_%'
   AND autoload = 'yes'
   AND option_value < UNIX_TIMESTAMP();</code></pre>
-<p>返回：<strong>2,847 条 autoload 的过期 timeout 记录</strong>。这些记录虽然数据量不大（每条只有 10 字节的时间戳），但 autoload = yes 意味着每次 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 启动都会把它们加载进内存。</p>
+<p>返回：<strong>2,847 条 autoload 的过期 timeout 记录</strong>。这些记录虽然数据量不大（每条只有 10 字节的时间戳），但 autoload = yes 意味着每次 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 启动都会把它们加载进内存。</p>
 <p>修复：</p>
 <pre><code>wp db query "UPDATE wp_options SET autoload = 'no' WHERE option_name LIKE 'transient_timeout_%' AND option_value < UNIX_TIMESTAMP()"</code></pre>
 <h2>什么时候应该用 Redis 而不是数据库存 Transient</h2>
@@ -230,11 +230,11 @@ WHERE option_name LIKE 'transient_timeout_%'
 <p><strong>Q: WooCommerce 的 session transient 可以直接删除吗？</strong></p>
 <p>A: 可以，但会把所有未登录用户的购物车清空。如果你的站点购物车放弃率已经很高，可以放心删。如果你在做促销活动有大量未结账订单，建议只删超过 24 小时的：<code>wp db query "DELETE FROM wp_options WHERE option_name LIKE '_transient_wc_session_%' AND option_name IN (SELECT option_name FROM wp_options WHERE option_name LIKE 'transient_timeout_wc_session_%' AND option_value < UNIX_TIMESTAMP() - 86400)"</code></p>
 <p><strong>Q: 有没有插件可以自动管理 Transients？</strong></p>
-<p>A: 有，但我不太推荐依赖插件来解决插件本身制造的问题。Transient Cleaner（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.org 免费）可以设置 cron 自动清理过期 transient，Transients Manager（开发者用）可以可视化查看所有 transient。但更根本的做法是：减少写入频率 + 上 Redis。</p>
+<p>A: 有，但我不太推荐依赖插件来解决插件本身制造的问题。Transient Cleaner（<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.org 免费）可以设置 cron 自动清理过期 transient，Transients Manager（开发者用）可以可视化查看所有 transient。但更根本的做法是：减少写入频率 + 上 Redis。</p>
 <p><strong>Q: 我的站点用了 Redis Object Cache，还需要关注 Transients 吗？</strong></p>
 <p>A: 需要，但问题会轻很多。Redis 会自动处理过期，但 Redis 的内存也是有限的。如果你的 Redis 实例经常 <code>maxmemory</code> 触发 <code>eviction</code>，说明缓存策略需要调整——可能是 transient 的 TTL 设置过长，或者某些插件写入了不该缓存的大对象。</p>
 <h2>总结</h2>
-<p>Transients API 是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 最好用的缓存工具之一，但在没有对象缓存的环境里，它的"过期"机制几乎是摆设。我的建议是：</p>
+<p>Transients API 是 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 最好用的缓存工具之一，但在没有对象缓存的环境里，它的"过期"机制几乎是摆设。我的建议是：</p>
 <p>1. <strong>立即检查</strong>：跑上面的 SQL 看你的 wp_options 里有多少过期 transient</p>
 <p>2. **短期修复**：WP-CLI <code>--expired</code> 清理 + crontab 自动清理</p>
 <p>3. <strong>长期方案</strong>：WooCommerce 站点上 Redis Object Cache，非电商站点至少用 APCu</p>

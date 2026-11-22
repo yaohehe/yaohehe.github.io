@@ -82,19 +82,19 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag"><a href="/2026-06-22-wordpress-multisite-2026-5.html" class="internal-link">WordPress</a></span><span class="tag">Multisite</span><span class="tag">多站点</span><span class="tag">网络站</span><span class="tag">wp-config</span><span class="tag">SUNRISE</span><span class="tag">WP-CLI</span>
   </div>
   <div class="content">
-    <p>最近帮一个外贸客户把 7 个独立 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站点合并到一套 Multisite 网络，原以为只是装个插件 + 改 wp-config.php 三分钟的事，结果第一周就撞了 5 次坑：从子站点白屏到 Cookie 串号，从 upload_path 把别人图片盖掉到 WP-CLI 命令默默失败。本文把这次真实排错过程全部还原，让你下次升级 Multisite 不用再走我走过的弯路。</p>
+    <p>最近帮一个外贸客户把 7 个独立 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站点合并到一套 Multisite 网络，原以为只是装个插件 + 改 wp-config.php 三分钟的事，结果第一周就撞了 5 次坑：从子站点白屏到 Cookie 串号，从 upload_path 把别人图片盖掉到 WP-CLI 命令默默失败。本文把这次真实排错过程全部还原，让你下次升级 Multisite 不用再走我走过的弯路。</p>
 <h2>🛠️ 前置准备</h2>
 <p>环境基线：</p>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1（2026-02-03 维护版本；Multisite API 自 6.0 起无大改动，6.9 行为稳定）</li><li>WP-CLI 2.11.x + PHP 8.2 + MySQL 8.0 / MariaDB 10.11</li><li>服务器：单 VPS，2GB+ RAM（每增加一个子站点预估 +20-50MB PHP 常驻）</li><li>DNS：必须能配置 wildcard `*.example.com`（子域名模式）或纯 A 记录（子目录模式）</li><li>备份：整库 + uploads 目录</li></ul>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1（2026-02-03 维护版本；Multisite API 自 6.0 起无大改动，6.9 行为稳定）</li><li>WP-CLI 2.11.x + PHP 8.2 + MySQL 8.0 / MariaDB 10.11</li><li>服务器：单 VPS，2GB+ RAM（每增加一个子站点预估 +20-50MB PHP 常驻）</li><li>DNS：必须能配置 wildcard `*.example.com`（子域名模式）或纯 A 记录（子目录模式）</li><li>备份：整库 + uploads 目录</li></ul>
 <pre><code># 完整备份
 wp db export /backup/full_$(date +%F).sql --allow-root
 tar czf /backup/uploads_$(date +%F).tar.gz wp-content/uploads</code></pre>
 <h2>第一步：启动 Multisite 前的检查清单</h2>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 不是开关按钮，是一个<strong>永久不可逆的架构决策</strong>——启用后回退到单站点会留下 wp_blogs / wp_signups 等孤立表。开工前必须确认：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 不是开关按钮，是一个<strong>永久不可逆的架构决策</strong>——启用后回退到单站点会留下 wp_blogs / wp_signups 等孤立表。开工前必须确认：</p>
 <p>1. **现有插件是否支持 Multisite**：<code>wp plugin list --allow-root</code> 检查每个插件是否注明 "Network: true"。常见不兼容：Yoast SEO 早期版本、W3 Total Cache、Jetpack 旧版</p>
 <p>2. **uploads 目录清理**：单站点的 <code>wp-content/uploads/2024/</code> 等历史目录必须迁完，启用 Multisite 后上传路径会变为 <code>wp-content/uploads/sites/{blog_id}/</code></p>
 <p>3. **数据库前缀一致性**：单站点通常 <code>wp_</code>，Multisite 表是 <code>wp_blogs / wp_blog_versions / wp_registration_log / wp_signups / wp_site / wp_sitemeta</code> —— 这些表**不会自动创建**，必须首次进入 Tools → Network Setup 后由 WP 写入</p>
-<p>4. **<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 地址不可换域名**：一旦确定 <code>example.com</code> 是主站点，后续切换成本极高（涉及 wp_site / wp_blogs 全量替换）</p>
+<p>4. **<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 地址不可换域名**：一旦确定 <code>example.com</code> 是主站点，后续切换成本极高（涉及 wp_site / wp_blogs 全量替换）</p>
 <h2>第二步：启用 Multisite（最容易出错的两步）</h2>
 <p>在 <code>wp-config.php</code> 添加（**位置在 <code>/* That's all... */</code> 注释前**）：</p>
 <pre><code>define('WP_ALLOW_MULTISITE', true);</code></pre>
@@ -111,7 +111,7 @@ define('BLOG_ID_CURRENT_SITE', 1);</code></pre>
 <h2>💣 踩坑实录：5 个真实崩溃场景</h2>
 <h3>坑 1：wordpress-mu-domain-mapping 插件 + SUNRISE 顺序错乱</h3>
 <p>**症状**：启用 Domain Mapping 插件后子站点全部白屏，PHP 报错 <code>Use of undefined constant SUNRISE</code>。</p>
-<p>**根因**：插件要求 <code>wp-config.php</code> 里 <code>define('SUNRISE', true);</code>，但 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心在 MU plugins 阶段才读取这个常量——如果你的 SUNRISE 写在 <code>/* That's all, stop editing! */</code> 之后，可能在某些插件加载顺序下被忽略。</p>
+<p>**根因**：插件要求 <code>wp-config.php</code> 里 <code>define('SUNRISE', true);</code>，但 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心在 MU plugins 阶段才读取这个常量——如果你的 SUNRISE 写在 <code>/* That's all, stop editing! */</code> 之后，可能在某些插件加载顺序下被忽略。</p>
 <p><strong>修复</strong>：</p>
 <pre><code>// wp-config.php 必须把 SUNRISE 放在 MU plugin 加载前（推荐位置：DB_COLLATE 之后）
 define('SUNRISE', true);
@@ -125,7 +125,7 @@ define('WP_DEBUG_LOG', true);</code></pre>
 <p><strong>预防</strong>：SUNRISE 永远写在 wp-config.php 顶部、ABSPATH 之前。</p>
 <h3>坑 2：Cookie 域名配置错误，所有子站点登录后立即失效</h3>
 <p><strong>症状</strong>：登录子站点 A，刷新页面又跳回登录页；同一浏览器开子站点 B，看到 A 的后台。</p>
-<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认 cookie domain 是 <code>example.com</code>，子域名 <code>site1.example.com</code> 应该共享——但如果 wp-config.php 里有遗留的 <code>define('COOKIE_DOMAIN', 'www.example.com');</code>，会让 cookie 跨子站失效。</p>
+<p>**根因**：<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认 cookie domain 是 <code>example.com</code>，子域名 <code>site1.example.com</code> 应该共享——但如果 wp-config.php 里有遗留的 <code>define('COOKIE_DOMAIN', 'www.example.com');</code>，会让 cookie 跨子站失效。</p>
 <p><strong>修复</strong>：</p>
 <pre><code>// 删除 COOKIE_DOMAIN 显式定义（让 WP 自动用 DOMAIN_CURRENT_SITE）
 // 或者正确写法
@@ -135,7 +135,7 @@ define('SITECOOKIEPATH', '/');</code></pre>
 <p>**预防**：迁移前 <code>grep COOKIE wp-config.php</code>，启用 Multisite 后必须删。</p>
 <h3>坑 3：upload_path 没改，子站点上传直接覆盖主站点图片</h3>
 <p><strong>症状</strong>：在子站点上传图片，文件名重复，主站点那张图片被无声覆盖。</p>
-<p>**根因**：Multisite 启用后，<code>wp_options</code> 里的 <code>upload_path</code> 默认继承主站点值，**第一次**新增子站点时必须让 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 写新值，否则所有子站都写到 <code>wp-content/uploads/</code>。</p>
+<p>**根因**：Multisite 启用后，<code>wp_options</code> 里的 <code>upload_path</code> 默认继承主站点值，**第一次**新增子站点时必须让 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 写新值，否则所有子站都写到 <code>wp-content/uploads/</code>。</p>
 <p><strong>修复</strong>（WP-CLI 一次性修复所有子站点）：</p>
 <pre><code># 主站点跳过
 wp option update upload_path 'wp-content/uploads' --allow-root

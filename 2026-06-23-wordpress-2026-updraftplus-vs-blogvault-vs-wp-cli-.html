@@ -86,7 +86,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>去年帮客户恢复过一次 5GB 的 WooCommerce 站点，恢复到一半才发现：插件的"全量备份"文件里居然少了 wp-config.php，导致数据库能恢复、配置全没，还要重新写一遍密钥。这次复盘让我意识到——大多数站长对备份的理解还停留在"装个插件、点一下备份"，但生产环境的备份策略远不止这些。本文基于我 2026 年帮 6 个客户配置/恢复备份的真实经历，把 UpdraftPlus、BlogVault、手动 wp-cli 三种方案的优劣和坑全写透，让你下次选方案时不再被插件页面的话术忽悠。</p>
 <h2>🛠️ 前置准备</h2>
 <p>环境基线：</p>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1（2026-02-03 维护版本）+ WP-CLI 2.12.0（2025-05-06 发布，PHP 8.4 兼容）</li><li>PHP 8.2+ / MySQL 8.0 或 MariaDB 10.11+</li><li>服务器最低：2GB RAM（备份加密阶段临时占内存约 200-500MB）</li><li>远程存储二选一：S3 兼容存储（如 Backblaze B2 $0.005/GB/月、阿里云 OSS）或者 SFTP 自己的另一台 VPS</li><li>备份恢复演练环境：建议用 Local（localwp.com）或者 staging 站点，不要直接在生产试</li></ul>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1（2026-02-03 维护版本）+ WP-CLI 2.12.0（2025-05-06 发布，PHP 8.4 兼容）</li><li>PHP 8.2+ / MySQL 8.0 或 MariaDB 10.11+</li><li>服务器最低：2GB RAM（备份加密阶段临时占内存约 200-500MB）</li><li>远程存储二选一：S3 兼容存储（如 Backblaze B2 $0.005/GB/月、阿里云 OSS）或者 SFTP 自己的另一台 VPS</li><li>备份恢复演练环境：建议用 Local（localwp.com）或者 staging 站点，不要直接在生产试</li></ul>
 <p><strong>核心策略原则</strong>（来自我和客户的反复失败教训）：</p>
 <p>1. <strong>3-2-1 法则</strong>：3 份备份、2 种介质、1 份离线（offsite/offline）</p>
 <p>2. <strong>备份前必验证</strong>：每 30 天至少手动 restore 一次到 staging 环境</p>
@@ -96,7 +96,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p><strong>一句话选型建议</strong>：</p>
 <ul><li>**个人小站 + 不想折腾** → UpdraftPlus Free（不花钱也够用）</li><li>**多客户代理商 + 需要集中管理** → BlogVault（仪表盘 + staging 是杀手锏）</li><li>**技术向站长 + 数据必须完全可控** → 手动 wp-cli + rclone + Hetzner Storage Box</li></ul>
 <h2>方案一：UpdraftPlus Premium 实战配置</h2>
-<p>UpdraftPlus 仍然是装机量最高的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 备份插件（wordpress.org/plugins/updraftplus 显示 300万+ 活跃安装）。Free 版能做手动备份 + 远程上传，Premium 版（$70/年）才解锁增量备份和定时调度。</p>
+<p>UpdraftPlus 仍然是装机量最高的 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 备份插件（wordpress.org/plugins/updraftplus 显示 300万+ 活跃安装）。Free 版能做手动备份 + 远程上传，Premium 版（$70/年）才解锁增量备份和定时调度。</p>
 <h3>核心配置步骤</h3>
 <p><strong>Step 1：安装 + 启用</strong></p>
 <pre><code># 推荐从 wp-cli 安装（避免 web 安装时 credential 留痕）
@@ -112,7 +112,7 @@ wp plugin install updraftplus --activate</code></pre>
 <h3>真实避坑/缺点</h3>
 <ul><li>**增量备份有锁库风险**：高频（每小时）增量备份在 WooCommerce 大站会锁住 wp_options（详见坑 1）</li><li>**备份文件易膨胀**：不清理老备份，2GB 站点 6 个月后备份文件夹会涨到 30GB+（详见坑 2）</li><li>**免费版无定时备份**：Free 版只能手动，自动化必须 Premium</li><li>**加密 key 一旦丢完全救不回**：AES-256 key 是用户自己保管，丢了 = 数据永久加密</li></ul>
 <h2>方案二：BlogVault Pro 实战配置</h2>
-<p>BlogVault（blogvault.net）是专门为 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 设计的 SaaS 备份方案，定位是"代理商友好"。最大卖点是云端 dashboard —— 你可以同时管理 50 个客户站点的备份状态，每个站点独立仪表盘。</p>
+<p>BlogVault（blogvault.net）是专门为 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 设计的 SaaS 备份方案，定位是"代理商友好"。最大卖点是云端 dashboard —— 你可以同时管理 50 个客户站点的备份状态，每个站点独立仪表盘。</p>
 <h3>核心配置步骤</h3>
 <p><strong>Step 1：注册 + 绑定站点</strong></p>
 <p>1. 注册 blogvault.net（提供 7 天试用，无需信用卡）</p>
@@ -133,7 +133,7 @@ wp plugin install updraftplus --activate</code></pre>
 <h3>核心配置脚本</h3>
 <pre><code>#!/bin/bash
 # /usr/local/bin/wp-backup.sh
-# <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 备份脚本（数据库 + uploads）
+# <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 备份脚本（数据库 + uploads）
 
 set -e
 

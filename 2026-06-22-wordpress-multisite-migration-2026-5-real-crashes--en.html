@@ -82,18 +82,18 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag"><a href="/2026-06-22-wordpress-multisite-migration-2026-5-real-crashes--en.html" class="internal-link">WordPress</a></span><span class="tag">Multisite</span><span class="tag">network</span><span class="tag">wp-config</span><span class="tag">SUNRISE</span><span class="tag">WP-CLI</span><span class="tag">wildcard SSL</span>
   </div>
   <div class="content">
-    <p>I recently helped a client consolidate 7 standalone <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> sites into one Multisite network. I thought it would be a 3-minute job — flip a constant, run a setup wizard — but the first week hit 5 production crashes: subsite whitescreens, cookie domain mixups, upload_path silently overwriting the main site's images, and WP-CLI commands that "succeeded" but did nothing. This article walks through the exact incident timeline so you don't pay the same tuition.</p>
+    <p>I recently helped a client consolidate 7 standalone <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> sites into one Multisite network. I thought it would be a 3-minute job — flip a constant, run a setup wizard — but the first week hit 5 production crashes: subsite whitescreens, cookie domain mixups, upload_path silently overwriting the main site's images, and WP-CLI commands that "succeeded" but did nothing. This article walks through the exact incident timeline so you don't pay the same tuition.</p>
 <h2>🛠️ Prerequisites</h2>
 <p>Baseline:</p>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1 (2026-02-03 maintenance release; Multisite API stable since 6.0, 6.9 behavior unchanged)</li><li>WP-CLI 2.11.x + PHP 8.2 + MySQL 8.0 / MariaDB 10.11</li><li>Server: single VPS, 2GB+ RAM (each subsite adds ~20-50MB PHP resident)</li><li>DNS: wildcard `*.example.com` required for subdomain mode; A record only for subdirectory mode</li><li>Backup: full DB + uploads dir</li></ul>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.9.1 (2026-02-03 maintenance release; Multisite API stable since 6.0, 6.9 behavior unchanged)</li><li>WP-CLI 2.11.x + PHP 8.2 + MySQL 8.0 / MariaDB 10.11</li><li>Server: single VPS, 2GB+ RAM (each subsite adds ~20-50MB PHP resident)</li><li>DNS: wildcard `*.example.com` required for subdomain mode; A record only for subdirectory mode</li><li>Backup: full DB + uploads dir</li></ul>
 <pre><code># Full backup
 wp db export /backup/full_$(date +%F).sql --allow-root
 tar czf /backup/uploads_$(date +%F).tar.gz wp-content/uploads</code></pre>
 <h2>Step 1: Pre-flight Checklist Before Enabling Multisite</h2>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite is not a toggle — it's a **permanent architectural decision**. Reverting leaves orphaned <code>wp_blogs / wp_signups</code> tables. Pre-flight checklist:</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite is not a toggle — it's a **permanent architectural decision**. Reverting leaves orphaned <code>wp_blogs / wp_signups</code> tables. Pre-flight checklist:</p>
 <p>1. **Plugin compatibility**: <code>wp plugin list --allow-root</code> and verify each plugin declares "Network: true". Common offenders: older Yoast SEO, W3 Total Cache, legacy Jetpack versions</p>
 <p>2. **uploads dir cleanup**: Existing <code>wp-content/uploads/2024/</code> folders must be migrated first. After Multisite, uploads go to <code>wp-content/uploads/sites/{blog_id}/</code></p>
-<p>3. **DB prefix consistency**: Multisite tables (<code>wp_blogs / wp_blog_versions / wp_registration_log / wp_signups / wp_site / wp_sitemeta</code>) are **NOT auto-created** — <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> writes them only on first visit to <code>Tools → Network Setup</code></p>
+<p>3. **DB prefix consistency**: Multisite tables (<code>wp_blogs / wp_blog_versions / wp_registration_log / wp_signups / wp_site / wp_sitemeta</code>) are **NOT auto-created** — <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> writes them only on first visit to <code>Tools → Network Setup</code></p>
 <p>4. **Domain commitment**: Once <code>example.com</code> is the main site, switching later means full rewrite of <code>wp_site / wp_blogs</code> rows</p>
 <h2>Step 2: Enable Multisite (Two Trivial Steps That Go Wrong)</h2>
 <p>Add to <code>wp-config.php</code> (**before <code>/* That's all... */</code> comment**):</p>
@@ -111,7 +111,7 @@ define('BLOG_ID_CURRENT_SITE', 1);</code></pre>
 <h2>💣 5 Real Crash Scenarios</h2>
 <h3>Pitfall 1: wordpress-mu-domain-mapping + SUNRISE ordering chaos</h3>
 <p>**Symptom**: After activating Domain Mapping plugin, all subsites whitescreen with <code>Use of undefined constant SUNRISE</code>.</p>
-<p>**Root cause**: Plugin requires <code>define('SUNRISE', true);</code> in <code>wp-config.php</code>. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> core reads this during MU plugins loading — if your SUNRISE line sits after <code>/* That's all, stop editing! */</code>, certain plugin load orders can silently ignore it.</p>
+<p>**Root cause**: Plugin requires <code>define('SUNRISE', true);</code> in <code>wp-config.php</code>. <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> core reads this during MU plugins loading — if your SUNRISE line sits after <code>/* That's all, stop editing! */</code>, certain plugin load orders can silently ignore it.</p>
 <p><strong>Fix</strong>:</p>
 <pre><code>// wp-config.php — SUNRISE must come before MU plugin load
 define('SUNRISE', true);
@@ -125,7 +125,7 @@ define('WP_DEBUG_LOG', true);</code></pre>
 <p>**Prevention**: Always put SUNRISE at the top of <code>wp-config.php</code>, before ABSPATH.</p>
 <h3>Pitfall 2: Cookie domain config broken → instant logout / cross-site login</h3>
 <p><strong>Symptom</strong>: Log in to subsite A, refresh → bounced back to login. Open subsite B in same browser → see A's admin bar.</p>
-<p>**Root cause**: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> default cookie domain is <code>example.com</code>; subsites should share it. If <code>wp-config.php</code> has a leftover <code>define('COOKIE_DOMAIN', 'www.example.com');</code>, cookies fail across subsites.</p>
+<p>**Root cause**: <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> default cookie domain is <code>example.com</code>; subsites should share it. If <code>wp-config.php</code> has a leftover <code>define('COOKIE_DOMAIN', 'www.example.com');</code>, cookies fail across subsites.</p>
 <p><strong>Fix</strong>:</p>
 <pre><code>// Remove explicit COOKIE_DOMAIN (let WP use DOMAIN_CURRENT_SITE)
 // Or, correct form:

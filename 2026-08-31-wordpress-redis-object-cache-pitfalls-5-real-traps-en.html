@@ -86,7 +86,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   </div>
   <div class="content">
     <p># wp_options Ballooned to 4.2MB Before I Took Object Cache Seriously — A Real Post-Mortem</p>
-<p>I'll be honest: before 2026, I treated <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache as a "nice to have." My sites weren't getting massive traffic, MySQL seemed fine. Then one day I ran the autoload check and wp_options was sitting at 4.2MB. The homepage TTFB jumped from 600ms to 1.8s. That's when I realized — running without caching is running naked.</p>
+<p>I'll be honest: before 2026, I treated <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache as a "nice to have." My sites weren't getting massive traffic, MySQL seemed fine. Then one day I ran the autoload check and wp_options was sitting at 4.2MB. The homepage TTFB jumped from 600ms to 1.8s. That's when I realized — running without caching is running naked.</p>
 <p>This article documents my journey from zero Redis Object Cache configuration to a stable 95% hit rate, including the 5 real pitfalls I crashed into along the way. Not a "3 steps and done" tutorial — every trap here cost me real debugging time.</p>
 <p>---</p>
 <h2>The wp_options Autoload Bloat: What It Actually Looks Like</h2>
@@ -94,12 +94,12 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <pre><code>SELECT SUM(LENGTH(option_value)) / 1024 / 1024 AS autoload_mb
 FROM wp_options WHERE autoload = 'yes';</code></pre>
 <p>Result: <strong>4.2MB</strong>.</p>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> recommends autoload data under <strong>1MB</strong>, with 800KB as the warning line. 4.2MB means every page load pulls 4MB of data from MySQL into PHP memory — even though 90% of that data is irrelevant to the current page.</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> recommends autoload data under <strong>1MB</strong>, with 800KB as the warning line. 4.2MB means every page load pulls 4MB of data from MySQL into PHP memory — even though 90% of that data is irrelevant to the current page.</p>
 <p>Using WP-CLI, I discovered that <code>wpseo_sitemap_*</code> transients alone accounted for 1.2MB, plus several plugins had stuffed their entire config arrays into autoload. Every request was transferring this data, but 90% of pages never touched it.</p>
 <p>---</p>
 <h2>Trap 1: Redis 8.10's Protected-Mode Defaults Blow Up Connections</h2>
 <p>Installing Redis itself is trivial — <code>apt install redis-server</code> and you're done. The problem lies in Redis 8.x's default security configuration (8.10.1 released 2026-08-17 is the current stable).</p>
-<p>Redis 8.10 enables <code>protected-mode yes</code> by default and **no longer allows passwordless remote connections**. If your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> and Redis are on the same machine, <code>127.0.0.1:6379</code> works fine. But if you're running Docker Compose or separated deployments, Redis listening on <code>0.0.0.0:6379</code> triggers protected-mode to refuse connections. The error:</p>
+<p>Redis 8.10 enables <code>protected-mode yes</code> by default and **no longer allows passwordless remote connections**. If your <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> and Redis are on the same machine, <code>127.0.0.1:6379</code> works fine. But if you're running Docker Compose or separated deployments, Redis listening on <code>0.0.0.0:6379</code> triggers protected-mode to refuse connections. The error:</p>
 <pre><code>Connection refused: Redis server went away</code></pre>
 <p>This error message is extremely misleading — it's not a connection refusal; Redis actively disconnects under protected-mode.</p>
 <p><strong>Fix</strong>:</p>
@@ -112,7 +112,7 @@ requirepass your_strong_password_here</code></pre>
   redis:
     image: redis:8.10-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD}</code></pre>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-side <code>wp-config.php</code>:</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>-side <code>wp-config.php</code>:</p>
 <pre><code>define('WP_REDIS_PASSWORD', getenv('REDIS_PASSWORD') ?: 'your_strong_password_here');</code></pre>
 <p>I wasted 2 full hours here because the error log only showed <code>Connection refused</code> with zero mention of protected-mode.</p>
 <p>---</p>
@@ -136,8 +136,8 @@ wp db query "SELECT SUM(LENGTH(option_value))/1024/1024 as mb FROM wp_options WH
 <p>This approach reduced autoload from 4.2MB to 780KB — mainly clearing Yoast sitemap transients (1.2MB) and several plugin config caches (200-500KB each).</p>
 <p>---</p>
 <h2>Trap 3: Drop-in File Permissions Make Object Cache Silently Fail</h2>
-<p>The Redis Object Cache plugin works by placing an <code>object-cache.php</code> drop-in file in <code>wp-content/</code> to replace <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s default empty cache implementation.</p>
-<p>The problem: if your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> runs as <code>www-data</code> but the file was installed by <code>root</code> (e.g., using <code>sudo wp plugin install</code>), the drop-in file has permissions <code>644 root:root</code>. PHP running as <code>www-data</code> can read the file but **cannot verify write permissions** — Redis connection succeeds, but cache writes silently fail.</p>
+<p>The Redis Object Cache plugin works by placing an <code>object-cache.php</code> drop-in file in <code>wp-content/</code> to replace <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s default empty cache implementation.</p>
+<p>The problem: if your <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> runs as <code>www-data</code> but the file was installed by <code>root</code> (e.g., using <code>sudo wp plugin install</code>), the drop-in file has permissions <code>644 root:root</code>. PHP running as <code>www-data</code> can read the file but **cannot verify write permissions** — Redis connection succeeds, but cache writes silently fail.</p>
 <p>The symptom: Redis Object Cache settings page shows "Status: Connected" but "Hit Rate" stays at 0%.</p>
 <p><strong>Fix</strong>:</p>
 <pre><code># Check drop-in file permissions
@@ -167,13 +167,13 @@ define('WC_SESSION_USE_WP_DEFAULT', true);</code></pre>
 <p>This cleanup removed another 800KB from wp_options autoload, bringing it down from 780KB to near zero.</p>
 <p>---</p>
 <h2>Trap 5: Redis LRU Strategy Causes Cache Stampede When Memory Fills Up</h2>
-<p>Redis's default memory policy is <code>noeviction</code> — when memory is full, new writes throw errors. If your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> site has heavy cache writes (homepage renders, WooCommerce product pages), Redis running out of memory causes all Object Cache writes to fail. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> falls back to querying MySQL directly, instantly overwhelming the database.</p>
+<p>Redis's default memory policy is <code>noeviction</code> — when memory is full, new writes throw errors. If your <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> site has heavy cache writes (homepage renders, WooCommerce product pages), Redis running out of memory causes all Object Cache writes to fail. <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> falls back to querying MySQL directly, instantly overwhelming the database.</p>
 <p>I hit this after a promotional event: Redis memory climbed from 200MB to the 512MB limit, cache hit rate plummeted from 95% to 0%, MySQL connections spiked from 20 to 200, and the homepage returned 502.</p>
 <p><strong>Fix</strong>:</p>
 <pre><code># /etc/redis/redis.conf
 maxmemory 512mb
 maxmemory-policy allkeys-lru</code></pre>
-<p>The <code>allkeys-lru</code> strategy evicts least-recently-used keys instead of throwing errors. For <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache, this is the safest approach — when stale cache gets evicted, the next request reloads from MySQL and re-caches, with virtually zero user impact.</p>
+<p>The <code>allkeys-lru</code> strategy evicts least-recently-used keys instead of throwing errors. For <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache, this is the safest approach — when stale cache gets evicted, the next request reloads from MySQL and re-caches, with virtually zero user impact.</p>
 <p>I also added a daily monitoring script:</p>
 <pre><code>#!/bin/bash
 # /usr/local/bin/redis-memory-check.sh

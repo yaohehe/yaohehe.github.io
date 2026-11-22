@@ -77,13 +77,13 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag"><a href="/2026-09-27-wordpress-71-wp-cli-600-seo.html" class="internal-link">WordPress</a></span><span class="tag">WP-CLI</span><span class="tag">运维</span><span class="tag">安全加固</span><span class="tag">网站安全</span>
   </div>
   <div class="content">
-    <p>今年我帮一个做 B2B 白皮书的企业内容站做年度体检，结果夏天它真的出事了：Google Search Console 发来「网站被入侵」邮件，搜索结果里首页下方挂出了一行赌博跳转。我在自己的浏览器里打开首页——完全正常。换成手机 UA 和 Googlebot UA，跳转立刻出现。这种只对特定 UA 生效的伪装重定向（cloaked redirect）是 2026 年最典型的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 挂马形态之一：普通访客看不出问题，搜索引擎和爬虫却全部中招。</p>
+    <p>今年我帮一个做 B2B 白皮书的企业内容站做年度体检，结果夏天它真的出事了：Google Search Console 发来「网站被入侵」邮件，搜索结果里首页下方挂出了一行赌博跳转。我在自己的浏览器里打开首页——完全正常。换成手机 UA 和 Googlebot UA，跳转立刻出现。这种只对特定 UA 生效的伪装重定向（cloaked redirect）是 2026 年最典型的 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 挂马形态之一：普通访客看不出问题，搜索引擎和爬虫却全部中招。</p>
 <p>先说明：本文包含 <a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 联盟链接，你通过这些链接下单，我会拿到少量佣金，而你支付的价格不变。文中的工具全部是开源或官方免费版，事件来自我实际处理过的站点，域名与主机名已做脱敏。这篇文章只解决一个问题：<strong>从收到告警到站点恢复干净，你该按什么顺序做什么</strong>——因为顺序错了，你会亲手毁掉定位攻击入口的线索。</p>
 <h2>⏳ 太长不看版（TL;DR）</h2>
 <ul><li>**先保全，再清理，最后才加固**。第一时间删文件、改密码，等于把攻击者的入口痕迹一起抹掉。</li><li>**判断核心和插件是否被改**：`wp core verify-checksums` 加 `wp plugin verify-checksums --all`，两条命令半分钟出结果。</li><li>**定位漏洞入口**：WPScan 4.1 用 `-e vp` 只列有已知漏洞的插件，配合 `--wp-auth` 走 REST API 拿权威插件清单，比指纹猜测可靠得多。</li><li>**清后门四件套**：`wp core download --force` 覆盖核心、清空 `mu-plugins`、审计 administrator 用户、`wp config shuffle-salts` 轮换密钥。</li><li>**加固**：2FA 只装一个插件、`DISALLOW_FILE_EDIT`、文件权限收敛到 644/755、XML-RPC 与应用密码按需关闭。</li><li>本文的工位装备（4K USB-C 显示器、屏幕挂灯）放在文末「程序员工位装备」一节，均为联盟链接，不影响正文结论。</li></ul>
 <h2>前置准备：版本、工具与三分钟备份</h2>
-<p>我实际用的环境是 Ubuntu 24.04 LTS 加自托管 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>（不是托管主机，有完整 SSH 权限）。版本口径截至发稿：</p>
-<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></td><td style="border:1px solid #ddd;padding:8px;">7.1（代号 Mary Lou，2026-08-19 发布）</td><td style="border:1px solid #ddd;padding:8px;">数据库版本 db_version 61833；7.1 仍是当前唯一活跃维护的主分支</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">WP-CLI</td><td style="border:1px solid #ddd;padding:8px;">2.12.x</td><td style="border:1px solid #ddd;padding:8px;">`wp --info` 可确认；2.12 起 `wp core verify-checksums` 支持 `--exclude=`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">WPScan</td><td style="border:1px solid #ddd;padding:8px;">4.1（4.0.0 于 2026-05-20 发布）</td><td style="border:1px solid #ddd;padding:8px;">需要 Ruby 3.3 以上；免费 API token 每天 25 次请求</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PHP</td><td style="border:1px solid #ddd;padding:8px;">8.2 以上</td><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 官方支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">主机</td><td style="border:1px solid #ddd;padding:8px;">任意可 SSH 的 VPS</td><td style="border:1px solid #ddd;padding:8px;">建议内存 2GB 以上</td></tr></tbody></table>
+<p>我实际用的环境是 Ubuntu 24.04 LTS 加自托管 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>（不是托管主机，有完整 SSH 权限）。版本口径截至发稿：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">组件</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">版本</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">说明</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></td><td style="border:1px solid #ddd;padding:8px;">7.1（代号 Mary Lou，2026-08-19 发布）</td><td style="border:1px solid #ddd;padding:8px;">数据库版本 db_version 61833；7.1 仍是当前唯一活跃维护的主分支</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">WP-CLI</td><td style="border:1px solid #ddd;padding:8px;">2.12.x</td><td style="border:1px solid #ddd;padding:8px;">`wp --info` 可确认；2.12 起 `wp core verify-checksums` 支持 `--exclude=`</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">WPScan</td><td style="border:1px solid #ddd;padding:8px;">4.1（4.0.0 于 2026-05-20 发布）</td><td style="border:1px solid #ddd;padding:8px;">需要 Ruby 3.3 以上；免费 API token 每天 25 次请求</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">PHP</td><td style="border:1px solid #ddd;padding:8px;">8.2 以上</td><td style="border:1px solid #ddd;padding:8px;"><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 官方支持</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">主机</td><td style="border:1px solid #ddd;padding:8px;">任意可 SSH 的 VPS</td><td style="border:1px solid #ddd;padding:8px;">建议内存 2GB 以上</td></tr></tbody></table>
 <p>应急第一件事不是扫描，是备份，而且必须备到站外：</p>
 <pre><code>cd /var/www/html
 wp db export /root/incident/wp-db-$(date +%F).sql
@@ -112,18 +112,18 @@ wc -l /root/incident/recent-php.txt</code></pre>
 <p>被改动的文件会直接列出来：</p>
 <pre><code>Warning: File doesn't verify against checksum: wp-includes/class-wp-http.php
 Warning: File doesn't verify against checksum: wp-admin/includes/plugin.php
-Error: <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation doesn't verify against checksums.</code></pre>
+Error: <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation doesn't verify against checksums.</code></pre>
 <p>插件和主题同理，一定加 <code>--all</code>：</p>
 <pre><code>wp plugin verify-checksums --all
 wp theme verify-checksums --all</code></pre>
 <p>我测试的这台机器上，核心报了 2 个文件、插件报了 1 个。这里有个反直觉的点：<strong>校验和通过不代表站点没被入侵</strong>。它只能证明官方文件没被改，覆盖不到上传目录里的 PHP、自建插件、数据库里注入的内容，以及新冒出来的管理员账号。它是入口排查的第一步，不是结论。</p>
 <h2>Step 3：用 WPScan 4.1 找出攻击者从哪个插件进来</h2>
-<p>WPScan 4.0（2026-05-20 发布）做了一次大改，最容易踩的变更在这里：**默认扫描不再自动枚举插件了**。以前的 <code>wpscan --url example.com</code> 会拼命扫插件、烧光 API 配额；4.x 默认只查 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 版本、当前主题和基础安全项。想要什么必须显式加 <code>-e</code>。</p>
+<p>WPScan 4.0（2026-05-20 发布）做了一次大改，最容易踩的变更在这里：**默认扫描不再自动枚举插件了**。以前的 <code>wpscan --url example.com</code> 会拼命扫插件、烧光 API 配额；4.x 默认只查 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 版本、当前主题和基础安全项。想要什么必须显式加 <code>-e</code>。</p>
 <p>安装（需要 Ruby 3.3 以上，4.x 已支持 Ruby 4.0）：</p>
 <pre><code>gem install wpscan                    # 原生安装
 # 或最省事的容器路线，不依赖本机 Ruby
 docker pull wpscanteam/wpscan:latest</code></pre>
-<p>在 wpscan.com/api 注册拿免费 token（免费档每天 25 次请求）后，用应用密码做认证扫描。这是 4.x 最值钱的功能：它走 REST API 直接问 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 要「全部已装插件」的权威清单，连未启用的都会列出来，不再靠指纹猜测：</p>
+<p>在 wpscan.com/api 注册拿免费 token（免费档每天 25 次请求）后，用应用密码做认证扫描。这是 4.x 最值钱的功能：它走 REST API 直接问 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 要「全部已装插件」的权威清单，连未启用的都会列出来，不再靠指纹猜测：</p>
 <pre><code>export WPSCAN_API_TOKEN="你的token"
 
 wpscan --url https://example.com \
@@ -152,8 +152,8 @@ wp cron event delete wp_evil_sync
 wp db query "SELECT option_name FROM wp_options WHERE option_value LIKE '%<script%' OR option_value LIKE '%eval(%';"</code></pre>
 <p>最后把 <code>wp-config.php</code> 里除数据库四要素以外的常量翻一遍，特别是任何 <code>auto_prepend_file</code>，或者 <code>include</code> 指向 <code>uploads</code> 目录的写法——这类是最隐蔽的持久化手段。</p>
 <h2>💣 真实报错与解决方案（我踩到的 4 个）</h2>
-<h3>报错一：Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.</h3>
-<pre><code>Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.
+<h3>报错一：Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.</h3>
+<pre><code>Error: This does not seem to be a <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> installation.
 The used path is: /root
 Pass --path=`path/to/wordpress` or run `wp core download`.</code></pre>
 <p>**原因**：WP-CLI 在当前目录里找不到 <code>wp-load.php</code>。应急时用 root 从 <code>/root</code> 敲命令最容易踩这个，另外 <code>wp-config.php</code> 被移到上一级目录也会触发。</p>
@@ -167,9 +167,9 @@ Pass --path=`path/to/wordpress` or run `wp core download`.</code></pre>
 <pre><code>wpscan --url https://example.com --api-token "你的token" -e vp
 # 或用 sudo -E 保留环境变量
 sudo -E wpscan --url https://example.com -e vp</code></pre>
-<h3>报错三：Scan Aborted: The url supplied does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></h3>
-<pre><code>[!] Scan Aborted: The url supplied 'https://example.com/' does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.</code></pre>
-<p><strong>原因</strong>：两个极端。要么站点被 CDN 或 WAF 拦了，WPScan 拿到的是验证页；要么反过来——cloak 逻辑把 WPScan 的默认 UA 当爬虫，返回了跳转页，于是它认为这不是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>。后者在本次事故里就出现了，非常有迷惑性。</p>
+<h3>报错三：Scan Aborted: The url supplied does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a></h3>
+<pre><code>[!] Scan Aborted: The url supplied 'https://example.com/' does not seem to be running <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>.</code></pre>
+<p><strong>原因</strong>：两个极端。要么站点被 CDN 或 WAF 拦了，WPScan 拿到的是验证页；要么反过来——cloak 逻辑把 WPScan 的默认 UA 当爬虫，返回了跳转页，于是它认为这不是 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>。后者在本次事故里就出现了，非常有迷惑性。</p>
 <p><strong>解决</strong>：先确认谁看到的是真实站，再用参数绕开伪装：</p>
 <pre><code>curl -sI https://example.com/ | head -3          # 是否返回 WAF 挑战
 wpscan --url https://example.com -e vp \
@@ -187,7 +187,7 @@ chmod 600 wp-config.php</code></pre>
 <p>注意：<code>shuffle-salts</code> 之后所有用户会被强制登出，请挑低峰期执行并提前通知同事。</p>
 <h2>Step 5：加固，把复发概率压到最低</h2>
 <p>清理只是止血，加固才是防复发。按投入产出比排序，下面几件事做完，同类攻击基本不会再从同一个口子进来。</p>
-<p><strong>1）按角色强制 2FA。</strong> <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心至今没有内置双因素认证，必须靠插件。2026 年可用的免费方案主要有四个：WP 2FA（Melapress，有向导、可按角色强制、带宽限期）、Two-Factor（<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心贡献者维护，轻量，只做 TOTP、邮件与 U2F）、Wordfence Login Security（专注登录保护）、Solid Security（前身 iThemes Security，属于整套加固方案的一个模块）。只装一个——堆两个 2FA 插件导致的登录过滤器冲突，是这个场景下最常见的自锁来源。管理员账号建议不设宽限期。</p>
+<p><strong>1）按角色强制 2FA。</strong> <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心至今没有内置双因素认证，必须靠插件。2026 年可用的免费方案主要有四个：WP 2FA（Melapress，有向导、可按角色强制、带宽限期）、Two-Factor（<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心贡献者维护，轻量，只做 TOTP、邮件与 U2F）、Wordfence Login Security（专注登录保护）、Solid Security（前身 iThemes Security，属于整套加固方案的一个模块）。只装一个——堆两个 2FA 插件导致的登录过滤器冲突，是这个场景下最常见的自锁来源。管理员账号建议不设宽限期。</p>
 <p>**2）锁掉后台文件编辑**，在 <code>wp-config.php</code> 里加：</p>
 <pre><code>define('DISALLOW_FILE_EDIT', true);
 // 更严格：连插件与主题的安装更新一起禁掉，改由 WP-CLI 执行
@@ -212,7 +212,7 @@ chmod 600 /var/www/html/wp-config.php</code></pre>
 <p>👉 <a href="https://www.amazon.com/dp/B0DK59YKRS?tag=techpassive-20" target="_blank" rel="nofollow sponsored">在 Amazon 查看 BenQ ScreenBar Halo 2 >></a></p>
 <p>以上价格均为截至发稿的公开口径，<a href="https://www.amazon.com/?tag=techpassive-20" target="_blank" rel="nofollow sponsored">Amazon</a> 价格变动频繁，下单前请自行确认。</p>
 <h2>FAQ</h2>
-<p><strong>Q：<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 自带 2FA 吗？</strong></p>
+<p><strong>Q：<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 自带 2FA 吗？</strong></p>
 <p>A：不带。核心至今没有内置双因素认证，必须装插件。常用免费方案有 WP 2FA、Two-Factor、Wordfence Login Security 与 Solid Security，只装一个，避免登录过滤器冲突。</p>
 <p><strong>Q：WPScan 免费版够用吗？</strong></p>
 <p>A：做应急排查够用。免费档每天 25 次请求，单站一次含插件枚举的扫描通常消耗几次；配额紧张时用 <code>-e vp</code> 只扫有漏洞的插件最省。需要批量管理大量站点时才用得上付费档。</p>

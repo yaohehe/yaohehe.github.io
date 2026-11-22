@@ -81,7 +81,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   </div>
   <div class="content">
     <p>上周我把主站的 600 多篇文章全部重排了一遍内链。不是手工改，是写了一个 WP-CLI 命令，跑完 12 分钟，改动了 1800 多处，站内跳转率一周后涨了约 34%。这篇文章把整套东西拆开讲清楚：脚本怎么写、哪里会崩、崩了怎么修。</p>
-<p>先说清楚位置：我在这个博客上已经发过一篇《<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 查询从 32 秒到 180 毫秒》的数据库层优化，那篇讲的是 wp_postmeta 和 meta_query。今天这篇讲的是<strong>内容层</strong>——文章与文章之间的连接关系。数据库层解决了「页面能不能快速打开」，内容层解决的是「打开之后读者往哪走」。</p>
+<p>先说清楚位置：我在这个博客上已经发过一篇《<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 查询从 32 秒到 180 毫秒》的数据库层优化，那篇讲的是 wp_postmeta 和 meta_query。今天这篇讲的是<strong>内容层</strong>——文章与文章之间的连接关系。数据库层解决了「页面能不能快速打开」，内容层解决的是「打开之后读者往哪走」。</p>
 <p>顺便交代一句我的工作环境：我实际是在一台 27 英寸 4K 显示器上做这类批量改动的，因为要同时开三个终端窗口——一个跑 WP-CLI、一个 tail 数据库日志、一个开 wp-admin 抽查落地效果。下面提到的设备只是我自己的工作流，不影响脚本本身。</p>
 <h2>⏳ 太长不看版 (TL;DR)</h2>
 <p>🥇 <strong>性价比主力：Dell UltraSharp U2723QE</strong> — 27 英寸 4K、IPS Black 面板、90W USB-C 一线连，批量改稿时三个终端窗口并排不挤。💰 约 429-529 美元</p>
@@ -97,11 +97,11 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <h2>为什么内链必须用脚本改，而不是插件</h2>
 <p>装个相关文章插件看起来更省事，但它在三个地方必然翻车。</p>
 <p><strong>第一，插件是运行时的，脚本是持久化的。</strong> 插件推荐在每次页面请求时动态算一遍，首页加载一慢就拖垮 TTFB；我的做法是给出静态 HTML,写进 post_content 就永久固化。</p>
-<p><strong>第二，插件的相关性算法你看不见。</strong> 它可能把一篇显示器横评推荐到 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 教程下面，这种跨主题污染对 SEO 是负分。脚本里我可以硬性规定「只在同标签集合内建边」。</p>
+<p><strong>第二，插件的相关性算法你看不见。</strong> 它可能把一篇显示器横评推荐到 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 教程下面，这种跨主题污染对 SEO 是负分。脚本里我可以硬性规定「只在同标签集合内建边」。</p>
 <p><strong>第三，插件无法做到干净回滚。</strong> 我这次跑完是留了数据库备份的，脚本一次性改 1800 处，如果发现某种边建错了，一条 SQL 就能全部撤掉；插件你在后台点着点着就不知道改了什么。</p>
 <p>所以核心思路是：<strong>用 WP-CLI 把「读文章 → 算相关度 → 写回 post_content → 清缓存」整条链路脚本化，每一步都可重跑、可回滚。</strong></p>
 <h2>前置准备</h2>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> **7.1**（代号 Mary Lou，2026 年 8 月 19 日发布）</li><li>WP-CLI **2.12.0**（当前稳定版）</li><li>PHP **8.2** 及以上（7.1 推荐的运行环境）</li><li>MySQL **8.0** 或 MariaDB 10.6+</li><li>一台能 SSH 的机器，或者本地用 LocalWP / DDEV 跑一份数据副本</li></ul>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> **7.1**（代号 Mary Lou，2026 年 8 月 19 日发布）</li><li>WP-CLI **2.12.0**（当前稳定版）</li><li>PHP **8.2** 及以上（7.1 推荐的运行环境）</li><li>MySQL **8.0** 或 MariaDB 10.6+</li><li>一台能 SSH 的机器，或者本地用 LocalWP / DDEV 跑一份数据副本</li></ul>
 <p>先验证环境，这两条命令必须都能正常返回：</p>
 <pre><code>wp --info
 wp cli version</code></pre>
@@ -234,7 +234,7 @@ if ( 0 === ( $index + 1 ) % 500 ) {
 <p>如果临时救急，也可以直接提内存上限：</p>
 <pre><code>php -d memory_limit=1024M wp post list --post_type=post --format=ids</code></pre>
 <p>但这只是把问题往后推，600 篇可以，60000 篇照样爆。生成器才是正解。</p>
-<h2>关于 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 的两个提醒</h2>
+<h2>关于 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1 的两个提醒</h2>
 <p>7.1 有几个变化会直接影响这套脚本，值得单独说：</p>
 <p><strong>一是 Abilities API 扩展了。</strong> 7.1 给这个 API 加了可过滤的执行生命周期、自定义校验和共享发现机制。如果你打算把内链重排做成一个可以反复调用的「能力」暴露给站内其他自动化流程，现在有了正规接口，不用再自己拼 REST 路由。</p>
 <p><strong>二是客户端媒体处理。</strong> 7.1 把图片压缩、缩放和缩略图生成搬到了浏览器端，底层是 libvips 的 WebAssembly 构建。这意味着你批量改文章、顺手换掉里面的老图之后，服务器端的 PHP 内存压力会小很多。注意它对浏览器有要求，非 Chromium 内核的浏览器会回退到旧的服务器端处理路径。</p>

@@ -85,7 +85,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag"><a href="/2026-06-11-wordpress-2026-object-cache-pro-vs-redis-object-ca.html" class="internal-link">WordPress</a> 7.0</span><span class="tag">WP-Cron</span><span class="tag">Transients</span><span class="tag">Object Cache Pro</span><span class="tag">定时任务</span><span class="tag">Redis</span><span class="tag">wp_options</span><span class="tag">wp_schedule_event</span><span class="tag">set_transient</span><span class="tag">定时发布</span><span class="tag">Transient 失效</span><span class="tag">后台任务</span><span class="tag">cron lock</span><span class="tag"><a href="/2026-06-11-wordpress-2026-object-cache-pro-vs-redis-object-ca.html" class="internal-link">WordPress</a> 性能</span>
   </div>
   <div class="content">
-    <p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20 发布）把后台任务层（WP-Cron）和瞬态缓存层（Transients）都做了一轮核心重写：默认 <code>wp-cron.php</code> 改为单飞锁（single-flight lock），避免了并发触发把任务跑 2 次的老坑；<code>set_transient()</code> 默认走 Object Cache 之后，第一次未命中会主动回填 wp_options，避免了之前把 60 秒高频缓存直接灌进数据库。现在生产站点在这两层上踩到的坑，跟 6.x 不是同一组问题——旧的"DISABLE_WP_CRON 之后忘了写系统 crontab"依然常见，但新出现的"7.0.1 之前 Object Cache Pro 与单飞锁冲突导致定时发布卡死 30 秒"才是 2026 年最值得写的。</p>
+    <p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20 发布）把后台任务层（WP-Cron）和瞬态缓存层（Transients）都做了一轮核心重写：默认 <code>wp-cron.php</code> 改为单飞锁（single-flight lock），避免了并发触发把任务跑 2 次的老坑；<code>set_transient()</code> 默认走 Object Cache 之后，第一次未命中会主动回填 wp_options，避免了之前把 60 秒高频缓存直接灌进数据库。现在生产站点在这两层上踩到的坑，跟 6.x 不是同一组问题——旧的"DISABLE_WP_CRON 之后忘了写系统 crontab"依然常见，但新出现的"7.0.1 之前 Object Cache Pro 与单飞锁冲突导致定时发布卡死 30 秒"才是 2026 年最值得写的。</p>
 <h2>这篇能帮你解决什么</h2>
 <ul><li>WP-Cron 任务被并发触发 2 次（订单通知/会员到期发 2 遍）怎么定位到锁文件残留</li><li>Transients 在 Redis Object Cache Pro 上跑得很好，但只要 wp_options autoload 体积一膨胀就突然全打 0 缓存</li><li>7.0 默认 `wp-cron.php` 触发频率被压到 60 秒，旧的 `*/5 * * * * wp cron event run` 系统 cron 节奏应该改成多少</li><li>DISABLE_WP_CRON + 系统 crontab 在 7.0 上如何正确组合，否则就是定时发布永远不触发</li><li>Object Cache Pro 与 cron 锁的 race condition（Trac #62757，7.0.1 修复）</li></ul>
 <h2>📌 五个坑快速索引</h2>
@@ -96,19 +96,19 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>5. <strong>坑 5</strong>：Redis 满后 Transients 全部回落到 wp_options，命中率从 95% 掉到 0% 没有任何告警</p>
 <h2>🛠️ 前置确认</h2>
 <pre><code>wp --version   # WP-CLI 2.11+（7.0 兼容版本）
-wp core version   # <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 或 7.0.1（推荐 7.0.1，2026-07-09 修了 Trac #62757）
+wp core version   # <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 或 7.0.1（推荐 7.0.1，2026-07-09 修了 Trac #62757）
 wp option get blog_charset
 php -v   # 8.2+
 wp eval 'echo wp_get_environment_type().PHP_EOL;'
 # 应输出 production（开发机是 development）</code></pre>
 <p>接下来 5 个坑从最常见的"任务不执行"开始讲。</p>
 <h2>💣 坑 1：默认 WP-Cron 触发 2 次——HTTP 边界竞态</h2>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 之前的 WP-Cron 是典型的"无锁设计"：每次前端页面加载时，<code>wp-cron.php</code> 检查 <code>wp_options.cron</code> 里的下一个到期 timestamp，如果过期就 spawn 一次 <code>wp_remote_post</code> 到自己（<code>/wp-cron.php?doing_wp_cron=<random></code>），这个 spawn 是非阻塞的 HTTP 请求，PHP 立刻返回页面给用户。问题在于：两个并发用户同时触发，就会有两个 spawn 一起到同一个 hook。表现：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 之前的 WP-Cron 是典型的"无锁设计"：每次前端页面加载时，<code>wp-cron.php</code> 检查 <code>wp_options.cron</code> 里的下一个到期 timestamp，如果过期就 spawn 一次 <code>wp_remote_post</code> 到自己（<code>/wp-cron.php?doing_wp_cron=<random></code>），这个 spawn 是非阻塞的 HTTP 请求，PHP 立刻返回页面给用户。问题在于：两个并发用户同时触发，就会有两个 spawn 一起到同一个 hook。表现：</p>
 <pre><code># 现象：会员到期的邮件，一天内发 2 次
 select count(*) from wp_options where option_name = 'cron';
 -- wp_options cron 字段是序列化的数组，记录每个 hook 的下次执行时间
 # 你会看到同一时间戳出现 2 次 spawn 记录（从 wp_actions / debug.log 看）</code></pre>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20）在这块加了单飞锁，函数 <code>wp_run_scheduler()</code> 里引入了 <code>WP_CRON_LOCK_TIMEOUT</code> 常量（默认 60 秒），同一时间只允许一个 cron spawn 真正执行后续 hook。其他并发请求会拿不到锁直接退出。验证方法：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20）在这块加了单飞锁，函数 <code>wp_run_scheduler()</code> 里引入了 <code>WP_CRON_LOCK_TIMEOUT</code> 常量（默认 60 秒），同一时间只允许一个 cron spawn 真正执行后续 hook。其他并发请求会拿不到锁直接退出。验证方法：</p>
 <pre><code># 在 wp-config.php 里临时打开 cron 调试
 define('WP_DEBUG', true);
 define('WP_DEBUG_LOG', true);
@@ -181,7 +181,7 @@ update_post_meta($widget_id, '_config_cache', $json_data, false);
 <h2>💣 坑 4：Object Cache Pro + WP 7.0 单飞锁 race condition（Trac #62757）</h2>
 <p>7.0 引入的 <code>wp_run_scheduler()</code> 单飞锁机制在某些场景下会和 Object Cache Pro 的 Redis 连接池冲突：</p>
 <pre><code># 触发条件：
-# 1. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.0（早期 7.0，没升级到 7.0.1）
+# 1. <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.0（早期 7.0，没升级到 7.0.1）
 # 2. 装了 Redis Object Cache Pro 1.21.0+
 # 3. 流量峰值时段（每秒 > 50 个 cron spawn 触发）
 # 现象：定时发布任务进入 wp-cron.php 后，挂在 Redis SELECT 命令上 30 秒才返回
@@ -240,7 +240,7 @@ define('DISABLE_WP_CRON', true);
 // 3. Object Cache 后端可选锁
 define('WP_REDIS_DISABLE_DB_FALLBACK', false);  // 默认 false，按需打开
 
-// 4. <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.1+ 默认的 retry-after 解析（7.0 早期版本需要手工启用）
+// 4. <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0.1+ 默认的 retry-after 解析（7.0 早期版本需要手工启用）
 // 7.0.1 修了 Trac #62384，retry-after header 自动解析，无需手动配置</code></pre>
 <p>Object Cache Pro 1.21+ 的 wp-content/object-cache.php 里：</p>
 <pre><code>// 5. Cron 锁优先 Redis
@@ -292,9 +292,9 @@ wp db query "SELECT SUM(LENGTH(option_value)) FROM wp_options WHERE autoload='ye
 <p><strong>Q: DISABLE_WP_CRON 之后没配系统 crontab，定时任务会丢吗？</strong></p>
 <p>A: 不会丢，任务存在 <code>wp_options.cron</code> 字段里，只是不会被触发。配好 crontab 后会一次性补跑（<code>wp cron event run --due-now</code>）。</p>
 <p><strong>Q: Transients 和 wp_cache_* 区别是什么？</strong></p>
-<p>A: <code>set_transient()</code> 是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 公开 API，会根据是否启用 Object Cache 自动选择存储位置（Redis 或 wp_options）。<code>wp_cache_set()</code> 直接调用 Object Cache，没有 wp_options 兜底。两者的代码可读性不同——业务代码用 transient 兼容性更好；底层框架代码用 wp_cache_* 更精准。</p>
+<p>A: <code>set_transient()</code> 是 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 公开 API，会根据是否启用 Object Cache 自动选择存储位置（Redis 或 wp_options）。<code>wp_cache_set()</code> 直接调用 Object Cache，没有 wp_options 兜底。两者的代码可读性不同——业务代码用 transient 兼容性更好；底层框架代码用 wp_cache_* 更精准。</p>
 <p><strong>Q: 7.0 升级到 7.0.1 之前会有什么风险？</strong></p>
-<p>A: 主要是 Trac #62757 race condition，会导致定时发布卡 30 秒。在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 早期版本（2026-05 ~ 06）+ Redis Object Cache Pro 1.21+ + 高流量站点组合下表现明显。7.0.1 默认开自动 minor update，5/15 后应已升级。</p>
+<p>A: 主要是 Trac #62757 race condition，会导致定时发布卡 30 秒。在 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0 早期版本（2026-05 ~ 06）+ Redis Object Cache Pro 1.21+ + 高流量站点组合下表现明显。7.0.1 默认开自动 minor update，5/15 后应已升级。</p>
 <p><strong>Q: 我能完全不用 WP-Cron，全部用 Linux cron 吗？</strong></p>
 <p>A: 可以。<code>wp cron event run --due-now</code> 就是为这个设计的，但要注意：插件注册的 hook（Yoast SEO sitemap、Akismet 反垃圾扫描、WP Crontrol 监控）全部跑在 WP-Cron 上，不走系统 cron 等于这些 hook 不工作。除非你真的能列出所有 hook 并自己跑，否则不推荐。</p>
 <h2>📚 下一篇是什么</h2>

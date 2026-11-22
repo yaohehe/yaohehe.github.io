@@ -82,19 +82,19 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag"><a href="/2026-08-30-wordpress-performance-monitoring-2026-query-monito-en.html" class="internal-link">WordPress</a></span><span class="tag">媒体库</span><span class="tag">WebP</span><span class="tag">srcset</span><span class="tag">图片优化</span><span class="tag">性能优化</span>
   </div>
   <div class="content">
-    <p>上个月某天凌晨 3 点，UptimeRobot 推了一条告警：<code>/wp-content/uploads/</code> 所在分区磁盘使用率 92%。我登上服务器一看，<code>wp-content/uploads/2026/08/</code> 下一个月份就堆了 14GB 图片——明明上传的原图加起来才 2GB。顺着目录一查，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自动生成的 thumbnail 副本把空间吃了 7 倍。</p>
-<p>这件事让我重新审视了 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在生产环境下那些"官方文档不会告诉你的坑"。这篇文章就是这次凌晨 debug 的完整复盘，外加我后来在另一台 WooCommerce 站上踩到的 4 个额外陷阱。一共 5 个，每个都有具体的报错日志、根因分析和修复命令。</p>
+    <p>上个月某天凌晨 3 点，UptimeRobot 推了一条告警：<code>/wp-content/uploads/</code> 所在分区磁盘使用率 92%。我登上服务器一看，<code>wp-content/uploads/2026/08/</code> 下一个月份就堆了 14GB 图片——明明上传的原图加起来才 2GB。顺着目录一查，<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 自动生成的 thumbnail 副本把空间吃了 7 倍。</p>
+<p>这件事让我重新审视了 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在生产环境下那些"官方文档不会告诉你的坑"。这篇文章就是这次凌晨 debug 的完整复盘，外加我后来在另一台 WooCommerce 站上踩到的 4 个额外陷阱。一共 5 个，每个都有具体的报错日志、根因分析和修复命令。</p>
 <h2>实验环境与目标</h2>
-<p><strong>目标</strong>：搞清楚 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在「图片上传 → 存储 → 前端展示」整条链路上到底有哪些性能黑洞，以及怎么用最小改动堵住它们。</p>
+<p><strong>目标</strong>：搞清楚 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库在「图片上传 → 存储 → 前端展示」整条链路上到底有哪些性能黑洞，以及怎么用最小改动堵住它们。</p>
 <p><strong>实验环境</strong>：</p>
-<ul><li><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20 发布，PHP 8.2 推荐版本）</li><li>PHP 8.2-FPM + OPcache</li><li>MySQL 8.0（`utf8mb4_0900_ai_ci`）</li><li>Nginx 1.28.2</li><li>3000+ 篇文章、15000+ 张附件的 WooCommerce 产品站</li></ul>
-<p><strong>成本控制</strong>：全部修复用的是 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心功能 + 免费插件，0 额外开销。</p>
+<ul><li><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.0（2026-05-20 发布，PHP 8.2 推荐版本）</li><li>PHP 8.2-FPM + OPcache</li><li>MySQL 8.0（`utf8mb4_0900_ai_ci`）</li><li>Nginx 1.28.2</li><li>3000+ 篇文章、15000+ 张附件的 WooCommerce 产品站</li></ul>
+<p><strong>成本控制</strong>：全部修复用的是 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心功能 + 免费插件，0 额外开销。</p>
 <h2>陷阱一：thumbnail 副本数量失控——一张原图变出 15+ 个文件</h2>
 <h3>触发现场</h3>
 <p>上传一张 3000×2000 的产品主图后，用 <code>find</code> 扫描生成的文件：</p>
 <pre><code>find wp-content/uploads/2026/09/ -name "product-*" -type f | wc -l</code></pre>
 <p>输出 <strong>17</strong>。17 个文件，来自 1 张原图。</p>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心默认生成 3 个 thumbnail 副本（<code>thumbnail</code> 150×150、<code>medium</code> 300×300、<code>medium_large</code> 768×0、<code>large</code> 1024×1024），但 WooCommerce + 主题 + 各种插件会通过 <code>add_image_size()</code> 注册额外尺寸。我在 <code>wp-includes/media.php</code> 里用一行 WP-CLI 查出了当前所有注册尺寸：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心默认生成 3 个 thumbnail 副本（<code>thumbnail</code> 150×150、<code>medium</code> 300×300、<code>medium_large</code> 768×0、<code>large</code> 1024×1024），但 WooCommerce + 主题 + 各种插件会通过 <code>add_image_size()</code> 注册额外尺寸。我在 <code>wp-includes/media.php</code> 里用一行 WP-CLI 查出了当前所有注册尺寸：</p>
 <pre><code>wp eval 'global $_wp_additional_image_sizes; print_r($_wp_additional_image_sizes);'</code></pre>
 <p>结果吓人：除了默认 4 个，WooCommerce 注册了 <code>woocommerce_thumbnail</code>（300×300 hard crop）、<code>woocommerce_single</code>（600×600）、<code>shop_catalog</code>、<code>shop_single</code>、<code>shop_thumbnail</code>，主题又加了 <code>blog-thumb</code>、<code>hero-image</code>、<code>portfolio-grid</code>……合计 **13 个自定义尺寸**，加上默认 4 个 = 每张图 17 个文件。</p>
 <h3>根因</h3>
@@ -124,7 +124,7 @@ find wp-content/uploads/2026/09/ -name "test-*" -type f | wc -l
 <p>禁用 6 个无用尺寸后，新上传图片的文件数从 17 降到 7。磁盘空间月增量从 14GB 降到 ~4GB，减少了 <strong>71%</strong>。</p>
 <h2>陷阱二：WebP 自动转码的"静默双重存储"</h2>
 <h3>触发现场</h3>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.8+ 在支持的服务器上会自动将 JPEG/PNG 上传转为 WebP 并存储为额外副本。我以为这能省空间，结果 <code>ls -la</code> 一看：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 5.8+ 在支持的服务器上会自动将 JPEG/PNG 上传转为 WebP 并存储为额外副本。我以为这能省空间，结果 <code>ls -la</code> 一看：</p>
 <pre><code>ls -la wp-content/uploads/2026/09/product-hero*
 # -rw-r--r-- 1 www-data www-data 856K product-hero.jpg
 # -rw-r--r-- 1 www-data www-data 312K product-hero.webp</code></pre>
@@ -158,7 +158,7 @@ grep -c "\.webp" /var/log/nginx/access.log
 <h3>触发现场</h3>
 <p>我用 <code>wp_get_attachment_image()</code> 输出产品图，本意是让浏览器根据屏幕尺寸选择合适的 srcset 副本。用 Chrome DevTools 的 Network 面板一查，桌面端竟然加载了 3000×2000 的原图（856KB），而不是 600×400 的 medium 副本（45KB）。</p>
 <h3>根因</h3>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>wp_calculate_image_srcset()</code> 只为通过 <code>add_image_size()</code> 注册且设置了 <code>crop</code> 模式的尺寸生成 srcset 条目。如果你的主题用 <code>the_post_thumbnail('full')</code> 或自定义 <code>wp_get_attachment_image()</code> 但没传 <code>sizes</code> 参数，srcset 不会被注入 HTML。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 <code>wp_calculate_image_srcset()</code> 只为通过 <code>add_image_size()</code> 注册且设置了 <code>crop</code> 模式的尺寸生成 srcset 条目。如果你的主题用 <code>the_post_thumbnail('full')</code> 或自定义 <code>wp_get_attachment_image()</code> 但没传 <code>sizes</code> 参数，srcset 不会被注入 HTML。</p>
 <p>更隐蔽的情况：如果你在 <code>functions.php</code> 里用 <code>wp_get_attachment_image_srcset_filter</code> 移除了 srcset（有些"性能优化"教程会教你这么做），响应式图片就彻底废了。</p>
 <h3>修复</h3>
 <p><strong>Step 1</strong>：检查当前页面的 srcset 是否正常输出：</p>
@@ -184,9 +184,9 @@ the_post_thumbnail('medium_large'); // 768×auto</code></pre>
 <p>修复后用 Lighthouse 跑一遍，"Properly size images" 审计项从红色警告变为通过。桌面端图片传输大小从 856KB 降到 62KB，<strong>LCP 改善约 1.2 秒</strong>。</p>
 <h2>陷阱四：Multisite 下 upload_path 漂移导致图片互相覆盖</h2>
 <h3>触发现场</h3>
-<p>在 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 网络里，子站 A 上传了一张 <code>logo.png</code>，子站 B 也上传了一张同名 <code>logo.png</code>——结果子站 A 的 logo 被覆盖了。两个站的图片 URL 都指向 <code>/wp-content/uploads/sites/2/logo.png</code>。</p>
+<p>在 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 网络里，子站 A 上传了一张 <code>logo.png</code>，子站 B 也上传了一张同名 <code>logo.png</code>——结果子站 A 的 logo 被覆盖了。两个站的图片 URL 都指向 <code>/wp-content/uploads/sites/2/logo.png</code>。</p>
 <h3>根因</h3>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 用 <code>sites/{blog_id}/</code> 子目录隔离各站的上传路径，但 **文件名冲突没有保护机制**。<code>wp_unique_filename()</code> 在单站点模式下会加 <code>-1</code>、<code>-2</code> 后缀，但在 Multisite 模式下，如果两个子站的上传目录因为某种配置错误指向了同一个物理路径（比如 <code>upload_path</code> 被手动改过、或迁移时 wp_options 里的 <code>upload_path</code> 值没清理），文件就会互相覆盖。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Multisite 用 <code>sites/{blog_id}/</code> 子目录隔离各站的上传路径，但 **文件名冲突没有保护机制**。<code>wp_unique_filename()</code> 在单站点模式下会加 <code>-1</code>、<code>-2</code> 后缀，但在 Multisite 模式下，如果两个子站的上传目录因为某种配置错误指向了同一个物理路径（比如 <code>upload_path</code> 被手动改过、或迁移时 wp_options 里的 <code>upload_path</code> 值没清理），文件就会互相覆盖。</p>
 <p>更常见的情况是：从单站点迁移到 Multisite 后，旧站的 <code>upload_path</code> 选项仍然指向根目录而不是 <code>sites/{id}/</code>，导致新上传的文件落到了全局目录里。</p>
 <h3>修复</h3>
 <p><strong>Step 1</strong>：检查所有子站的 upload_path 配置：</p>
@@ -205,7 +205,7 @@ done</code></pre>
 <h3>触发现场</h3>
 <p>用 Screaming Frog 扫描站点时发现，15000 张附件每张都生成了一个独立的 attachment 页面（<code>/attachment/xxx/</code>），这些页面内容几乎空白——只有一张图和标题。更糟糕的是，Yoast SEO 默认把这些页面编入了 sitemap，Google 索引了 12000 多个这样的薄页面。</p>
 <h3>根因</h3>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心为每个上传的媒体文件创建一个 attachment post type 的页面。在古腾堡之前这是有意义的（作为图片的独立详情页），但在现代 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 使用场景里，这些页面几乎没用，反而：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 核心为每个上传的媒体文件创建一个 attachment post type 的页面。在古腾堡之前这是有意义的（作为图片的独立详情页），但在现代 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 使用场景里，这些页面几乎没用，反而：</p>
 <ul><li>浪费 Google 爬虫的 crawl budget</li><li>产生大量 thin content，可能触发 Google Panda/Spam 检测</li><li>增加数据库 `wp_posts` 表的行数（每张图 = 1 行 attachment post）</li></ul>
 <h3>修复：重定向 attachment 页面到父文章</h3>
 <p><strong>方案 A</strong>：Yoast SEO 内置功能（最简单）：</p>
@@ -248,7 +248,7 @@ wp option update wpseo_titles '{"redirect_attachment":"on"}' --format=json</code
 
 WP_PATH="/var/www/html"
 
-echo "=== <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库健康检查 $(date) ==="
+echo "=== <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 媒体库健康检查 $(date) ==="
 
 # 1. 附件总数
 ATTACH_COUNT=$(wp post list --post_type=attachment --format=count --path=$WP_PATH)

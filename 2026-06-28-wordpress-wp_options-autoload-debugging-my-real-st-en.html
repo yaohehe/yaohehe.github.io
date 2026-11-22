@@ -85,7 +85,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <span class="tag">English</span><span class="tag"><a href="/2026-06-11-wordpress-wp_options-autoload-optimization-the-com-en.html" class="internal-link">WordPress</a></span><span class="tag">wp-cli</span><span class="tag">database optimization</span><span class="tag">autoload</span>
   </div>
   <div class="content">
-    <p>I started taking <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> performance seriously in 2025. My site was slow despite a high-spec VPS. TTFB hovered around 2.3 seconds. In January 2026, I ran a WP-CLI query against wp_options and got a shock: 7.2MB of autoloaded data. Normal is under 800KB.</p>
+    <p>I started taking <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> performance seriously in 2025. My site was slow despite a high-spec VPS. TTFB hovered around 2.3 seconds. In January 2026, I ran a WP-CLI query against wp_options and got a shock: 7.2MB of autoloaded data. Normal is under 800KB.</p>
 <p>This is the complete story of how I spent three days finding the problem, cleaning it up, and making sure it never came back. Every pitfall below is something I actually hit.</p>
 <h2>Step 1: Measure First — Don't Guess</h2>
 <p>The first thing I did was run this SQL query through WP-CLI:</p>
@@ -97,9 +97,9 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <pre><code>wp db query "SELECT option_name, LENGTH(option_value)/1024 AS size_kb FROM wp_options WHERE autoload='yes' ORDER BY LENGTH(option_value) DESC LIMIT 20"</code></pre>
 <p>The top 5 options alone usually account for 60%+ of total autoload. In my case, the number one offender was a stale transient option that had expired 8 months prior. Single entry: 1.4MB.</p>
 <h2>Pitfall 1: Expired Transients Pile Up After Migration</h2>
-<p>Transients are <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s way of caching temporary data. They are supposed to expire and disappear automatically. But I found two problems:</p>
+<p>Transients are <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s way of caching temporary data. They are supposed to expire and disappear automatically. But I found two problems:</p>
 <p><strong>Problem A: Migration left orphaned transients behind</strong></p>
-<p>When I moved my site from shared hosting to VPS, I imported the database directly. The transient entries came along for the ride. The site had already moved on, but those cached values were still sitting in wp_options — abandoned islands that <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> still loaded into memory on every page view.</p>
+<p>When I moved my site from shared hosting to VPS, I imported the database directly. The transient entries came along for the ride. The site had already moved on, but those cached values were still sitting in wp_options — abandoned islands that <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> still loaded into memory on every page view.</p>
 <p><strong>Problem B: Competing cache plugins double-wrote the same transient</strong></p>
 <p>At the time I was running both Redis Object Cache and another performance plugin simultaneously. Both were writing transients to wp_options, but neither knew about the other. The same transient ended up stored 3 times over. Size doubled.</p>
 <p>Cleanup commands:</p>
@@ -113,14 +113,14 @@ wp transient delete --expired
 wp db query "DELETE pm FROM wp_postmeta pm LEFT JOIN wp_posts wp ON wp.ID = pm.post_id WHERE wp.ID IS NULL"</code></pre>
 <p>That <code>--dry-run</code> flag saved me the first time. Without it, I accidentally deleted 2000+ active session entries along with the expired ones.</p>
 <h2>Pitfall 2: Dead Plugin Residue Still Set to autoload='yes'</h2>
-<p>After uninstalling seven or eight plugins over time, each had left configuration data behind in wp_options — with autoload=yes. On every page load, <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> dutifully loaded all those corpses into memory.</p>
+<p>After uninstalling seven or eight plugins over time, each had left configuration data behind in wp_options — with autoload=yes. On every page load, <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> dutifully loaded all those corpses into memory.</p>
 <p>Finding them:</p>
 <pre><code>wp db query "SELECT option_name, LENGTH(option_value)/1024 AS size_kb FROM wp_options WHERE autoload='yes' AND (option_name LIKE '%transient%' OR option_name LIKE '%cache%' OR option_name LIKE '%session%') ORDER BY LENGTH(option_value) DESC LIMIT 30"</code></pre>
 <p>I built a table with three columns: option name, size in KB, and "still in use?" (checked by searching the codebase). Options that were definitely dead got their autoload flag turned off rather than deleted — safer, in case I needed to recover.</p>
 <pre><code>wp option set-autoload <option_name> no</code></pre>
-<p>Result: autoload dropped from 7.2MB to 1.8MB without touching a single real piece of data. I just told <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> to stop loading the dead weight.</p>
+<p>Result: autoload dropped from 7.2MB to 1.8MB without touching a single real piece of data. I just told <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> to stop loading the dead weight.</p>
 <h2>Pitfall 3: Cron Schedule Data Accumulated Unchecked</h2>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s wp-cron system stores schedule data in wp_options. When I checked, cron-related options alone consumed 900KB — half of which were completed "zombie tasks" that had run but never been cleaned up.</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a>'s wp-cron system stores schedule data in wp_options. When I checked, cron-related options alone consumed 900KB — half of which were completed "zombie tasks" that had run but never been cleaned up.</p>
 <pre><code># See currently scheduled cron events
 wp cron list | head -30
 

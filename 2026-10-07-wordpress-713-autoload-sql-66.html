@@ -83,7 +83,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
     <p>如果你给自己的WordPress 站做过性能体检，大概率敲过这一句：</p>
 <pre><code>SELECT SUM(LENGTH(option_value)) FROM wp_options WHERE autoload='yes';</code></pre>
 <p>然后拿着那个数字，和「autoload 应该小于 800KB」的传说对比一下，觉得没问题就关掉页面。</p>
-<p>问题在于：**从 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 开始，这句 SQL 数的不是你的站点真实加载量。** 它会漏掉一部分行，而且漏得越来越厉害——站点运行越久、升级跨越的版本越多，偏差越大。这不是配置问题，是官方在 2024 年 7 月改了 <code>autoload</code> 列的取值语义，而绝大多数教程（以及托管商的知识库文章）没跟上。</p>
+<p>问题在于：**从 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 开始，这句 SQL 数的不是你的站点真实加载量。** 它会漏掉一部分行，而且漏得越来越厉害——站点运行越久、升级跨越的版本越多，偏差越大。这不是配置问题，是官方在 2024 年 7 月改了 <code>autoload</code> 列的取值语义，而绝大多数教程（以及托管商的知识库文章）没跟上。</p>
 <p>我实际运营的一个内容站，套用这句老 SQL 得到 222.0 KB / 123 行；换成对齐核心逻辑的口径重算，是 261.4 KB / 142 行。<strong>18% 的低估。</strong> 而这个站点离 800KB 的告警线还远，所以低估暂时不致命——可一旦你的站点真的到了临界区间，你手上那个偏低的数字就是最坏情况：它让你以为还没到，从而继续放着不管。</p>
 <p>这篇讲三件事：正确的口径是什么、怎么用 WP-CLI 2.12 的官方命令改而不是手改数据库、以及三个被普遍混为一谈的阈值（150KB / 800KB / 900KB）分别在管什么。</p>
 <h2>⏳ 太长不看版 (TL;DR)</h2>
@@ -95,12 +95,12 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <p>---</p>
 <p><em></em></p>
 <h2>第一步：搞清 6.6 到底改了什么</h2>
-<p>改动来自 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 的 Options API 更新（<a href="https://make.wordpress.org/core/2024/06/18/options-api-disabling-autoload-for-large-options/" target="_blank" rel="nofollow sponsored">官方 dev note</a>）。核心只有一句：`add_option()` 和 `update_option()` 的 `$autoload` 参数默认值从 `'yes'` 变成了 `null`，并且数据库里 `autoload` 列现在会写入五种值：</p>
+<p>改动来自 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 6.6 的 Options API 更新（<a href="https://make.wordpress.org/core/2024/06/18/options-api-disabling-autoload-for-large-options/" target="_blank" rel="nofollow sponsored">官方 dev note</a>）。核心只有一句：`add_option()` 和 `update_option()` 的 `$autoload` 参数默认值从 `'yes'` 变成了 `null`，并且数据库里 `autoload` 列现在会写入五种值：</p>
 <table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">列里的值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">来源</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">是否参与自动加载</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`on`</td><td style="border:1px solid #ddd;padding:8px;">代码显式传了 `true`</td><td style="border:1px solid #ddd;padding:8px;">是，必须加载</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`off`</td><td style="border:1px solid #ddd;padding:8px;">代码显式传了 `false`</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto`</td><td style="border:1px solid #ddd;padding:8px;">没显式指定，交给内核判断</td><td style="border:1px solid #ddd;padding:8px;">**是**（目前仍加载）</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">`auto-on`</td><td style="border:1px solid #ddd;padding:8px;">内核启发式判定「该加载」</td><td style="border:1px solid #ddd;padding:8px;">是</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">`auto-off`</td><td style="border:1px solid #ddd;padding:8px;">内核启发式判定「别加载」</td><td style="border:1px solid #ddd;padding:8px;">否</td></tr></tbody></table>
 <p>两个关键点：</p>
 <p>1. **<code>auto</code> 目前算「加载」。** 内核用一个叫 <code>wp_autoload_values_to_autoload()</code> 的函数决定，函数体就是白纸黑字的四元素数组 <code>'yes', 'on', 'auto-on', 'auto'</code>。你的老 SQL 只匹配其中一个。</p>
 <p>2. **没有升级脚本。** 官方在 dev note 里明确写了不提供迁移。所以一个从旧版本一路升上来的站点，<code>autoload</code> 列里同时躺着 <code>yes</code> 和 <code>auto-on</code> 两套值——这就是为什么老 SQL 的偏差会随时间累积。</p>
-<p>顺带一提，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.3 已经在 2026 年 10 月 6 日发布，这是个安全修复版本（含 Comments 后台的存储型 XSS、WXR 导出的二阶 SQL 注入等），官方只维护最新版本。如果你的站点还停在 7.1.2 或更早，先升级再谈性能——顺序反了没有意义。</p>
+<p>顺带一提，<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 7.1.3 已经在 2026 年 10 月 6 日发布，这是个安全修复版本（含 Comments 后台的存储型 XSS、WXR 导出的二阶 SQL 注入等），官方只维护最新版本。如果你的站点还停在 7.1.2 或更早，先升级再谈性能——顺序反了没有意义。</p>
 <h2>第二步：用三条 SQL 把真实数字算出来</h2>
 <p>先备份数据库，这一步没有任何理由跳过：</p>
 <pre><code>wp db export backup-$(date +%F).sql --allow-root</code></pre>
@@ -149,7 +149,7 @@ done</code></pre>
 <p>顺带说一个 WP-CLI 自己的坑：<code>wp option list --autoload=on --format=total_bytes</code> 这条命令看起来是干这件事的，它**也少算**——它只匹配 <code>on</code> 和 <code>yes</code> 两个值，把 <code>auto</code> / <code>auto-on</code> 全漏了。审计请用上面的 SQL，别用这条。</p>
 <h2>踩坑录：我实际遇到的 3 个报错</h2>
 <h3>报错一：`Error: YIKES! It looks like you're running this as root.`</h3>
-<p>完整文案后面还跟着 <code>You probably meant to run this as the user that your <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> install exists under.</code></p>
+<p>完整文案后面还跟着 <code>You probably meant to run this as the user that your <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> install exists under.</code></p>
 <p><strong>原因</strong>：WP-CLI 检测到当前是 root，主动拦下来了。这是保护机制——root 身份下站点里任何插件代码都拥有服务器完整控制权。</p>
 <p><strong>解决</strong>（推荐第二种）：</p>
 <pre><code># 方案一：单次绕过
@@ -181,7 +181,7 @@ LIMIT 20;</code></pre>
 <h2>行业应用：把它变成流程，而不是一次性任务</h2>
 <p>单站点手改一次是体力活，多站点就必须是流程。我实际用的做法是把它塞进三个位置：</p>
 <p>**上线前体检**。任何新站、新插件组合上线前，把查询一 + 查询二作为验收项跑一遍。判断标准不要写成「小于 800KB」，写成「查询三里 <code>auto-off</code> 的总和 < 100KB 且无单条 > 150KB」——前者是内核的提示线，后者才是真实结构。</p>
-<p><strong>CI 里的 diff 检查</strong>。<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站的性能退化极少是一次性的，通常是某次插件升级悄悄带进来的。在 CI 里跑：</p>
+<p><strong>CI 里的 diff 检查</strong>。<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站的性能退化极少是一次性的，通常是某次插件升级悄悄带进来的。在 CI 里跑：</p>
 <pre><code>NEW=$(wp db query "SELECT ROUND(SUM(LENGTH(option_value))/1024,1) FROM wp_options
       WHERE autoload IN ('yes','on','auto-on','auto')" --skip-column-names)
 if (( $(echo "$NEW > $BASE + 50" | bc -l) )); then
@@ -195,7 +195,7 @@ fi</code></pre>
 <p><strong>认知</strong>从「800KB 是安全线」变成「800KB 只是告警线，150KB 和 900KB 各管各的，三个都不是安全线」。这一处不改，你会一直用一个不存在的标准做判断。</p>
 <p>至于动手的部分，用 <code>wp option set-autoload</code> 而不是手写 UPDATE，多花两秒钟敲命令，能省掉一整类「改了没生效」的排查。</p>
 <p>如果你的站点 autoload 总量本来就远低于阈值，本文不会让你变快——它的价值是让你的数字终于可信。想确认自己站上的实际数字，建议直接查官方页面核对当前版本的阈值与函数行为：<a href="https://developer.wordpress.org/?p=154080" target="_blank" rel="nofollow sponsored">Site Health autoloaded options 检查</a>、<a href="https://developer.wordpress.org/?p=154392" target="_blank" rel="nofollow sponsored">wp_autoload_values_to_autoload()</a>。</p>
-<p><strong>Q: 我升级到最新 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后，autoload 会自动瘦身吗？</strong></p>
+<p><strong>Q: 我升级到最新 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 后，autoload 会自动瘦身吗？</strong></p>
 <p>A: 不会。官方在6.6 的 dev note 里明确写了不提供升级脚本。升级只会让**此后新写入**的 option 用上新的 <code>auto-*</code> 语义，历史行需要你手动改。</p>
 <p>**Q: <code>auto</code> 和 <code>auto-on</code> 有区别吗？**</p>
 <p>A: 有。<code>auto</code> 是「没有任何决定」，<code>auto-on</code> 是「内核启发式判定该加载」。当前 7.1 下两者都参与加载，但官方在 6.6 dev note 里说过 <code>auto</code> 的默认行为**未来可能变**。如果你依赖某个靠 <code>auto</code> 加载的 option，显式改成 <code>on</code> 更稳。</p>

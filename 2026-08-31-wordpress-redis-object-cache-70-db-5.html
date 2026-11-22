@@ -86,7 +86,7 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
   </div>
   <div class="content">
     <p># wp_options 膨胀到 4.2MB 之后，我才认真对待 Object Cache —— 一次从裸奔到 DB 查询减少 70% 的真实复盘</p>
-<p>说实话，在 2026 年之前我对 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 Object Cache 一直抱着"可有可无"的态度。毕竟站点访问量不大，MySQL 也不是扛不住。直到有一天 <code>wp_options</code> 的 autoload 数据膨胀到 4.2MB，首页 TTFB 从 600ms 飙到 1.8s，我才意识到——不装缓存就是在裸奔。</p>
+<p>说实话，在 2026 年之前我对 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 的 Object Cache 一直抱着"可有可无"的态度。毕竟站点访问量不大，MySQL 也不是扛不住。直到有一天 <code>wp_options</code> 的 autoload 数据膨胀到 4.2MB，首页 TTFB 从 600ms 飙到 1.8s，我才意识到——不装缓存就是在裸奔。</p>
 <p>这篇文章记录了我从零配置 Redis Object Cache 到命中率稳定在 95% 的全过程，以及中间踩过的 5 个真实陷阱。不是那种"三步搞定"的教程，而是每个坑我都结结实实摔了一遍之后的复盘。</p>
 <p>---</p>
 <h2>wp_options autoload 膨胀的真实现场</h2>
@@ -94,12 +94,12 @@ h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
 <pre><code>SELECT SUM(LENGTH(option_value)) / 1024 / 1024 AS autoload_mb
 FROM wp_options WHERE autoload = 'yes';</code></pre>
 <p>结果是 <strong>4.2MB</strong>。</p>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 官方推荐的 autoload 数据量是 <strong>小于 1MB</strong>，800KB 是警戒线。4.2MB 意味着每次页面加载，PHP 都要从 MySQL 拉 4MB 数据到内存里——即使这个页面根本不需要其中 90% 的数据。</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 官方推荐的 autoload 数据量是 <strong>小于 1MB</strong>，800KB 是警戒线。4.2MB 意味着每次页面加载，PHP 都要从 MySQL 拉 4MB 数据到内存里——即使这个页面根本不需要其中 90% 的数据。</p>
 <p>更离谱的是，我用 WP-CLI 排查发现，光是 <code>wpseo_sitemap_*</code> 系列的 transient 就占了 1.2MB，还有几个插件把自己的整个配置数组塞进了 autoload。这些数据每次请求都在传输，但 90% 的页面根本用不到。</p>
 <p>---</p>
 <h2>坑 1：Redis 8.10 的 protected-mode 默认配置炸了连接</h2>
 <p>装 Redis 本身不难，<code>apt install redis-server</code> 一行搞定。但问题出在 Redis 8.x（2026 年 7 月发布的 8.10.1 是当前稳定版）的默认安全配置上。</p>
-<p>Redis 8.10 默认开启了 <code>protected-mode yes</code>，并且**不再允许空密码远程连接**。如果你的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 和 Redis 在同一台机器上，<code>127.0.0.1:6379</code> 本身没问题。但很多人的部署架构是 Docker Compose 或者分离部署的——这时候 Redis 监听在 <code>0.0.0.0:6379</code>，protected-mode 会直接拒绝连接，报错是：</p>
+<p>Redis 8.10 默认开启了 <code>protected-mode yes</code>，并且**不再允许空密码远程连接**。如果你的 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 和 Redis 在同一台机器上，<code>127.0.0.1:6379</code> 本身没问题。但很多人的部署架构是 Docker Compose 或者分离部署的——这时候 Redis 监听在 <code>0.0.0.0:6379</code>，protected-mode 会直接拒绝连接，报错是：</p>
 <pre><code>Connection refused: Redis server went away</code></pre>
 <p>这个错误信息极其误导——它不是连接被拒绝，而是 Redis 在 protected-mode 下主动断开。</p>
 <p><strong>修复方案</strong>：</p>
@@ -112,7 +112,7 @@ requirepass your_strong_password_here</code></pre>
   redis:
     image: redis:8.10-alpine
     command: redis-server --requirepass ${REDIS_PASSWORD}</code></pre>
-<p><a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 端的 <code>wp-config.php</code>：</p>
+<p><a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 端的 <code>wp-config.php</code>：</p>
 <pre><code>define('WP_REDIS_PASSWORD', getenv('REDIS_PASSWORD') ?: 'your_strong_password_here');</code></pre>
 <p>我在这一步浪费了整整 2 小时，因为错误日志里只有一行 <code>Connection refused</code>，完全没有提到 protected-mode。</p>
 <p>---</p>
@@ -136,8 +136,8 @@ wp db query "SELECT SUM(LENGTH(option_value))/1024/1024 as mb FROM wp_options WH
 <p>我用这个方法把 autoload 从 4.2MB 降到了 780KB，主要是清掉了 Yoast 的 sitemap transient（1.2MB）和几个插件的配置缓存（每个 200-500KB）。</p>
 <p>---</p>
 <h2>坑 3：drop-in 文件权限导致 Object Cache 状态显示"Not Running"</h2>
-<p>Redis Object Cache 插件的核心机制是用一个 <code>object-cache.php</code> drop-in 文件替换 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认的空缓存实现。这个文件会被放到 <code>wp-content/object-cache.php</code>。</p>
-<p>问题出在文件权限上。如果你的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 是用 <code>www-data</code> 用户跑的，但文件是由 <code>root</code> 用户安装的（比如用 <code>sudo wp plugin install</code>），drop-in 文件的权限是 <code>644 root:root</code>。PHP 进程以 <code>www-data</code> 身份运行时，能读取这个文件但**不能验证它的写入权限**——Redis 连接会成功，但缓存写入会静默失败。</p>
+<p>Redis Object Cache 插件的核心机制是用一个 <code>object-cache.php</code> drop-in 文件替换 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 默认的空缓存实现。这个文件会被放到 <code>wp-content/object-cache.php</code>。</p>
+<p>问题出在文件权限上。如果你的 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 是用 <code>www-data</code> 用户跑的，但文件是由 <code>root</code> 用户安装的（比如用 <code>sudo wp plugin install</code>），drop-in 文件的权限是 <code>644 root:root</code>。PHP 进程以 <code>www-data</code> 身份运行时，能读取这个文件但**不能验证它的写入权限**——Redis 连接会成功，但缓存写入会静默失败。</p>
 <p>表现就是：Redis Object Cache 插件的设置页面显示 "Status: Connected"，但 "Hit Rate" 永远是 0%。</p>
 <p><strong>修复</strong>：</p>
 <pre><code># 检查 drop-in 文件权限
@@ -167,13 +167,13 @@ define('WC_SESSION_USE_WP_DEFAULT', true);</code></pre>
 <p>这一步清理后，wp_options autoload 又少了 800KB，从 780KB 降到接近 0（只剩下核心插件的必要配置）。</p>
 <p>---</p>
 <h2>坑 5：Redis 内存满后的 LRU 策略导致缓存雪崩</h2>
-<p>Redis 默认的内存策略是 <code>noeviction</code>——当内存用满后，新的写入会直接报错。如果你的 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站点有大量缓存写入（比如首页渲染、WooCommerce 产品页），Redis 内存满了之后，Object Cache 的写入会全部失败，<a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 回退到直接查 MySQL，瞬间把数据库打满。</p>
+<p>Redis 默认的内存策略是 <code>noeviction</code>——当内存用满后，新的写入会直接报错。如果你的 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 站点有大量缓存写入（比如首页渲染、WooCommerce 产品页），Redis 内存满了之后，Object Cache 的写入会全部失败，<a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> 回退到直接查 MySQL，瞬间把数据库打满。</p>
 <p>我在站点做了一次大促活动后遇到了这个问题：Redis 内存从 200MB 涨到 512MB 上限，然后缓存命中率从 95% 暴跌到 0%，MySQL 连接数从 20 飙到 200，首页直接 502。</p>
 <p><strong>修复</strong>：</p>
 <pre><code># /etc/redis/redis.conf
 maxmemory 512mb
 maxmemory-policy allkeys-lru</code></pre>
-<p><code>allkeys-lru</code> 策略会优先淘汰最近最少使用的 key，而不是报错。对于 <a href="https://www.amazon.com/s?k=WordPress&i=stripbooks-intl-ship&crid=2GP4ZRUNK7CK3&sprefix=wordpress%2Cstripbooks-intl-ship%2C439&ref=nb_sb_noss_1&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache 来说，这是最安全的策略——旧的缓存被淘汰后，下次访问会从 MySQL 重新加载并缓存，用户体验几乎没有影响。</p>
+<p><code>allkeys-lru</code> 策略会优先淘汰最近最少使用的 key，而不是报错。对于 <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored">WordPress</a> Object Cache 来说，这是最安全的策略——旧的缓存被淘汰后，下次访问会从 MySQL 重新加载并缓存，用户体验几乎没有影响。</p>
 <p>我后来还加了一个监控脚本，每天检查 Redis 内存使用率：</p>
 <pre><code>#!/bin/bash
 # /usr/local/bin/redis-memory-check.sh
