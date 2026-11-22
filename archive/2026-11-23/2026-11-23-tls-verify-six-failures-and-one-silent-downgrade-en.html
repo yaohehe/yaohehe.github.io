@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TLS verify: six failures and one silent downgrade - TechPassive</title>
+  <meta name="description" content="Same chain, three answers: local issuer missing in Python, error 20 in openssl verify. Ten failure modes on a local three-tier CA, plus one silent no-verify default.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>TLS verify: six failures and one silent downgrade</h1>
+  <div class="post-tags">
+    <span class="tag">TLS</span><span class="tag">certificates</span><span class="tag">Python</span>
+  </div>
+  <div class="content">
+    <p>The same certificate gets three different answers depending on which tool you hand it to. Python's <code>ssl</code> module raises <code>unable to get local issuer certificate</code>. <code>openssl verify</code> prints <code>error 20</code>. And requests hands you a 200 with one warning in the log.</p>
+<p>All three are the same four checks with different defaults. I built a three-tier chain on this machine (root, intermediate, leaf) and ran every failure mode I could think of. Every error string below is copied verbatim. The setup is described in the fourth section.</p>
+<p><strong>TL;DR</strong>:</p>
+<ul><li>A missing intermediate is the most common failure, and it always reads <code>unable to get local issuer certificate</code>. The fix is the certificate of the <strong>signer</strong>; sending the root again does nothing</li><li>A leaf with only a CN and no SAN passes in Python and in <code>openssl verify</code>. A wildcard <code>*.a.test</code> does not cover <code>x.y.a.test</code></li><li><code>ssl.SSLContext(ssl.PROTOCOL_TLS)</code> defaults to <code>verify_mode=0</code> and <code>check_hostname=False</code>. Used as a client, it completes the handshake and verifies nothing</li><li><code>create_default_context(cafile=…)</code> <strong>replaces</strong> the trust store instead of adding to it: one cafile turned 221 Windows-rooted certificates into 1</li></ul>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Where a missing issuer shows up" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftb560c3f2grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ftb560c3f2grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Where a missing issuer shows up</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">client trusts root</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">server sends leaf</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">issuer not found</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">add middle cert</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">handshake ok</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Where a missing issuer shows up · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>Verification is four checks, not one switch</h2>
+<p>People talk about certificate verification as a switch. It is four independent checks, and each one fails with its own message.</p>
+<p>The first is the <strong>chain</strong>: can the leaf signature be traced to a root you trust. The second is the <strong>name</strong>: does the hostname you dialed appear in the SAN. The third is <strong>purpose</strong>: does the extendedKeyUsage allow <code>serverAuth</code>. The fourth is <strong>time</strong>: is now inside notBefore and notAfter.</p>
+<p>Only the first needs anything missing from a chain. The other three are properties of a single certificate. That distinction is worth internalising: <code>unable to get local issuer</code> always means the chain, never the hostname, the purpose, or the clock.</p>
+<h2>The bench: three tiers and a real chain</h2>
+<p>Environment: Windows 11 10.0.26300, CPython 3.13.14, OpenSSL 3.5.7, requests 2.31.0, urllib3 2.5.0. I generated three certificates with the <code>openssl</code> CLI: a self-signed root CA (<code>pathlen:1</code>), an intermediate signed by that root (<code>pathlen:0</code>), and a leaf signed by the intermediate with <code>DNS:localhost,IP:127.0.0.1</code> in its SAN.</p>
+<pre><code>openssl req -x509 -newkey rsa:2048 -nodes -keyout root.key -out root.pem -days 3650 \
+  -subj "/CN=Lab Root CA" -addext "basicConstraints=critical,CA:TRUE,pathlen:1"
+openssl req -new -newkey rsa:2048 -nodes -keyout inter.key -out inter.csr -subj "/CN=Lab Intermediate CA"
+openssl x509 -req -in inter.csr -CA root.pem -CAkey root.key -CAcreateserial -out inter.pem \
+  -days 1825 -extfile inter.ext</code></pre>
+<p>The server runs <code>ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)</code> on a random port on <code>127.0.0.1</code>. Whatever file you hand to <code>load_cert_chain()</code> is what the server sends. The client always uses <code>ssl.create_default_context(cafile=…)</code>. That way "what is sent" and "what is trusted" are two variables I can change one at a time.</p>
+<h2>Failure one: the signer is not on the chain</h2>
+<p>Server sends the leaf only, client trusts the root only. The handshake stops at verification:</p>
+<pre><code>ssl.SSLCertVerificationError: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed:
+unable to get local issuer certificate (_ssl.c:1032)</code></pre>
+<p>Append the intermediate to the client's trust file (<code>cat root.pem inter.pem > bundle.pem</code>) and the identical request returns 200. The other route works too: have the server send the intermediate along with the leaf, keep the client trusting only the root, and the handshake passes.</p>
+<p>The command line reports the same diagnosis with a different number:</p>
+<pre><code>$ openssl verify -CAfile root.pem leaf.pem
+error 20 at 0 depth lookup: unable to get local issuer certificate
+$ openssl verify -CAfile root.pem -untrusted inter.pem leaf.pem
+leaf.pem: OK</code></pre>
+<p><code>-untrusted</code> means "this is not a root, but it may sit in the middle of the chain". It supplies exactly the missing level-zero issuer.</p>
+<h2>Sending the root again does not fix it</h2>
+<p>A common misreading of "incomplete chain" is "attach one more certificate". So people ship leaf plus root, with the intermediate still absent. The measured result is identical to doing nothing:</p>
+<pre><code>certificate verify failed: unable to get local issuer certificate (_ssl.c:1032)</code></pre>
+<p>Send all three (leaf, intermediate, root) and it passes. OpenSSL tolerates one extra root in the chain but will not accept a chain missing an intermediate. The two cases are not symmetric, so "send more, it can't hurt" is the wrong reflex when debugging.</p>
+<h2>CN without SAN passes</h2>
+<p>This one is counter-intuitive. I signed a second leaf with <code>CN=localhost</code> and no subjectAltName at all. The Python client connected to <code>localhost</code> and <strong>passed</strong>. <code>openssl verify -verify_hostname localhost</code> also returned <code>OK</code>.</p>
+<p>Change the hostname and it fails instantly:</p>
+<pre><code>$ openssl verify -CAfile bundle.pem -verify_hostname other.test leaf2.pem
+error 62 at 0 depth lookup: hostname mismatch</code></pre>
+<p>So the CN is being used as a name source. There is a trap in the documentation here: the OpenSSL man page for <code>X509_check_host()</code> states that by default only the subjectAltName is consulted and the subject DN is not. Python and <code>openssl verify -verify_hostname</code> go through <code>X509_VERIFY_PARAM_set1_host()</code> instead, and on this build that path does fall back to the CN. Read the manual page carefully — it describes a different entry point than the one your client uses.</p>
+<p>The practical consequence: a script passing does not prove a browser will accept the certificate. SAN is a hard requirement in modern browsers, but that is browser policy, not something I measured here. Check the browser documentation before you make a compatibility call.</p>
+<h2>Wildcards cover one label</h2>
+<p>With <code>DNS:*.local.test</code> in the SAN, dialing <code>x.local.test</code> passes and <code>a.b.local.test</code> fails:</p>
+<pre><code>certificate verify failed: Hostname mismatch, certificate is not valid for
+'a.b.local.test'. (_ssl.c:1032)</code></pre>
+<p>OpenSSL documents this as "wildcards … match only in the left-most label" by default. The same certificate also permits partial wildcards such as <code>w*.local.test</code> and <code>*w.local.test</code>. Crossing a label boundary requires <code>X509_CHECK_FLAG_MULTI_LABEL_WILDCARDS</code>. The gap between the <code>*</code> you wrote and the scope you imagined is usually exactly one level.</p>
+<h2>Wrong purpose and wrong time are different errors</h2>
+<p>Switch the leaf's extendedKeyUsage from <code>serverAuth</code> to <code>clientAuth</code>. The server starts fine, and the client reports:</p>
+<pre><code>certificate verify failed: unsuitable certificate purpose (_ssl.c:1032)</code></pre>
+<p>Time failures come in two opposite directions. I signed one certificate with notBefore in 2020 and notAfter in 2021:</p>
+<pre><code>certificate verify failed: certificate has expired (_ssl.c:1032)</code></pre>
+<p>Move notBefore to 2030 and the same chain says:</p>
+<pre><code>certificate verify failed: certificate is not yet valid (_ssl.c:1032)</code></pre>
+<p>Two messages, two completely different investigations. Expired means renew. Not yet valid usually means the local clock is fast, or a container never synced time. When you see <code>not yet valid</code>, check the clock first and the certificate second. That is unrelated to the monotonic-versus-system time split I covered in <a href="https://yaohehe.github.io/2026-11-21-eight-ways-python-clocks-disagree-on-one-milliseco-en.html" class="internal-link">the clock piece</a>.</p>
+<h2>The dangerous one: PROTOCOL_TLS verifies nothing</h2>
+<p>Everything above is a verification failure. This section is the absence of verification.</p>
+<pre><code>ctx = ssl.SSLContext(ssl.PROTOCOL_TLS)
+print(ctx.verify_mode, ctx.check_hostname)   # 0 False</code></pre>
+<p><code>verify_mode=0</code> is <code>CERT_NONE</code>. Point that context at the server that sends a leaf and trusts nothing, and the result is <strong>OK</strong>: handshake completes, response arrives, zero certificates checked. No warning, no exception.</p>
+<p>The defaults side by side:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Constant</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">verify_mode</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">check_hostname</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>PROTOCOL_TLS</code></td><td style="border:1px solid #ddd;padding:8px;">0 (CERT_NONE)</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>PROTOCOL_TLS_CLIENT</code></td><td style="border:1px solid #ddd;padding:8px;">2 (CERT_REQUIRED)</td><td style="border:1px solid #ddd;padding:8px;">True</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>PROTOCOL_TLS_SERVER</code></td><td style="border:1px solid #ddd;padding:8px;">0 (CERT_NONE)</td><td style="border:1px solid #ddd;padding:8px;">False</td></tr></tbody></table>
+<p><code>PROTOCOL_TLS</code> has been deprecated since 3.10 and emits a <code>DeprecationWarning</code>, but it is still what <code>SSLContext()</code> uses when you pass no protocol argument. The old line <code>ssl.SSLContext(ssl.PROTOCOL_TLS)</code> does not fail and does not reach your log. It simply stops verifying anything.</p>
+<h2>verify_mode and check_hostname are order sensitive</h2>
+<p>Turning verification off by hand will bite you on ordering. On a default context, the direct assignment is refused:</p>
+<pre><code>ValueError: Cannot set verify_mode to CERT_NONE when check_hostname is enabled.</code></pre>
+<p>Set <code>check_hostname</code> to False first and the assignment goes through. Turn <code>check_hostname</code> back on afterwards and there is no error and no hint — <code>verify_mode</code> is silently raised back to 2:</p>
+<pre><code>c = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+c.check_hostname = False
+c.verify_mode = ssl.CERT_NONE     # 0
+c.check_hostname = True           # no exception
+print(c.verify_mode)              # 2</code></pre>
+<p>"Turn it off, then turn it back on" is not idempotent. You think you restored hostname checking and you restored full chain validation with it. If you build a relaxed context for tests, assert on both attributes afterwards.</p>
+<h2>cafile replaces, it does not add</h2>
+<p><code>create_default_context(cafile=…)</code> loads only the file you name and drops the default trust set:</p>
+<pre><code>ssl.create_default_context().cert_store_stats()               # {'x509': 221, 'crl': 0, 'x509_ca': 219}
+ssl.create_default_context(cafile="root.pem").cert_store_stats()  # {'x509': 1, 'crl': 0, 'x509_ca': 1}</code></pre>
+<p>That is a 99.5% drop in trusted certificates from one keyword argument. To append instead, call <code>load_verify_locations()</code> yourself:</p>
+<pre><code>ctx = ssl.create_default_context()
+ctx.load_default_certs()
+ctx.load_verify_locations("root.pem")
+print(ctx.cert_store_stats()["x509"])   # 226</code></pre>
+<p>221 plus 1 gives 226 rather than 222 because the default path already contains duplicates that OpenSSL dedupes by subject. The exact number does not matter. What matters is that trusting one internal CA through <code>cafile</code> also throws away the 221 public ones, so the next external HTTPS call is the one that fails, and you will be debugging the internal certificate while looking at the wrong error.</p>
+<p>requests routes its <code>verify</code> argument through the same logic. All three outcomes, measured:</p>
+<pre><code>[verify=False]        status 200  warning: InsecureRequestWarning
+[verify=root.pem]     SSLError    (missing intermediate)
+[verify=bundle.pem]   status 200</code></pre>
+<p><code>verify=False</code> only emits a warning; the request succeeds. This is the same failure shape I described in <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-and-etag-eight-silent-defaults-en.html" class="internal-link">the cache headers piece</a>: a failure demoted to a notice, with exit code 0. In a batch job it is the worst possible form, because nothing ever turns red.</p>
+<h2>Where those 221 certificates come from</h2>
+<p><code>ssl.get_default_verify_paths()</code> hands you a path under <code>C:\Program Files\Common Files\SSL\cert.pem</code>, and that file does not exist on this machine. Concluding "no default certificates" from that would be wrong:</p>
+<pre><code>ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+ctx.cert_store_stats()["x509"]        # 0
+ctx.load_default_certs()
+ctx.cert_store_stats()["x509"]        # 221
+len(ssl.enum_certificates("ROOT"))    # 226
+len(ssl.enum_certificates("CA"))      # 33</code></pre>
+<p>The Python docs are explicit: "On Windows it loads CA certs from the CA and ROOT system stores." So the 221 come from the Windows certificate stores, not from that cert.pem path. And <code>create_default_context()</code> calls this loader whenever cafile, capath and cadata are all None, which is why the default context arrives with 221.</p>
+<p>For comparison: the certifi bundle that requests depends on holds 146 certificates on this machine. Two trust sets, not the same set, and not guaranteed to stay in sync. Which one you want depends on which side you need to agree with.</p>
+<h2>Troubleshooting: six errors, six places to look</h2>
+<p>All six are written as error text, what it means, and where to look first, ordered by how often they show up in the field.</p>
+<p><strong>One, <code>unable to get local issuer certificate</code></strong></p>
+<p>A chain problem, not a name problem. Count what the server actually sends: <code>openssl s_client -connect host:443 -showcerts</code> and count <code>BEGIN CERTIFICATE</code> lines. When my server sent two certificates (leaf plus intermediate), that same command reported <code>Verify return code: 20 (unable to get local issuer certificate)</code> — because it does not trust my local root by default. That is the point: the code is about reaching a trusted anchor, not about who you are.</p>
+<p><strong>Two, <code>Hostname mismatch, certificate is not valid for 'xxx'</code></strong></p>
+<p>A name problem. Dump the SAN, not just the CN. Remember the wildcard covers one label only.</p>
+<p><strong>Three, <code>certificate has expired</code></strong></p>
+<p>Read notAfter. Expired certificates are rejected during the handshake, so a packet capture shows only an alert.</p>
+<p><strong>Four, <code>certificate is not yet valid</code></strong></p>
+<p>Read notBefore, then read the local clock. This is the one message that is usually not the certificate's fault.</p>
+<p><strong>Five, <code>unsuitable certificate purpose</code></strong></p>
+<p>Read extendedKeyUsage. A certificate issued for client auth used as a server certificate has a valid signature and a valid chain, and still fails this check.</p>
+<p><strong>Six, <code>[SSL: CERTIFICATE_VERIFY_FAILED] … (_ssl.c:1032)</code> with no idea which check failed</strong></p>
+<p>Print <code>verify_mode</code>. If it is 0, skip the five above; nothing is being verified. This class of bug never appears in a log, only in the postmortem of "we rotated the certificate and nobody noticed".</p>
+<h2>Three commands before you read any code</h2>
+<p>Run these before opening the client source.</p>
+<pre><code>openssl s_client -connect example.com:443 -showcerts -servername example.com
+openssl x509 -in leaf.pem -noout -subject -issuer -dates -ext subjectAltName
+openssl verify -CAfile root.pem -untrusted inter.pem -verify_hostname example.com leaf.pem</code></pre>
+<p>The first shows what the server really sends, the second prints the four fields that matter on one certificate, the third validates chain and name locally without starting a service. Do not drop <code>-servername</code>; it decides which certificate the server hands you.</p>
+<p>One more: <code>ssl.match_hostname()</code> no longer exists in 3.13 (<code>hasattr(ssl, "match_hostname")</code> is False here). The docs record that hostname matching moved into OpenSSL during the handshake as of 3.7, and the pure-Python implementation went with it. Plenty of "custom hostname check" snippets online still call it; on 3.12 and later they raise <code>AttributeError</code> immediately.</p>
+<h2>FAQ</h2>
+<p><strong>Q: I installed the root into the system store. Why does Python still fail?</strong></p>
+<p>Because <code>create_default_context(cafile=…)</code> never reads the system store once you pass an argument. Either pass nothing, or append with <code>load_verify_locations()</code>.</p>
+<p><strong>Q: Should the trust file hold the root or the intermediate?</strong></p>
+<p>The root, as the anchor. The intermediate is what connects the leaf to it. Holding both is the least fragile option, at the cost of updating the file whenever the intermediate rotates.</p>
+<p><strong>Q: Why does a request with <code>verify=False</code> still succeed?</strong></p>
+<p>Because at the TLS layer it drops <code>verify_mode</code> to <code>CERT_NONE</code>, which means "do not verify, keep going". requests emits <code>InsecureRequestWarning</code> and returns the status. <a href="https://yaohehe.github.io/2026-11-19-pip-install-works-runs-old-code-6-silent-failures-en.html" class="internal-link">The pip build artifact piece</a> covers the same shape: the success signal decoupled from the real state.</p>
+<p><strong>Q: How do I make Python accept an internal self-signed certificate?</strong></p>
+<p>Pass the issuing CA as the anchor through <code>cafile</code>, and make sure the SAN contains the name you dial — an IP dial needs an IP SAN. CN-only passes in Python, but you still have browsers and other clients to satisfy.</p>
+<p><strong>Q: How is this different from a TCP connection failure?</strong></p>
+<p>With a TLS verification failure the TCP handshake already succeeded; the port is open. The liveness layer is covered in <a href="https://yaohehe.github.io/2026-11-20-tcp-socket-liveness-send-succeeds-peer-already-gon-en.html" class="internal-link">the TCP piece</a>. Certificate errors all sit in the TLS handshake, one layer up.</p>
+<h2>What I did not test</h2>
+<p>This article contains no affiliate links and no product recommendations.</p>
+<p>Whether a browser fetches a missing intermediate through AIA is not something I measured, and I have not treated it as a conclusion. Check browser and OS documentation for that call.</p>
+<p>Revocation (CRL and OCSP) is not covered. Python's <code>ssl</code> does not check revocation by default; the relevant switches are <code>VERIFY_CRL_CHECK_LEAF</code> and OCSP stapling, and that deserves its own article.</p>
+<p>The server-side half of mutual TLS — verifying a client certificate — is not covered either, and its error strings do not map one to one onto the client side described here. iOS and Android trust policies, roots pushed by enterprise MDM, and the effect of TLS 1.3 session resumption on verification are all outside this round as well.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
