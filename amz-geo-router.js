@@ -18,8 +18,10 @@
   var US_TAG = 'techpassive-20';
 
   function rehost(href, host) {
-    return href.replace(/https?:\/\/(www\.)?amazon\.(com|co\.jp)/i, function (m, p, www, h) {
-      return p + 'www.amazon.' + host;
+    // 2026-11-22 修复：旧版 return p + 'www.amazon.' + host 丢掉 https:// 且拼出
+    // 重复 www 主机名（相对路径）→ 站内 404。保留协议头、统一 www 前缀。
+    return href.replace(/^(https?:\/\/)(?:www\.)?amazon\.(?:com|co\.jp)/i, function (m, scheme) {
+      return scheme + 'www.amazon.' + host;
     });
   }
 
@@ -40,11 +42,16 @@
       var m = href.match(/amazon\.(com|co\.jp)/i);
       if (!m) continue;
       var host = m[1].toLowerCase();
+      var isProduct = /\/dp\/[A-Z0-9]{10}/i.test(href);
       if (host === 'co.jp') {
         // 日本独占商品：任何人都不跳，锁 co.jp
         a.href = rehost(setTag(href, JP_TAG), 'co.jp');
+      } else if (isProduct) {
+        // 2026-11-22：ASIN 直链锁 .com —— 同一 ASIN 在日亚可能不存在/不同商品，
+        // 旧版把 JP 访客的 /dp/ 改成 co.jp 会造成 404 或错商品。tag 仍按市场给出。
+        a.href = rehost(setTag(href, US_TAG), 'com');
       } else {
-        // 通用链接：按国家路由
+        // 搜索/首页等通用链接：按国家路由
         if (isJP) {
           a.href = rehost(setTag(href, JP_TAG), 'co.jp');
         } else {
