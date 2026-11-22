@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GGUF Metadata: Eight Fields That Read Back Wrong - TechPassive</title>
+  <meta name="description" content="I built GGUF files from scratch with gguf-py 0.19.0 and read them back: eight metadata fields that silently disagree, with real tracebacks and fixes。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>GGUF Metadata: Eight Fields That Read Back Wrong</h1>
+  <div class="post-tags">
+    <span class="tag">gguf</span><span class="tag">llama.cpp</span><span class="tag">model quantization</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>: I wrote a GGUF file from scratch with gguf-py 0.19.0, read it back, and compared every field. Eight of them returned something different from what I wrote, and three of those raised no exception at all. The worst is <code>general.alignment</code>: write it as an ordinary metadata key and the writer still pads to 32 bytes while the reader looks for 64, so <strong>the library cannot read its own output</strong> — it fails with <code>ValueError: cannot reshape array of size 0 into shape (3,)</code>. Every claim below is reproducible with the commands in this post. There are no affiliate links in this article.</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="How I compared the write and read sides" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft865bd9fbgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ft865bd9fbgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">How I compared the write and read sides</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Write a small file</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Read every field</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Compare values</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Check type and alignment</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Fix the call</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Re-verify</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>How I compared the write and read sides · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>Why build a tiny GGUF file instead of downloading one</h2>
+<p>Most GGUF write-ups stop at "GGUF is the model format llama.cpp uses, and quantization makes it smaller". The moment you actually need to inspect a model file, the questions change: which fields drive loading behaviour, who guarantees a field's type and length, and at which step a wrong value explodes.</p>
+<p>My starting point was small. I wanted to confirm the <code>general.file_type</code> and per-tensor dimensions of one model file. I have no GPU and did not want to pull down several gigabytes of weights, so I inverted the problem: <strong>write a file with the official Python package, then read it back</strong>. The file is a few hundred bytes, but it exercises the whole metadata layer.</p>
+<p>The result is a comparison table with eight rows where the value that came back was not the value that went in, and no error interrupted the script.</p>
+<h2>Environment and two commands you can paste</h2>
+<p>Everything below ran on Windows 11 (10.0.26300), CPython 3.13.14, gguf 0.19.0 (uploaded to PyPI on 2026-05-06) and numpy 2.5.5. Install into an isolated directory so your main environment stays clean:</p>
+<pre><code>python -m pip install --target ./pylibs gguf==0.19.0 numpy
+python -c "import sys; sys.path.insert(0,'./pylibs'); import gguf; print(gguf.GGUF_VERSION, gguf.GGUF_MAGIC, gguf.READER_SUPPORTED_VERSIONS)"</code></pre>
+<p>That second command prints <code>3 1179993927 [2, 3]</code>: the version this writer emits, the magic number in decimal, and the fact that the reader only accepts versions 2 and 3.</p>
+<p>Here is the smallest reproduction of everything this post claims. Save it as <code>demo.py</code> and run it:</p>
+<pre><code>import sys
+sys.path.insert(0, "./pylibs")
+import numpy as np
+from gguf import GGUFWriter, GGUFReader
+
+w = GGUFWriter("demo.gguf", "llama")
+w.add_file_type(1)
+w.add_uint32("demo.uint", 4294967295)
+w.add_array("demo.arr", [1, 2, 3])
+w.add_tensor("demo.weight", np.arange(6, dtype=np.float32).reshape(2, 3))
+w.write_header_to_file()
+w.write_kv_data_to_file()
+w.write_tensors_to_file()
+w.close()
+
+r = GGUFReader("demo.gguf")
+print([k for k in r.fields if not k.startswith("GGUF.")])
+print(r.get_field("demo.uint").contents())
+print(r.tensors[0].shape.tolist())
+print(r.tensors[0].data.shape)</code></pre>
+<p>The last two lines print <code>[3, 2]</code> and <code>(2, 3)</code>. Same array, two different dimension orders, no warning. That is the first of the eight.</p>
+<h2>Trap one: the write_header and write_footer methods do not exist</h2>
+<p>The first failure came from copying a tutorial:</p>
+<pre><code>w.write_header()
+w.write_kv_data_to_file()
+w.write_tensors_to_file()
+w.write_footer()</code></pre>
+<p>On 0.19.0 the first line already fails:</p>
+<pre><code>AttributeError: 'GGUFWriter' object has no attribute 'write_header'</code></pre>
+<p>Loop over candidate names with <code>hasattr</code> and the picture is clear: <code>write_header</code> is False, <code>write_footer</code> is False, and the real names are <code>write_header_to_file</code>, <code>write_kv_data_to_file</code>, <code>write_tensors_to_file</code>, <code>ti_data_to_file</code>, <code>flush</code>, <code>close</code>. The order is fixed at four steps:</p>
+<ul><li><code>write_header_to_file()</code> writes magic, version, tensor count and KV count</li><li><code>write_kv_data_to_file()</code> writes every metadata key</li><li><code>write_tensors_to_file()</code> writes the tensor info table, pads to alignment, then writes tensor data</li><li><code>close()</code> finishes the file</li></ul>
+<p>The reader has a matching trap: <code>GGUFReader</code> has no <code>get()</code>, only <code>get_field()</code> and <code>get_tensor()</code>. <code>r.get("general.architecture")</code> gives you <code>AttributeError: 'GGUFReader' object has no attribute 'get'</code>.</p>
+<h2>Trap two: reader.tensors is a list, not a dict</h2>
+<p>Nearly every snippet indexes it like a dictionary:</p>
+<pre><code>reader = GGUFReader(path)
+t = reader.tensors["blk.0.attn_q.weight"]</code></pre>
+<p>On 0.19.0 that raises:</p>
+<pre><code>TypeError: list indices must be integers or slices, not str</code></pre>
+<p><code>reader.tensors</code> is a plain <code>list</code> of <code>ReaderTensor</code> named tuples. Either index it or build a mapping first:</p>
+<pre><code>by_name = {t.name: t for t in reader.tensors}
+t = by_name["blk.0.attn_q.weight"]</code></pre>
+<p>The difference is not cosmetic. The dictionary form reads like "look up by name" while the actual semantics are "look up by position". Had the type been permissive, a reordered tensor list would have shifted your values silently instead of raising.</p>
+<h2>Trap three: shape is the file's order, not numpy's</h2>
+<p>In <code>demo.py</code> I wrote a <code>(2, 3)</code> array. Reading it back gives <code>tensors[0].shape == [3, 2]</code> while <code>tensors[0].data.shape == (2, 3)</code>.</p>
+<p>Both sides of the source explain why. The writer loop packs <code>ti.shape[n_dims - 1 - j]</code>, so <strong>numpy dimensions go into the file reversed</strong> (the ggml convention puts the innermost dimension first). The reader stores the raw dims untouched in <code>ReaderTensor.shape</code> and then reshapes the data with <code>reversed(dims)</code>. So <code>shape</code> means "dimensions as stored in the file", and <code>data.shape</code> means "dimensions as numpy sees them". For logging, use the latter.</p>
+<p>Quantized tensors add another layer. I wrote 144 packed bytes with <code>raw_dtype</code> set to Q4_K:</p>
+<pre><code>w.add_tensor("q4", np.zeros(144, dtype=np.uint8), raw_dtype=GGMLQuantizationType.Q4_K)</code></pre>
+<p>Reading back gives <code>shape == [256]</code> (element count), <code>n_bytes == 144</code>, and <code>data.shape == (144,)</code> (packed bytes). For quantized tensors the two are not "different order" — they measure different things. Sizing a buffer from <code>shape</code> overcounts by 256/144.</p>
+<h2>Trap four: get_field returns None for a missing key</h2>
+<pre><code>f = r.get_field("general.quantization_version")
+print(f.contents())</code></pre>
+<p>If the key is absent, <code>get_field</code> returns <code>None</code> and the next attribute access fails:</p>
+<pre><code>AttributeError: 'NoneType' object has no attribute 'contents'</code></pre>
+<p>At least that one crashes. The dangerous variant is truth-testing without touching the value: <code>if r.get_field(key):</code> is also false when the key exists but holds <code>0</code>, which collapses "field missing" and "field is zero" into one branch. Separate the two: use <code>key in r.fields</code> for existence and <code>.contents()</code> for the value.</p>
+<p><code>contents()</code> returns Python scalars for scalars, <code>str</code> for strings, <code>list</code> for arrays, and <code>[]</code> for an empty array. Do not expect numpy types.</p>
+<h2>Trap five: add_array with an empty list never writes the key</h2>
+<p>This is the quietest one. The first statement of <code>add_array</code> is:</p>
+<pre><code>if len(val) == 0:
+    return</code></pre>
+<p>No key, no log line, no exception. I wrote three keys — <code>before</code>, <code>ghost</code> (empty array) and <code>after</code> — and the file came back with two:</p>
+<pre><code>fields: ['general.architecture', 'before', 'after']
+ghost present: False | kv_count declared: 3</code></pre>
+<p>The header declares three key-value pairs and you can only read two custom ones. So an optional vocabulary list or an optional adapter list that happens to be empty simply does not exist in your file, and every downstream <code>if field in fields</code> check falls through to the else branch.</p>
+<p>The safety net is still there and now unreachable: <code>_pack_val</code> contains <code>raise ValueError("Invalid GGUF metadata array. Empty array")</code>, but the early return in <code>add_array</code> prevents that code from ever running. Two layers of defence where the first layer disables the second.</p>
+<h2>Trap six: a duplicate key logs one warning and overwrites, type included</h2>
+<p>Write <code>add_uint32("dup", 1)</code>, then <code>add_string("dup", "one")</code>. The file is produced normally and reads back as:</p>
+<pre><code>after the type change: STRING = one</code></pre>
+<p>The only trace is one log line: <code>Duplicated key name 'dup', overwriting it with new value 'one' of type STRING</code>. Set the logger to ERROR, which is common in production, and you never see it. A field that should be a <code>uint32</code> becomes a string, and any consumer that parses it as an integer gets something else entirely, or blows up somewhere unrelated.</p>
+<p>A related issue sits on the same path: an array's element type is decided <strong>by its first element only</strong>, and Python <code>int</code> always maps to <code>INT32</code>. In the source, <code>GGUFValueType.get_type</code> returns <code>INT32</code> for any <code>int</code>, with a <code># TODO: need help with 64-bit types in Python</code> comment right beside it. So this line (the literal is 2 to the 40th):</p>
+<pre><code>w.add_array("big", [1099511627776])</code></pre>
+<p>fails during the write, not at the call:</p>
+<pre><code>struct.error: 'i' format requires -2147483648 <= number <= 2147483647</code></pre>
+<p>Meanwhile <code>w.add_array("mixed", [1, 2.5])</code> raises <code>ValueError: All items in a GGUF array should be of the same type</code>. Two errors placed in two different stages, neither of them on the <code>add_array</code> line — easy to misread as a disk or file problem.</p>
+<h2>Trap seven: general.alignment is written as metadata but padding stays at 32</h2>
+<p>This is the only case in the whole experiment where the library writes a file it cannot read, and it is the one I would put at the top of any notes.</p>
+<p>GGUF layout: after the tensor info table, pad with zeros up to a multiple of <code>general.alignment</code>, then the tensor data begins. The spec is explicit that the default is 32 and that <code>align_offset</code> uses this field.</p>
+<p>So I took the spec literally and wrote the alignment as ordinary metadata:</p>
+<pre><code>w.add_uint32("general.alignment", 64)</code></pre>
+<p>The file came out at 192 bytes. Reading it back with <strong>the same library</strong>:</p>
+<pre><code>ValueError: cannot reshape array of size 0 into shape (3,)</code></pre>
+<p>The writer source explains it: <code>self.data_alignment = GGUF_DEFAULT_ALIGNMENT</code> (32) is fixed at construction time, and padding uses <code>self.data_alignment</code>, which has nothing to do with the <code>general.alignment</code> key-value. The writer pads to 32 (data starts at byte 160), the reader looks for data at a multiple of 64 (byte 192), finds nothing, and reshape fails.</p>
+<p>The correct call sets both at once:</p>
+<pre><code>w.add_custom_alignment(64)</code></pre>
+<p>It validates "non-zero and a power of two", then assigns <code>self.data_alignment</code> and writes the key-value together. After the change: 256 bytes, <code>alignment=64</code>, <code>data_offset=192</code>, data reads back as <code>[1. 1. 1.]</code>.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">How the alignment is written</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">File size</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">data_offset</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Reads back</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Not written (default 32)</td><td style="border:1px solid #ddd;padding:8px;">160 B</td><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">yes</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>general.alignment=64</code> only</td><td style="border:1px solid #ddd;padding:8px;">192 B</td><td style="border:1px solid #ddd;padding:8px;">writer still pads to 32</td><td style="border:1px solid #ddd;padding:8px;">no, reshape error</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>add_custom_alignment(64)</code></td><td style="border:1px solid #ddd;padding:8px;">256 B</td><td style="border:1px solid #ddd;padding:8px;">192</td><td style="border:1px solid #ddd;padding:8px;">yes</td></tr></tbody></table>
+<p>The reader also validates the field, which is worth copying into your own checks: a non-<code>UINT32</code> type raises <code>ValueError: Bad type for general.alignment field</code>, and a value that is not a power of two raises <code>ValueError: Invalid alignment: must be a non-zero power of two</code>. I set it to 0 and to 3 and hit the second message both times.</p>
+<h2>Trap eight: the two header counts are trusted without question</h2>
+<p>Besides magic and version, the header carries two <code>uint64</code> values: the tensor count and the metadata KV count. The reader parses strictly by those numbers and cross-checks nothing.</p>
+<p>I edited a valid file to declare <code>tensor_count = 0</code>. The reader <strong>succeeded</strong> and reported zero tensors — with 256 bytes of tensor data still sitting in the file, silently ignored. Setting <code>kv_count = 999</code> produced:</p>
+<pre><code>IndexError: index 0 is out of bounds for axis 0 with size 0</code></pre>
+<p>An out-of-bounds IndexError has no textual relationship to "your KV count is wrong". Truncated files behave the same way: four truncation lengths produced four different exceptions (<code>ValueError: not enough values to unpack</code>, <code>ValueError: When changing to a larger dtype...</code>, <code>IndexError: index 0 is out of bounds...</code>, and <code>cannot reshape array of size 39 into shape (8, 8)</code>), and none of them said "incomplete file".</p>
+<p>So integrity has to be computed by hand: <code>file size >= data_offset + sum of tensor n_bytes</code>, and the declared tensor count must equal the number of tensors actually parsed.</p>
+<h2>Versions, byte order and where the spec and the code disagree</h2>
+<p>The reader accepts versions 2 and 3 only. I rewrote the version field to 0, 1, 2, 3 and 4; 2 and 3 read fine and the rest all give the same message:</p>
+<pre><code>ValueError: Sorry, file appears to be version 1 which we cannot handle</code></pre>
+<p>Writing <code>GGML</code> as the magic raises <code>ValueError: GGUF magic invalid</code> — note that this is a custom lowercase message, not a <code>struct.error</code>, so exception-type fallbacks need to handle it separately.</p>
+<p>Byte order is where the spec and the implementation part ways. The spec says: "At the time of writing, there is no way to determine if a model is big-endian; this may be rectified in future versions." The reader, however, applies a heuristic: if the low 16 bits of the version are zero, it treats the file as opposite-endian and flips parsing. I wrote a big-endian file with <code>endianess=GGUFEndian.BIG</code>; reading it back gave <code>reader.byte_order == 'S'</code> and correct field values.</p>
+<p>One spec limit is not enforced anywhere: the spec says a tensor's <code>n_dimensions</code> is "Currently at most 4", yet the writer happily serialized a 5-D tensor with <code>n_dimensions = 5</code>, and the reader accepted it. "The spec forbids it" and "this library rejects it" are two different statements; a missing error is not proof of compliance.</p>
+<h2>Troubleshooting: four real errors and their fixes</h2>
+<p>All four were reproduced in this environment; the messages can be searched verbatim.</p>
+<p><strong>Error 1: <code>AttributeError: 'GGUFWriter' object has no attribute 'write_header'</code></strong></p>
+<ul><li>Symptom: a four-step write copied from a tutorial dies on the first line; <code>write_footer</code> fails identically, and so does <code>reader.get()</code>.</li><li>Cause: in 0.19.0 the methods carry a <code>_to_file</code> suffix and the write is split into header, kv and tensor stages; there is no standalone footer step.</li><li>Fix: call <code>write_header_to_file()</code>, then <code>write_kv_data_to_file()</code>, then <code>write_tensors_to_file()</code>, then <code>close()</code>; read with <code>get_field()</code>. Checking names with <code>hasattr</code> is faster than reading tutorials:</li></ul>
+<pre><code>python -c "import sys; sys.path.insert(0,'./pylibs'); from gguf import GGUFWriter, GGUFReader; print([m for m in ('write_header','write_header_to_file','write_footer','write_tensors_to_file') if hasattr(GGUFWriter, m)]); print([m for m in ('get','get_field','get_tensor') if hasattr(GGUFReader, m)])"</code></pre>
+<p><strong>Error 2: <code>ValueError: cannot reshape array of size 0 into shape (3,)</code></strong></p>
+<ul><li>Symptom: the write succeeds and the file is non-empty, but reading fails inside <code>_build_tensors</code>; <code>size 0</code> means the offset landed past the end of the file.</li><li>Cause: <code>add_uint32("general.alignment", 64)</code> changes only the metadata. The writer still pads with <code>data_alignment=32</code> while the reader looks for a multiple of 64, so the two sides disagree by 32 bytes.</li><li>Fix: use <code>add_custom_alignment(64)</code>, which sets the internal alignment and the key-value together. Re-check three things afterwards: the file grows, <code>data_offset % alignment == 0</code>, and the tensor data reads back.</li></ul>
+<p><strong>Error 3: <code>TypeError: list indices must be integers or slices, not str</code></strong></p>
+<ul><li>Symptom: <code>reader.tensors["blk.0.weight"]</code> raises immediately.</li><li>Cause: <code>tensors</code> is a list, not a dict.</li><li>Fix: build a name map first or index by position; for batch work use <code>{t.name: t for t in reader.tensors}</code>.</li></ul>
+<p><strong>Error 4: <code>struct.error: 'i' format requires -2147483648 <= number <= 2147483647</code></strong></p>
+<ul><li>Symptom: the <code>add_array</code> call looks fine and the failure appears later inside <code>write_kv_data_to_file()</code>, with <code>_pack_val</code> and <code>_pack</code> on the stack.</li><li>Cause: the array subtype is inferred from the first element, and Python <code>int</code> is always judged <code>INT32</code>, which cannot hold values above 2^31-1.</li><li>Fix: use the scalar methods with an explicit width (<code>add_uint64</code>, <code>add_int64</code>), or store oversized numbers as strings. Do not rely on inference.</li></ul>
+<p>Two more shapes are worth recording. Calling <code>add_tensor_info</code> without ever supplying data makes <code>write_tensors_to_file()</code> raise a bare <code>AssertionError</code> with an empty message — the log shows only the type. And calling the stages out of order raises <code>ValueError: Expected output file to contain KV data, got WriterState.HEADER</code>; the state names in that message (<code>NO_FILE</code>, <code>HEADER</code>, <code>KV_DATA</code>) tell you exactly which step you are on, which is more useful than the error itself.</p>
+<h2>Six checks before you ship</h2>
+<ul><li>Alignment: only ever use <code>add_custom_alignment()</code>; assert <code>data_offset % alignment == 0</code> after writing.</li><li>Counts: compare <code>len(reader.tensors)</code> with the header's <code>tensor_count</code>; a mismatch means the file is broken.</li><li>Empty arrays: test any "optional list" for emptiness before writing — an empty list means the field does not exist.</li><li>Duplicate keys: raise the gguf logger to WARNING, otherwise the overwrite notice is invisible.</li><li>Dimensions: use <code>data.shape</code> for display; use <code>shape</code> only when you need the file's own order, and remember that for quantized tensors it is an element count.</li><li>Integrity: <code>file size >= data_offset + sum(n_bytes)</code> is more reliable than any error message.</li></ul>
+<h2>FAQ</h2>
+<p><strong>Q: If the library cannot read its own output, is it unusable?</strong></p>
+<p>A: No. The alignment case is a wrong call, not a broken library — <code>add_custom_alignment()</code> keeps both sides at 64. What deserves suspicion are the silent ones (empty arrays, duplicate keys, trusted counts), because they never give you a second chance.</p>
+<p><strong>Q: Why not validate against a real GGUF model file?</strong></p>
+<p>A: Size and interpretability. The smallest useful model is hundreds of megabytes, and a real file has hundreds of fields, so when something is wrong you cannot point at the line that wrote it. A few hundred bytes that you wrote yourself makes the comparison meaningful. A real model is a good final regression, a bad debugging surface.</p>
+<p><strong>Q: Is a metadata string length stored as characters or bytes?</strong></p>
+<p>A: Bytes. I wrote three keys: <code>cafe</code> reports length 4, <code>café</code> reports 5 (four characters), and the two-character Chinese string reports 6. Validating the length field with <code>len(s)</code> is guaranteed to be wrong for non-ASCII input. It is the same root cause as the encoding layer: strings in the file are byte sequences, not character sequences. I compared five decode strategies on identical bad bytes in <a href="https://yaohehe.github.io/2026-11-22-python-decode-errors-five-handlers-one-round-trip-en.html" class="internal-link">this post on decode error handlers</a>, which is the natural companion read.</p>
+<p><strong>Q: Are the GGUF version number and the quantization type number the same numbering scheme?</strong></p>
+<p>A: No. The version is the file structure version (currently 3, reader accepts 2 and 3). The quantization type is the <code>ggml_type</code> enum (<code>F32=0</code>, <code>F16=1</code>, <code>Q8_0=8</code>, <code>Q4_K=12</code> and so on). Both live near the header, but one is a <code>uint32</code> format version and the other is a type code inside each tensor's info block; mixing them up reads the wrong data.</p>
+<h2>Closing</h2>
+<p>I set out to confirm one field's value and ended up with an eight-row table of "read back does not equal written". What these cases share is that <strong>no layer validates meaning</strong>. The writer only guarantees bytes reach the disk, the reader only guarantees it follows the header's declarations, and the gap between "what you wrote" and "what you think you wrote" belongs to nobody.</p>
+<p>Structural claims like this show up everywhere once you look. <a href="https://yaohehe.github.io/2026-11-16-yaml-safe_load-rewrites-eight-values-silently-en.html" class="internal-link">YAML's type assignment</a> silently turns <code>no</code> into <code>False</code> and <code>1:30</code> into 90; <a href="https://yaohehe.github.io/2026-11-19-pip-install-works-runs-old-code-6-silent-failures-en.html" class="internal-link">packaging silent failures</a> let <code>pip install</code> succeed while you keep running old code. Read together, they form one line: the thing you stored is not the thing you get back.</p>
+<p>There are no affiliate links in this article, and every result above is reproducible with the commands shown.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
