@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GGUF 量化命名读法：Q4_K_M 的四个字符各管什么 - TechPassive</title>
+  <meta name="description" content="文件名里的 Q4_K_M 拆开是四件事：位宽族、K 量化的 256 元素块、S/M/L 混合档，还有一个在张量层根本不存在的名字。我用 gguf-py 0.19.0 造文件对拍官方两张表，同一个名字量出两个 bpw，最多差 25%，另查出 24 组共用编号含义不同，末尾附五条读法与四个真实报错。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>GGUF 量化命名读法：Q4_K_M 拆开是四个决定</h1>
+  <div class="post-tags">
+    <span class="tag">GGUF</span><span class="tag">量化</span><span class="tag">llama.cpp</span>
+  </div>
+  <div class="content">
+    <p>下载一个模型，文件名末尾那串大写字母是整页最容易读错的东西。Q4_K_M 看上去像「4 位、K 版本、中等大小」，实际上它拆开是四个互不相干的决定，其中一个名字在张量类型表里根本不存在。</p>
+<p>我把这件事当成一次取证：不下载任何权重，用 <a href="/2026-11-22-gguf-header-tensor.html" class="internal-link">gguf</a>-py 0.19.0 自己造几个几百字节的 GGUF 文件，再把官方两张表摆在一起对。结果是同一个名字能量出两个不同的 bits per weight，最大的一档差 25%；两套枚举共用 30 个数字，其中 24 个含义不同。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 422" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="一个量化名字要过四道核对" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftb50c788bgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="421" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="414" fill="url(#ftb50c788bgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">一个量化名字要过四道核对</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">4 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="340" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">拆名字定位宽族</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">查块大小与对齐</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">分清标签和张量类型</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">用文件级 bpw 算体积</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="398" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="398" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="406" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>一个量化名字要过四道核对 · 依据本文步骤自绘示意图</figcaption></figure>
+<h2>一个名字，两套编号，三张表</h2>
+<p>先说清楚这里到底有几个东西在互相打架。</p>
+<p>第一个是张量类型表，也就是 <code>GGMLQuantizationType</code>。它描述「这一块二进制数据按什么方式解压」，34 个值，涵盖 F32、Q4_0、Q4_K、IQ4_XS、MXFP4 等等。</p>
+<p>第二个是文件类型表，也就是 <code>LlamaFileType</code>，写进 GGUF 元数据里的 <code>general.file_type</code>。它是 35 个名字（第 36 个是 <code>GUESSED = 1024</code>，不代表真实类型），涵盖 <code>MOSTLY_Q4_K_M</code>、<code>MOSTLY_Q3_K_L</code> 这类带 S/M/L 后缀的名字。</p>
+<p>第三个是体积表，也就是到底占多少 GB。</p>
+<p>三张表的名字长得很像，编号规则却不一样。</p>
+<h2>规范只给了三句话，而这三句话决定了后面全部误解</h2>
+<p>GGUF 规范对 <code>general.file_type</code> 的定义是：*An enumerated value describing the type of the majority of the tensors in the file. Optional; can be inferred from the tensor types.*</p>
+<p>拆成三条：</p>
+<ul><li><strong>majority</strong>：它说的是「大多数张量」，不是「全部张量」</li><li><strong>Optional</strong>：它可以不写</li><li><strong>can be inferred from the tensor types</strong>：它可以从张量类型反推出来，也就是说它不是解码依据</li></ul>
+<p>这三条合起来就是一句话：<code>general.file_type</code> 是一个<strong>标签</strong>，不是一个<strong>指令</strong>。而几乎所有人读文件名时都把它当指令。</p>
+<h2>我造了四个文件来验这件事</h2>
+<p>实验环境是 Windows 11（10.0.26300）+ CPython 3.13.14 + gguf-py 0.19.0 + numpy 2.3.1，没有任何模型文件被下载。</p>
+<p>思路很简单：用 <code>GGUFWriter</code> 写一个文件，故意让标签和张量类型不一致，再用 <code>GGUFReader</code> 读回来，看它会不会抗议。</p>
+<h2>陷阱一：标签写错，读回一切正常</h2>
+<p>第一个文件，我声明文件类型是 <code>MOSTLY_Q4_K_M</code>，但里面唯一的张量是按 float32 存的：</p>
+<pre><code>w.add_file_type(LlamaFileType.MOSTLY_Q4_K_M)
+w.add_tensor("w", np.arange(8, dtype=np.float32).reshape(2, 4))</code></pre>
+<p>读回来时，<code>general.file_type</code> 是 <code>15 -> MOSTLY_Q4_K_M</code>，张量的 <code>tensor_type</code> 是 <code>F32</code>，文件 224 字节。没有警告，没有异常。</p>
+<p>第二个文件反向来：声明 <code>ALL_F32</code>，张量却是压缩后的 Q4_K（144 字节的打包数据）：</p>
+<pre><code>w.add_file_type(LlamaFileType.ALL_F32)
+w.add_tensor("q", np.zeros(144, dtype=np.uint8), raw_dtype=GGMLQuantizationType.Q4_K)</code></pre>
+<p>读回来 <code>file_type = 0 -> ALL_F32</code>，<code>tensor_type = Q4_K</code>，<code>shape = [256]</code>，<code>n_bytes = 144</code>，文件 320 字节。同样一声不响。</p>
+<p>所以「这个文件说自己是 Q4_K_M」推不出「里面的张量是 4 位」。真要判断，必须逐个张量看 <code>tensor_type</code>。</p>
+<p>顺带一个坑：<strong>不写</strong> <code>general.file_type</code> 时，<code>get_field</code> 返回 <code>None</code>，不是 0。写成 <code>GUESSED</code>（1024）也能存能读，而 1024 不在那 35 个真实值里，它的含义正是「模型文件里没写」。</p>
+<h2>陷阱二：30 个共用编号里，24 个含义不同</h2>
+<p>把两套枚举的数值并排放，会发现它们有 30 个数值重叠，因为早期是同一张表，后来各自演化。重叠的 30 个里，有 24 个指向完全不同的东西。</p>
+<p>最刺眼的一对是 15：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">数值</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">张量类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文件类型</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">12</td><td style="border:1px solid #ddd;padding:8px;">Q4_K</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q3_K_M</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">13</td><td style="border:1px solid #ddd;padding:8px;">Q5_K</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q3_K_L</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">14</td><td style="border:1px solid #ddd;padding:8px;">Q6_K</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q4_K_S</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">15</td><td style="border:1px solid #ddd;padding:8px;">Q8_K</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q4_K_M</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">IQ3_XXS</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q6_K</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">40</td><td style="border:1px solid #ddd;padding:8px;">NVFP4</td><td style="border:1px solid #ddd;padding:8px;">MOSTLY_Q1_0</td></tr></tbody></table>
+<p>意思是：如果你在日志里看到 <code>file_type = 15</code>，然后用 <code>GGMLQuantizationType(15)</code> 去翻译，会得到 <code>Q8_K</code>，一个 9.125 bpw 的类型，而你真正想说的是 4.8944 bpw 的 Q4_K_M。这不是打错字，这是查错了表。</p>
+<p><code>GGMLQuantizationType(15)</code> 和 <code>LlamaFileType(15)</code> 都合法，都不会报错，只是答案不一样。</p>
+<p>另外文件类型表有 6 个缺号：4、5、6、33、34、35。前三个是 <code>MOSTLY_Q4_1_SOME_F16</code> 与已移除的 Q4_2 / Q4_3，后三个是 Q4_0 的三种运行时重排格式（官方注释写 removed from gguf files, use Q4_0 and runtime repack）。所以「编号连续」这个直觉在文件类型表上不成立。</p>
+<h2>陷阱三：13 个名字只活在文件层</h2>
+<p>更麻烦的是，有些名字在张量类型里压根没有对应项。我做了集合差：</p>
+<ul><li>只有文件类型才有的名字（13 个）：<code>Q4_K_S</code>、<code>Q4_K_M</code>、<code>Q5_K_S</code>、<code>Q5_K_M</code>、<code>Q3_K_S</code>、<code>Q3_K_M</code>、<code>Q3_K_L</code>、<code>Q2_K_S</code>、<code>IQ3_XS</code>、<code>IQ3_M</code>、<code>IQ2_M</code>、<code>MXFP4_MOE</code>、<code>ALL_F32</code></li><li>只有张量类型才有的名字（12 个）：<code>F32</code>、<code>F64</code>、<code>I8</code>、<code>I16</code>、<code>I32</code>、<code>I64</code>、<code>Q3_K</code>、<code>Q4_K</code>、<code>Q5_K</code>、<code>Q8_K</code>、<code>Q8_1</code>、<code>MXFP4</code></li></ul>
+<p>注意 <code>Q4_K</code> 在张量层有，<code>Q4_K_M</code> 只在文件层有；反过来 <code>Q8_K</code> 在张量层有，但文件层没有 <code>MOSTLY_Q8_K</code>。</p>
+<p>这就是 S/M/L 的本质：<strong>它们不是更细的量化格式，而是「同一个格式在不同张量上用不同档位」的配方名</strong>。官方文档在 <code>--pure</code> 选项的说明里写得很直白：*disable k-quant mixtures and quantizes all tensors to the same type*，默认情况下 K 量化就是混合的，<code>--pure</code> 才关掉混合。</p>
+<p>因此一个 Q4_K_M 文件里，不同张量的 <code>tensor_type</code> 可能是 Q4_K、Q5_K、Q6_K 的组合，具体哪些层被抬高，是 llama.cpp 量化器的内部策略。</p>
+<h2>陷阱四：名字里的数字不是位宽</h2>
+<p><code>GGML_QUANT_SIZES</code> 是包里唯一一张块算术表：每种类型多少元素一个块、一个块多少字节。用 <code>字节数 × 8 ÷ 元素数</code> 就能算出纯张量 bpw：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">类型</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块元素</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块字节</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">bpw</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q4_0</td><td style="border:1px solid #ddd;padding:8px;">32</td><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">4.5</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q4_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">144</td><td style="border:1px solid #ddd;padding:8px;">4.5</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q5_0</td><td style="border:1px solid #ddd;padding:8px;">32</td><td style="border:1px solid #ddd;padding:8px;">22</td><td style="border:1px solid #ddd;padding:8px;">5.5</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q5_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">176</td><td style="border:1px solid #ddd;padding:8px;">5.5</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q6_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">210</td><td style="border:1px solid #ddd;padding:8px;">6.5625</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q8_0</td><td style="border:1px solid #ddd;padding:8px;">32</td><td style="border:1px solid #ddd;padding:8px;">34</td><td style="border:1px solid #ddd;padding:8px;">8.5</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q8_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">292</td><td style="border:1px solid #ddd;padding:8px;">9.125</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q2_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">84</td><td style="border:1px solid #ddd;padding:8px;">2.625</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q3_K</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">110</td><td style="border:1px solid #ddd;padding:8px;">3.4375</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">IQ4_XS</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">136</td><td style="border:1px solid #ddd;padding:8px;">4.25</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">IQ1_S</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">50</td><td style="border:1px solid #ddd;padding:8px;">1.5625</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">TQ1_0</td><td style="border:1px solid #ddd;padding:8px;">256</td><td style="border:1px solid #ddd;padding:8px;">54</td><td style="border:1px solid #ddd;padding:8px;">1.6875</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q1_0</td><td style="border:1px solid #ddd;padding:8px;">128</td><td style="border:1px solid #ddd;padding:8px;">18</td><td style="border:1px solid #ddd;padding:8px;">1.125</td></tr></tbody></table>
+<p>三件事一眼可见：</p>
+<p><strong>Q4 不等于 4 位。</strong> Q4_0 和 Q4_K 都是 4.5 bpw，一个块 32 元素、一个块 256 元素。名字里的 4 是「主位宽的档位名」，不是精确位数。</p>
+<p><strong>Q8_K 比 Q8_0 更大。</strong> 9.125 对 8.5，因为 K 系的超块要额外存每块的缩放与最小值，摊到每个权重上反而更贵。</p>
+<p><strong>同名不同块。</strong> Q4_0 的块只有 32 个元素，Q4_K 是 256 个，这个差别直接决定了下一节的体积误差，也决定了 1D 张量能不能量化（见陷阱八）。</p>
+<h2>陷阱五：同一个名字能算出两个 bpw</h2>
+<p>llama.cpp 的 <code>tools/quantize/README.md</code> 里有一张 Llama-3.1-8B 的实测表，列的是<strong>整文件</strong>的 bits/weight。把它和上一节的块算术并排，差值就露出来了：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">名称</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">块算术 bpw</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">8B 文件 bpw</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">差</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q2_K</td><td style="border:1px solid #ddd;padding:8px;">2.6250</td><td style="border:1px solid #ddd;padding:8px;">3.1593</td><td style="border:1px solid #ddd;padding:8px;">+20.4%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q3_K_S</td><td style="border:1px solid #ddd;padding:8px;">3.4375</td><td style="border:1px solid #ddd;padding:8px;">3.6429</td><td style="border:1px solid #ddd;padding:8px;">+6.0%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q3_K_M</td><td style="border:1px solid #ddd;padding:8px;">3.4375</td><td style="border:1px solid #ddd;padding:8px;">3.9960</td><td style="border:1px solid #ddd;padding:8px;">+16.2%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q3_K_L</td><td style="border:1px solid #ddd;padding:8px;">3.4375</td><td style="border:1px solid #ddd;padding:8px;">4.2979</td><td style="border:1px solid #ddd;padding:8px;">+25.0%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q4_K_S</td><td style="border:1px solid #ddd;padding:8px;">4.5000</td><td style="border:1px solid #ddd;padding:8px;">4.6672</td><td style="border:1px solid #ddd;padding:8px;">+3.7%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q4_K_M</td><td style="border:1px solid #ddd;padding:8px;">4.5000</td><td style="border:1px solid #ddd;padding:8px;">4.8944</td><td style="border:1px solid #ddd;padding:8px;">+8.8%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q5_K_S</td><td style="border:1px solid #ddd;padding:8px;">5.5000</td><td style="border:1px solid #ddd;padding:8px;">5.5704</td><td style="border:1px solid #ddd;padding:8px;">+1.3%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q5_K_M</td><td style="border:1px solid #ddd;padding:8px;">5.5000</td><td style="border:1px solid #ddd;padding:8px;">5.7036</td><td style="border:1px solid #ddd;padding:8px;">+3.7%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q6_K</td><td style="border:1px solid #ddd;padding:8px;">6.5625</td><td style="border:1px solid #ddd;padding:8px;">6.5633</td><td style="border:1px solid #ddd;padding:8px;">+0.0%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q8_0</td><td style="border:1px solid #ddd;padding:8px;">8.5000</td><td style="border:1px solid #ddd;padding:8px;">8.5008</td><td style="border:1px solid #ddd;padding:8px;">+0.0%</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">IQ4_XS</td><td style="border:1px solid #ddd;padding:8px;">4.2500</td><td style="border:1px solid #ddd;padding:8px;">4.4597</td><td style="border:1px solid #ddd;padding:8px;">+4.9%</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">IQ4_NL</td><td style="border:1px solid #ddd;padding:8px;">4.5000</td><td style="border:1px solid #ddd;padding:8px;">4.6818</td><td style="border:1px solid #ddd;padding:8px;">+4.0%</td></tr></tbody></table>
+<p>规律很清楚：<strong>名字越纯，两个数越接近</strong>。Q6_K 和 Q8_0 差 0.0%，因为它们是单一类型；Q3_K_L 差 25%，因为它是三档里混合得最狠的一个。</p>
+<p>多出来的这部分有两个来源，且都是结构性的：一是 S/M/L 混合把部分张量抬到了更高位宽；二是官方每条文件类型枚举后面都跟着同一句注释 <code>// except 1d tensors</code>，1D 张量（归一化权重、偏置）不参与量化，保持 F32 或 F16，而它们的字节数是要摊进平均值的。</p>
+<p>所以：<strong>想估体积，用文件级 bpw，不要用块算术。</strong> 用 4.5 去算 Q4_K_M 的 8B 模型，会低估约 8.8%。</p>
+<h2>陷阱六：S 到 M 只贵 5%，M 到 Q8 贵 74%</h2>
+<p>还是那张 8B 表，按 GiB 排开：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">名称</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">bpw</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">体积</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q2_K</td><td style="border:1px solid #ddd;padding:8px;">3.1593</td><td style="border:1px solid #ddd;padding:8px;">2.95 GiB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q4_K_S</td><td style="border:1px solid #ddd;padding:8px;">4.6672</td><td style="border:1px solid #ddd;padding:8px;">4.36 GiB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q4_K_M</td><td style="border:1px solid #ddd;padding:8px;">4.8944</td><td style="border:1px solid #ddd;padding:8px;">4.58 GiB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q5_K_M</td><td style="border:1px solid #ddd;padding:8px;">5.7036</td><td style="border:1px solid #ddd;padding:8px;">5.33 GiB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Q6_K</td><td style="border:1px solid #ddd;padding:8px;">6.5633</td><td style="border:1px solid #ddd;padding:8px;">6.14 GiB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q8_0</td><td style="border:1px solid #ddd;padding:8px;">8.5008</td><td style="border:1px solid #ddd;padding:8px;">7.95 GiB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">F16</td><td style="border:1px solid #ddd;padding:8px;">16.0005</td><td style="border:1px solid #ddd;padding:8px;">14.96 GiB</td></tr></tbody></table>
+<p>换算成差价：</p>
+<ul><li>Q4_K_S 到 Q4_K_M：+0.22 GiB，+5.0%</li><li>Q4_K_M 到 Q5_K_M：+0.75 GiB，+16.4%</li><li>Q4_K_M 到 Q6_K：+1.56 GiB，+34.1%</li><li>Q4_K_M 到 Q8_0：+3.37 GiB，+73.6%</li><li>Q4_K_M 到 F16：+10.38 GiB，+226.6%</li></ul>
+<p>「同名模型差 2 GB 差在哪」这个问题的答案，取决于你比的是哪两档：8B 上从 Q4_K_M 换到 Q6_K 差 1.56 GiB，换到 Q8_0 差 3.37 GiB，2 GB 正好落在两者之间。</p>
+<p>而 S 和 M 之间只差 0.22 GiB，如果你为了省 220 MB 去选 S，那点空间在 8K 上下文的 KV cache 面前基本可以忽略。</p>
+<h2>陷阱七：Q4 开头有四个不同体积</h2>
+<p>「都是 Q4，随便选一个」是另一种常见误判。把官方表里所有带 4 的挑出来：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">名称</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">文件 bpw</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">体积</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">IQ4_XS</td><td style="border:1px solid #ddd;padding:8px;">4.4597</td><td style="border:1px solid #ddd;padding:8px;">4.17 GiB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q4_K_S</td><td style="border:1px solid #ddd;padding:8px;">4.6672</td><td style="border:1px solid #ddd;padding:8px;">4.36 GiB</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">IQ4_NL</td><td style="border:1px solid #ddd;padding:8px;">4.6818</td><td style="border:1px solid #ddd;padding:8px;">4.38 GiB</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Q4_K_M</td><td style="border:1px solid #ddd;padding:8px;">4.8944</td><td style="border:1px solid #ddd;padding:8px;">4.58 GiB</td></tr></tbody></table>
+<p>四个「4」，跨 0.41 GiB。而且顺序反直觉：<strong>IQ4_XS 比 Q4_K_S 更小</strong>，IQ4_NL 又夹在 Q4_K_S 和 Q4_K_M 中间。</p>
+<p>再往外看一层还有倒挂：Q3_K_L 是 4.2979 bpw / 4.02 GiB，比 Q4_K_S 的 4.6672 / 4.36 GiB 更小。所以「Q3_L 比 Q4_S 小」这个说法成立，但如果你按「Q4 一定比 Q3 大」去推，就会猜错。</p>
+<p>名字里的数字是<strong>家族序</strong>，不是<strong>体积序</strong>。</p>
+<h2>陷阱八：1D 张量被排除，因为块对不齐</h2>
+<p><code>// except 1d tensors</code> 这句注释出现得太多，容易被当成免责声明。它其实是在说一个硬约束：量化按块进行，块大小是 32 或 256，而 1D 张量的长度没有义务是 256 的倍数。</p>
+<p>我实际测了两种块大小：把随机生成的 float32 数组直接喂进量化函数，结果是这样：</p>
+<pre><code>n=256  Q4_0  ok -> (144,)
+n=256  Q4_K  NotImplementedError
+n=255  Q4_K  QuantError: Can't quantize tensor with shape (255,) to Q4_K
+n=255  Q4_0  QuantError: Can't quantize tensor with shape (255,) to Q4_0
+n=32   Q4_0  ok -> (18,)
+n=30   Q4_0  QuantError: Can't quantize tensor with shape (30,) to Q4_0</code></pre>
+<p>255 个元素，Q4_K 和 Q4_0 都拒绝；256 个元素，Q4_0 通过、Q4_K 抛 <code>NotImplementedError</code>（下一节解释）。30 个元素时连 Q4_0 都不收。</p>
+<p>所以 1D 张量留 F32/F16 不是保守，是块算术不成立。这条也解释了为什么文件级 bpw 永远高于块算术 bpw。</p>
+<h2>陷阱九：gguf-py 能读写 Q4_K，但不会替你量化</h2>
+<p>上面那个 <code>NotImplementedError</code> 值得单独说。我把 34 种类型逐个喂给 <code>gguf.quants.quantize()</code>：</p>
+<ul><li>成功 11 种：F32、F16、Q4_0、Q4_1、Q5_0、Q5_1、Q8_0、BF16、TQ1_0、TQ2_0、MXFP4</li><li><code>NotImplementedError</code> 23 种</li></ul>
+<p>23 个里，只有 8 个带了话（<code>Quantization for Q8_K is not yet implemented</code> 这种），另外 15 个的异常消息是<strong>空字符串</strong>：Q2_K、Q3_K、Q4_K、Q5_K、Q6_K、IQ2_XXS、IQ2_XS、IQ3_XXS、IQ1_S、IQ4_NL、IQ3_S、IQ2_S、IQ4_XS、IQ1_M、NVFP4。</p>
+<p>空消息的后果是日志里只剩一行 <code>NotImplementedError:</code>，什么线索都没有。而 K 系和 IQ 系恰恰是现在最常用的量化，也就是说，Python 包能做的是「按 144 字节把别人算好的 Q4_K 数据原样写进文件」，不是「帮我把 float32 压成 Q4_K」。</p>
+<p>要真做量化，得走 <code>llama-quantize</code> 那个 C++ 工具，或者在包外自己实现块算术。</p>
+<h2>陷阱十：Python 包比头文件落后两个值</h2>
+<p>llama.cpp 的 <code>include/llama.h</code>（我拉的是 master）已经排到：</p>
+<pre><code>LLAMA_FTYPE_MOSTLY_Q1_0    = 40,
+LLAMA_FTYPE_MOSTLY_Q2_0    = 41,
+LLAMA_FTYPE_MOSTLY_F8_E4M3 = 42,</code></pre>
+<p>而 gguf-py 0.19.0 到 40 为止。结果就是：</p>
+<pre><code>LlamaFileType(40) -> MOSTLY_Q1_0
+LlamaFileType(41) -> ValueError: 41 is not a valid LlamaFileType
+LlamaFileType(42) -> ValueError: 42 is not a valid LlamaFileType</code></pre>
+<p>读到新模型时抛这个错，文件通常没坏，是包老了。同理张量类型侧最高到 41（<code>Q1_0</code>），<code>GGMLQuantizationType(42)</code> 也是 ValueError。</p>
+<h2>4.58 GiB 和 4.9 GB 是同一个文件</h2>
+<p>官方同一份 README 里，量化表写 Q4_K_M 的 8B 是 4.58 GiB，内存与磁盘表写 4.9 GB。这不是笔误：4.58 GiB 等于 4.92 GB，四舍五入就是 4.9 GB。</p>
+<p>GiB 与 GB 差 7.4%，在 5 GB 级别上就是 0.34 GB，在 15 GB 上超过 1 GB。看到「模型差 2 GB」时先确认两边是不是同一套单位，否则可能只是单位换算。</p>
+<h2>怎么读一个模型文件名</h2>
+<p>按顺序过这五条：</p>
+<ul><li><strong>先看有没有 S/M/L。</strong> 有就是混合档，别用块算术算体积，直接用官方文件级 bpw</li><li><strong>看家族字母。</strong> Q 是早期的整块量化（块 32）；K 是 256 元素超块量化；IQ 是带重要性矩阵的格点量化；TQ 是三值量化。字母决定块结构，数字只决定档位</li><li><strong>换算体积用文件级 bpw 乘以参数量再除以 8。</strong> 7.0e9 参数在 4.8944 bpw 下约 4.28 GB，这是算术换算，不含 KV cache，不是实测</li><li><strong>想省体积先看 IQ4_XS。</strong> 4.4597 bpw 比 Q4_K_S 的 4.6672 更小，而且它同样是「4」打头</li><li><strong>编号不能互查。</strong> <code>general.file_type</code> 用 <code>LlamaFileType</code> 翻，张量用 <code>GGMLQuantizationType</code> 翻。数值 15 在两个表里是两个不同的东西</li></ul>
+<h2>排错：四个真实报错</h2>
+<p><strong>一、<code>ValueError: Quantized tensor bytes per row (145) is not a multiple of Q4_K type size (144)</code></strong></p>
+<p>我故意给 Q4_K 张量传 145 字节。校验点在每行字节数上，不是总字节数，所以 144 字节可以（会自动推成 256 个元素），145 就炸。修法是按 <code>GGML_QUANT_SIZES[类型]</code> 的块字节整数倍给。</p>
+<p><strong>二、<code>gguf.quants.QuantError: Can't quantize tensor with shape (255,) to Q4_K</code></strong></p>
+<p>255 不是 256 的倍数。Q4_K 的块是 256，Q4_0 是 32，对齐要求随类型变。要么补零到整数块（会改变数据），要么这类张量别量化。</p>
+<p><strong>三、<code>NotImplementedError:</code>（消息为空）</strong></p>
+<p><code>gguf.quants.quantize()</code> 对 15 种类型抛空消息异常。抓到之后不要指望 <code>str(e)</code> 有内容，得自己把类型名写进日志，否则线上只能看到一行空报错。</p>
+<p><strong>四、<code>ValueError: 41 is not a valid LlamaFileType</code></strong></p>
+<p><code>general.file_type</code> 读出了 41 或 42。这不是文件损坏，是 gguf-py 0.19.0 的类型枚举还没跟上 llama.h。升级包，或者直接按整数处理、自己维护一张 41/42 的映射表。</p>
+<h2>常见问题</h2>
+<p><strong>Q：Q4_K_M 的 M 到底代表什么？</strong></p>
+<p>官方文档没有逐字母释义，只说明 <code>--pure</code> 会关掉 k-quant 混合。从官方 bpw 表可以确定 S 小于 M 小于 L 是同一家族内的三档，且 M 是默认推荐档：Q3 系列 3.6429 / 3.9960 / 4.2979，Q4 系列 4.6672 / 4.8944，Q5 系列 5.5704 / 5.7036。把 M 理解成「混合得比 S 多、比 L 少」是符合数据的。</p>
+<p><strong>Q：既然 file_type 不参与解码，它有什么用？</strong></p>
+<p>三个用途：给工具和用户一个「这文件大概是几位的」的快速索引；让加载器在缺少张量信息时有个兜底猜测（对应 <code>GUESSED = 1024</code>）；让模型仓库能按名称筛选。它不负责解码，解码看每个张量的 tensor_type。</p>
+<p><strong>Q：为什么不干脆全用 Q8_0？</strong></p>
+<p>体积。8B 上 Q8_0 是 7.95 GiB，Q4_K_M 是 4.58 GiB，差 3.37 GiB。这个差价在显存紧张时直接决定能不能跑。</p>
+<p><strong>Q：7B 和 8B 的换算能直接套吗？</strong></p>
+<p>不能。bpw 是平均值，参数量不同、1D 张量占比不同、词表大小不同，平均值就不同。上文的 7.0e9 乘 4.8944 除以 8 只是算术演示；要用真实体积，查官方对具体模型给出的 GiB 数。</p>
+<h2>最后</h2>
+<p>这轮取证最有用的一条不是哪个数字，而是那张「30 个共用编号、24 个含义不同」的表。它说明 Q4_K_M 这种名字天生有两层身份：作为文件名它好读、好筛、好传播；作为程序里的值它必须查对表。</p>
+<p>站内另一篇里我拆过 <code>general.file_type</code> 写进文件再读回来会错位的八种情况（<a href="https://yaohehe.github.io/2026-11-22-gguf-header-tensor.html">GGUF 元数据读法的八个陷阱</a>），那篇讲的是字段读写，这篇讲的是名字本身：同一个名字在两套枚举、两张 bpw 表里的三种身份。</p>
+<p>相关阅读：<a href="https://yaohehe.github.io/2026-11-22-python-decode-errors-utf-8.html">Python decode 的五个错误策略</a> 讲的是字节怎么变成字符串，与这里「字节怎么变成权重」是同一类问题的两个方向；<a href="https://yaohehe.github.io/2026-11-23-tls-verify.html">TLS 证书链验证</a> 里的「默认值把验证全关了」和这里「标签不参与解码」是同一种静默失效。</p>
+<p>本文的 bpw 与体积数字来自两处可回溯来源：llama.cpp 仓库 <code>tools/quantize/README.md</code> 的 Llama-3.1-8B 实测表（截至发稿为 master 分支），以及 gguf-py 0.19.0 包内的 <code>GGML_QUANT_SIZES</code> 与 <code>LlamaFileType</code> 定义；枚举编号以 <code>include/llama.h</code> 为准。没有跑分，也没有困惑度数字，本机没有 GPU，这类数字我不写。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
