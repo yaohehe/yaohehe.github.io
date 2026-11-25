@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dataclass 的九个静默改判：字段、哈希与 slots - TechPassive</title>
+  <meta name="description" content="同一个 @dataclass 定义，在 Python 3.13 上换来了九个你没写过的行为：没有注解的属性不是字段、可哈希的可变默认值被所有实例共享、slots=True 会换掉类对象、replace() 会重跑 __post_init__。我实际跑了三轮探针，并给出八个报错原文与可直接复制的修法。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>dataclass 不是语法糖：九个静默改判</h1>
+  <div class="post-tags">
+    <span class="tag">python</span><span class="tag">dataclass</span><span class="tag">数据模型</span>
+  </div>
+  <div class="content">
+    <p>一个任务对象跑了三个月没出过事，昨天开始串数据：两个不同任务的 <code>payload</code> 变成了同一个 dict，改 A 的备注，B 的备注跟着变。死盯那段业务代码找不到赋值的地方，最后打印 <code>id()</code> 才发现 —— 两个实例的 <code>payload</code> 从头到尾就是<strong>同一个对象</strong>，因为类定义里写的不是 <code>payload: dict = {}</code>，而是一个可哈希的自定义类实例当默认值。</p>
+<p><code>@dataclass</code> 不是「省掉 <code>__init__</code> 的语法糖」。它是一个在<strong>类创建那一刻执行一次</strong>的代码生成器，生成什么由七个开关决定；开关之间还会互相牵连，改一个会顺带改掉你没看的那几个。我在本机（CPython 3.13.14 / Windows 11 10.0.26300）写了三轮探针，把每个改判都跑出可复现的输出，下面九条全部有原样报错或原样返回值。</p>
+<p><strong>TL;DR</strong>：</p>
+<ul><li>没有类型注解的属性<strong>不是字段</strong>，位置参数会安静地滑到下一个字段上，不抛异常。</li><li>可变默认值只在「不可哈希」时被拦；可哈希的自定义实例当默认值会被所有实例共享。</li><li><code>eq=True</code> + <code>frozen=False</code> 时 <code>__hash__</code> 是 <code>None</code>，这类实例进不了集合；<code>eq=False</code> 时退回 id 哈希，内容相同的两个实例在集合里是<strong>两个</strong>。</li><li><code>frozen=True</code> 只挡 <code>obj.x = ...</code> 这一种写法，<code>object.__setattr__</code> 与可变字段的内容照样能改。</li><li><code>slots=True</code> 会返回一个<strong>新类</strong>：旧类上的注册表、<code>isinstance</code> 检查、类属性默认值全部失效，且不报错。</li><li><code>replace()</code> 会重新调用 <code>__post_init__</code>，副作用执行两次；<code>init=False</code> 的字段不能传给 <code>replace()</code>。</li><li>3.13 起 <code>__eq__</code> 改成逐字段比较，含 NaN 的实例不再等于自己（旧实现走元组比较，对同一对象有身份短路）。</li></ul>
+<p>九个改判里有六个连异常都不抛，只在结果里悄悄错 —— 也就是 66.7% 的坑不会自己跳出来。所以先说一个能落地的排查顺序，后面每条都在这条链上：</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="dataclass 字段没生效时的排查顺序" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft66c15515grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft66c15515grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">dataclass 字段没生效时的排查顺序</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">先打印 fields() 看字段表</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">名字不在表里就补注解</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">在表里就看默认值是不是 MISSING</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">再看 slots 是否换了类</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">最后核对 init 与 kw_only</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>dataclass 字段没生效时的排查顺序 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>先把执行时机说清楚：三个钩子里的两个在类创建时定死</h2>
+<p><code>@dataclass</code> 做的事只有一件：读 <code>__annotations__</code>，把字段整理成一个有序映射，再按参数生成 <code>__init__</code>、<code>__repr__</code>、<code>__eq__</code>、<code>__hash__</code>、比较方法，最后把类原样返回（<code>slots=True</code> 是唯一的例外，见改判五）。整个过程在 <code>import</code> 时结束，运行期不再回头看你的定义。</p>
+<p>这意味着两件事。第一，<strong>字段的判定标准是注解，不是赋值</strong>。第二，所有「静默」都发生在生成阶段：该生成的没生成、该拦的没拦，运行时不会有人提醒你。</p>
+<p>官方文档里有一句很容易被跳过的话：<code>fields()</code> 返回的是「用于定义这个 dataclass 的 <code>Field</code> 对象元组」，并且「不返回 <code>ClassVar</code> 或 <code>InitVar</code> 这类伪字段」。所以 <code>fields()</code> 的结果就是唯一可信的字段清单 —— 后面所有排查我都从它开始。</p>
+<h2>改判一 · 没有注解的属性不是字段，位置参数会安静地错位</h2>
+<p>最小复现只有五行：</p>
+<pre><code>from dataclasses import dataclass, fields
+
+@dataclass
+class N:
+    x = 0
+    y: int = 0
+
+print([f.name for f in fields(N)])   # ['y']
+print(N(5).y)                        # 5
+print(N().x)                         # 0</code></pre>
+<p><code>x = 0</code> 看着像个字段，实际上只是一条普通的类属性：没有注解就不进 <code>__annotations__</code>，<code>@dataclass</code> 压根不认它。<code>fields(N)</code> 只返回 <code>['y']</code>，而 <code>N(5)</code> 里的 5 被唯一那个字段 <code>y</code> 接走了 —— 没有异常、没有警告，<code>N(5).y</code> 就是 5。我打印了实例的 <code>__dict__</code>，只有 <code>{'y': 5}</code>。</p>
+<p>真实代码里这一条最常见的形态是漏写注解：</p>
+<pre><code>@dataclass
+class Job:
+    name: str
+    retries = 3          # 想写默认值，结果连字段都不是
+    timeout: int = 30</code></pre>
+<p><code>Job("a", 30)</code> 会把 30 塞给 <code>timeout</code>，<code>retries</code> 永远是类属性 3，实例上改不了、<code>fields()</code> 里也找不到。修法只有一条：补注解，写成 <code>retries: int = 3</code>。</p>
+<p>同类的「按名字找东西」问题在参数层也出现过一次：<a href="https://yaohehe.github.io/2026-11-18-python-argparse.html" class="internal-link">命令行参数解析的八个静默分歧</a> 里，<code>type=</code> 只对命令行传来的字符串生效；这一次是注解决定谁进字段表。</p>
+<h2>改判二 · 可变默认值只拦「不可哈希」的那一半</h2>
+<p><code>list</code>、<code>dict</code>、<code>set</code> 当默认值会直接报错：</p>
+<pre><code>ValueError: mutable default &lt;class 'list'&gt; for field items is not allowed: use default_factory</code></pre>
+<p>于是很多人以为「<code>@dataclass</code> 会帮我拦住可变默认值」。文档写得很清楚，它拦的是<strong>不可哈希</strong>，不是可变：</p>
+<p><strong>文档原文（3.11 变更）</strong>：Changed in version 3.11: Instead of looking for and disallowing objects of type list, dict, or set, unhashable objects are now not allowed as default values. Unhashability is used to approximate mutability.</p>
+<p>同一段文档还留了一句更关键的话：「There is no general way for Data Classes to detect this condition.」意思是用哈希近似可变性只是一个折中。我拿一个带默认 <code>__hash__</code> 的自定义类试了一下，它顺利通过了检查：</p>
+<pre><code>class Box:
+    def __init__(self):
+        self.n = 0
+
+@dataclass
+class Good:
+    box: Box = Box()      # 不报错
+
+a, b = Good(), Good()
+a.box.n = 7
+print(a.box is b.box)     # True
+print(b.box.n)            # 7</code></pre>
+<p>两个实例拿到的是同一个 <code>Box</code>，改 A 就是改 B —— 就是文章开头那个事故的最小形态。判据很简单：<strong>能在哈希表里当键，就可以当默认值</strong>，哪怕它内部全是可变状态。修法和 list 一样，用 <code>default_factory</code>：</p>
+<pre><code>from dataclasses import dataclass, field
+
+@dataclass
+class Good:
+    box: Box = field(default_factory=Box)</code></pre>
+<p>顺带一提，<code>frozen=True</code> 的 dataclass 实例是可哈希的，所以拿它当默认值一样能通过检查、一样会被共享。</p>
+<h2>改判三 · `__hash__` 有三种结局，只有一种能进集合</h2>
+<p>这段是我觉得最值得背下来的一张表，文档原文三条规则：</p>
+<p><strong>文档原文（哈希三条规则）</strong>：If eq and frozen are both true, by default @dataclass will generate a <code>__hash__()</code> method for you. If eq is true and frozen is false, <code>__hash__()</code> will be set to None, marking it unhashable (which it is, since it is mutable). If eq is false, <code>__hash__()</code> will be left untouched meaning the <code>__hash__()</code> method of the superclass will be used (if the superclass is object, this means it will fall back to id-based hashing).</p>
+<p>实测三个类，行为完全不同：</p>
+<pre><code>@dataclass
+class H1:
+    x: int
+
+@dataclass(eq=False)
+class H2:
+    x: int
+
+@dataclass(frozen=True)
+class H3:
+    x: int</code></pre>
+<p><code>H1.__hash__</code> 是 <code>None</code>，<code>hash(H1(1))</code> 抛 <code>TypeError: unhashable type: 'H1'</code>。<code>H2.__hash__ is object.__hash__</code> 为 <code>True</code>，于是 <code>{H2(1), H2(1)}</code> 的长度是 <strong>2</strong>，而 <code>H2(1) == H2(1)</code> 竟然是 <code>False</code> —— 因为关掉 <code>eq</code> 就等于关掉按内容比较，只剩身份。<code>H3</code> 才是大多数人以为的默认行为：<code>{H3(1), H3(1)}</code> 长度 1。</p>
+<p>顺带一个容易忽略的点：<code>A() == B()</code> 在不同 dataclass 之间是 <code>False</code>，即使字段完全一样。文档里那句「Both instances in the comparison must be of the identical type」不是客套话。</p>
+<h2>改判四 · `frozen=True` 挡的是赋值语句，不是可变性</h2>
+<pre><code>@dataclass(frozen=True)
+class F:
+    x: int
+    tags: list = field(default_factory=list)
+
+f = F(1)
+f.x = 2                      # FrozenInstanceError: cannot assign to field 'x'
+object.__setattr__(f, "x", 99)
+f.tags.append("mutated")
+print(f.x, f.tags)           # 99 ['mutated']</code></pre>
+<p><code>frozen</code> 的实现是往类里加 <code>__setattr__</code> / <code>__delattr__</code>，命中就抛 <code>FrozenInstanceError</code>（<code>AttributeError</code> 的子类）。它挡不住两件事：绕过 <code>__setattr__</code> 的写法，以及字段内部的可变对象。所以「<code>frozen</code> 等于不可变」这句话在 Python 里只能算约定。</p>
+<p>这条路上还有三个连带限制，都是真报错：</p>
+<ul><li>类里自己定义了 <code>__setattr__</code> 又传 <code>frozen=True</code> → <code>TypeError: Cannot overwrite attribute __setattr__ in class A</code></li><li>冻结类不能有非冻结子类 → <code>TypeError: cannot inherit non-frozen dataclass from a frozen one</code></li><li>非冻结类不能有冻结子类 → <code>TypeError: cannot inherit frozen dataclass from a non-frozen one</code></li></ul>
+<p>最后一条在继承链上特别扎人：基类哪天改成 <code>frozen=True</code>，所有子类会同时炸，而且报错是在 <code>import</code> 时抛的。</p>
+<p>还有一个更隐蔽的：在 <code>frozen=True</code> 的 <code>__post_init__</code> 里给字段赋值，同样会抛 <code>FrozenInstanceError: cannot assign to field 'b'</code>。要初始化派生字段，得写 <code>object.__setattr__(self, "b", ...)</code>；文档里也明说了 <code>frozen=True</code> 时 <code>__init__</code> 内部就是这么干的，「<code>__init__()</code> cannot use simple assignment to initialize fields, and must use <code>object.__setattr__()</code>」。</p>
+<h2>改判五 · `slots=True` 会返回一个新类，你的注册表里留下的是旧的</h2>
+<p>这是九条里唯一一个「文档自己前后不一致」的地方。装饰器总述写的是：</p>
+<p><strong>装饰器总述原文</strong>：The decorator returns the same class that it is called on; no new class is created.</p>
+<p>而 <code>slots</code> 参数那一段写的是：</p>
+<p><strong><code>slots</code> 参数原文</strong>：If true (the default is <code>False</code>), <code>__slots__</code> attribute will be generated and new class will be returned instead of the original one.</p>
+<p>两句话各自成立，合起来读就是错的。实测后果有三个。</p>
+<p>第一，类属性没了。不加 slots 时 <code>Plain.x</code> 是 <code>1</code>；加了之后 <code>Slot.x</code> 变成一个 <code>member_descriptor</code>，<code>getattr(Slot, "x", None)</code> 已经不等于 1。</p>
+<p>第二，<code>__dict__</code> 没了，弱引用也没了：</p>
+<pre><code>@dataclass(slots=True)
+class S:
+    x: int = 1
+
+s = S()
+s.__dict__        # AttributeError: 'S' object has no attribute '__dict__'
+weakref.ref(s)    # TypeError: cannot create weak reference to 'S' object</code></pre>
+<p>要弱引用必须再传 <code>weakref_slot=True</code>（3.11 起才有），两个参数一起用才成立。</p>
+<p>第三，也是最危险的一条：注册表里存的是<strong>旧类</strong>。我写了个典型的注册装饰器，再用 <code>slots=True</code> 包一层：</p>
+<pre><code>registry = []
+
+def register(cls):
+    registry.append(cls)
+    return cls
+
+@dataclass(slots=True)
+@register
+class X:
+    a: int = 0
+
+print(registry[0] is X)              # False
+print(isinstance(X(), registry[0]))  # False</code></pre>
+<p>两个 <code>False</code>，一个异常都没有。任何依赖「注册时拿到类、运行时用 <code>isinstance</code> 判断」的插件式代码，开了 <code>slots=True</code> 就静默失效。装饰器顺序反过来（<code>@register</code> 在最外层）才能拿到新类，而这取决于你写的是哪一行在上面。</p>
+<p>再加一条：类里已经手写了 <code>__slots__</code> 又传 <code>slots=True</code>，直接 <code>ValueError: 'x' in __slots__ conflicts with class variable</code>。文档那句「If <code>__slots__</code> is already defined in the class, then <code>TypeError</code> is raised」和实测的类型也不一致 —— 实测是 <code>ValueError</code>。</p>
+<h2>改判六 · `__post_init__` 的触发条件，与 `replace()` 的二次执行</h2>
+<p><code>__post_init__</code> 不是钩子，是生成出来的 <code>__init__</code> 末尾的一行调用。所以它的触发条件跟着 <code>init</code> 走：</p>
+<p><strong>文档原文</strong>：If no <code>__init__()</code> method is generated, then <code>__post_init__()</code> will not automatically be called.</p>
+<p><code>init=False</code> 的字段也一样要走 <code>__post_init__</code> 才能算出值，但它的默认工厂会被调用（文档：「the default factory function will always be called from the generated <code>__init__()</code> function」）。</p>
+<p>真正容易翻车的是 <code>replace()</code>：</p>
+<pre><code>counter = {"n": 0}
+
+@dataclass
+class P:
+    a: int
+    b: int = 0
+
+    def __post_init__(self):
+        counter["n"] += 1
+        self.b = self.a * 2
+
+p = P(3)              # counter = {'n': 1}, b = 6
+q = replace(p, a=5)   # counter = {'n': 2}, q.b = 10</code></pre>
+<p>文档原话是「The newly returned object is created by calling the <code>__init__()</code> method of the dataclass. This ensures that <code>__post_init__()</code>, if present, is also called.」如果 <code>__post_init__</code> 里有发通知、写审计日志、扣库存这类副作用，<code>replace()</code> 一次就等于再跑一遍业务。我实测计数从 1 变 2，<code>b</code> 从 6 变 10。</p>
+<p>另一条硬边界：<code>init=False</code> 的字段不能传给 <code>replace()</code>，报 <code>TypeError: field b is declared with init=False, it cannot be specified with replace()</code>。而 <code>replace()</code> 传一个不存在的字段，报的是 <code>TypeError: R.__init__() got an unexpected keyword argument 'zzz'</code> —— 看到这句先查字段名拼写，别去查 <code>replace</code> 的实现。</p>
+<h2>改判七 · `MISSING` 是个哨兵，`if f.default:` 会把 0 和空串判成「没写」</h2>
+<p>要给字段做通用的序列化、表单渲染或者配置导出，几乎一定会遍历 <code>fields()</code> 读默认值。这里有个必然踩的坑：</p>
+<pre><code>@dataclass
+class D:
+    a: int = 0
+    b: list = field(default_factory=list)
+    c: str = ""</code></pre>
+<p>实测三行结果：</p>
+<ul><li><code>a</code>：<code>default is MISSING</code> 为 <code>False</code>，但 <code>bool(0)</code> 是 <code>False</code></li><li><code>b</code>：<code>default is MISSING</code> 为 <code>True</code>（因为用的是 <code>default_factory</code>）</li><li><code>c</code>：<code>default is MISSING</code> 为 <code>False</code>，但 <code>bool("")</code> 是 <code>False</code></li></ul>
+<p>于是 <code>if f.default:</code> 会把 <code>a</code> 和 <code>c</code> 判成「没有默认值」，把 <code>b</code> 判成「有默认值」—— 三个全错。正确写法是两个哨兵分别判：</p>
+<pre><code>from dataclasses import MISSING
+
+for f in fields(D):
+    has_default = f.default is not MISSING
+    has_factory = f.default_factory is not MISSING</code></pre>
+<p><code>MISSING</code> 是模块级哨兵，只能用 <code>is</code> 比。顺带提醒：<code>fields()</code> 对非 dataclass 会抛 <code>TypeError: must be called with a dataclass type or instance</code>，<code>asdict()</code> 对非实例抛 <code>asdict() should be called on dataclass instances</code> —— 这两个错误信息足够直接，不用猜。</p>
+<h2>改判八 · `order=True` 比的是声明顺序，`kw_only` 救得了顺序救不了模式匹配</h2>
+<p><code>order=True</code> 生成的是按字段声明顺序的元组比较，所以字段类型混着 <code>None</code> 就炸：</p>
+<pre><code>@dataclass(order=True)
+class O:
+    v: int
+
+sorted([O(2), O(None)])
+# TypeError: '&lt;' not supported between instances of 'NoneType' and 'int'</code></pre>
+<p>同样的坑还有一个前置条件：<code>order=True</code> 必须配 <code>eq=True</code>，否则 <code>ValueError: eq must be true if order is true</code>。而类里已经有 <code>__lt__</code> 时再传 <code>order=True</code>，报 <code>TypeError: Cannot overwrite attribute __lt__ in class C Consider using functools.total_ordering</code>。</p>
+<p>字段顺序的死局（有默认值的字段不能排在没默认值的字段前面，<code>TypeError: non-default argument 'b' follows default argument 'a'</code>）在继承时最容易出现：基类全带默认值，子类加一个必填字段就炸。<code>kw_only=True</code> 能救：</p>
+<pre><code>@dataclass(kw_only=True)
+class C(P):
+    b: int</code></pre>
+<p>实测 <code>C(b=3)</code> 正常构造，<code>a</code> 取默认 0。但代价是这些字段会从 <code>__match_args__</code> 里消失 —— 文档写着「Keyword-only fields are not included in <code>__match_args__</code>」。我拿位置模式匹配试了下：</p>
+<pre><code>@dataclass(kw_only=True)
+class Q:
+    x: int
+    y: int
+
+match Q(x=0, y=0):
+    case Q(0, 0):     # TypeError: Q() accepts 0 positional sub-patterns (2 given)
+        pass</code></pre>
+<p>关键字匹配 <code>case Q(x=0)</code> 正常，位置匹配直接抛 <code>TypeError</code>。<code>KW_ONLY</code> 伪字段同理：<code>fields()</code> 里看不到它，<code>__match_args__</code> 只留 <code>('a',)</code>，<code>K(1, 2)</code> 报 <code>takes from 1 to 2 positional arguments but 3 were given</code>。</p>
+<h2>改判九 · 3.13 起 `__eq__` 逐字段比较，含 NaN 的实例不再等于自己</h2>
+<p>这条是版本漂移，写在文档的 <code>eq</code> 参数下：</p>
+<p><strong>文档原文（3.13 变更）</strong>：The generated <code>__eq__</code> method now compares each field individually (for example, <code>self.a == other.a and self.b == other.b</code>), rather than comparing tuples of fields as in previous versions.</p>
+<p>为什么这个改动会咬人？因为元组比较对<strong>同一个对象</strong>有身份短路：<code>(n,) == (n,)</code> 在两个元素是同一个 <code>nan</code> 对象时返回 <code>True</code>，尽管 <code>n == n</code> 是 <code>False</code>。逐字段比较没有这条短路。实测：</p>
+<pre><code>n = float("nan")
+
+P(n) == P(n)        # False   （3.13）
+(n,) == (n,)        # True    （旧实现的形状）
+n == n              # False</code></pre>
+<p>后果是：用 dataclass 实例当去重键、或者拿 <code>==</code> 判「这条记录没变」的代码，只要字段里有 NaN（浮点缺失值、pandas 出来的空值、除以零后的结果），升级到 3.13 之后同一条数据会被判成不同的两条。数值场景里这不是理论问题。</p>
+<p>顺带把另外两条装饰器冲突也说清楚，都是真报错：<code>unsafe_hash=True</code> 与手写 <code>__hash__</code> 同时存在 → <code>TypeError: Cannot overwrite attribute __hash__ in class B</code>；重复套 <code>@dataclass</code> 则是安全的（实测返回的仍是同一个类对象，字段表不变）。</p>
+<h2>Troubleshooting: 八个真实报错与修法</h2>
+<p>下面八个报错全部来自本机 3.13.14 的原样输出，按「现象 → 原因 → 修法」排列，代码块可直接复制。</p>
+<h3>报错一 · ValueError: mutable default 后面跟着 use default_factory</h3>
+<p>现象：类定义那一行就炸，<code>import</code> 阶段失败，抛 <code>ValueError: mutable default &lt;class 'list'&gt; for field items is not allowed: use default_factory</code>。</p>
+<p>原因：<code>list</code> 不可哈希，被当成可变默认值拦掉。这是保护，不是 bug。</p>
+<p>修法：</p>
+<pre><code>from dataclasses import dataclass, field
+
+@dataclass
+class Job:
+    items: list = field(default_factory=list)</code></pre>
+<h3>报错二 · TypeError: non-default argument follows default argument</h3>
+<p>现象：基类全给默认值，子类加必填字段，<code>import</code> 时抛 <code>TypeError: non-default argument 'b' follows default argument 'a'</code>。</p>
+<p>原因：字段顺序按 MRO 逆序拼装，基类字段在前，有默认值的字段后面不能再出现没默认值的字段。</p>
+<p>修法一，给子类字段也加默认值；修法二，开 <code>kw_only=True</code>：</p>
+<pre><code>@dataclass(kw_only=True)
+class Child(Base):
+    b: int</code></pre>
+<h3>报错三 · TypeError: cannot inherit non-frozen dataclass from a frozen one</h3>
+<p>现象：改了基类的 <code>frozen</code>，所有子类同时挂，报错发生在 <code>import</code> 阶段。</p>
+<p>原因：冻结与不冻结不能混在一条继承链上，两个方向都拦。</p>
+<p>修法：整条链统一 <code>frozen=True</code>，或者把冻结的基类改成组合（把实例当字段）而不是继承。</p>
+<h3>报错四 · TypeError: unhashable type</h3>
+<p>现象：把 dataclass 实例塞进 <code>set</code> 或当 <code>dict</code> 键时抛 <code>TypeError: unhashable type: 'H1'</code>。</p>
+<p>原因：<code>eq=True</code> 且 <code>frozen=False</code> 时，生成的 <code>__hash__</code> 被显式设为 <code>None</code>。</p>
+<p>修法：要么 <code>frozen=True</code>（按字段哈希），要么把可变字段用 <code>field(compare=False)</code> 排除在比较之外再配 <code>unsafe_hash=True</code>，要么换成 <code>tuple</code> 键。</p>
+<h3>报错五 · FrozenInstanceError: cannot assign to field</h3>
+<p>现象：<code>frozen=True</code> 的类，在 <code>__post_init__</code> 里给字段赋值，抛 <code>FrozenInstanceError: cannot assign to field 'b'</code>。</p>
+<p>原因：<code>frozen</code> 加的是 <code>__setattr__</code>，<code>__post_init__</code> 里那句赋值照样走它。</p>
+<p>修法：</p>
+<pre><code>def __post_init__(self):
+    object.__setattr__(self, "b", self.a * 2)</code></pre>
+<h3>报错六 · ValueError: eq must be true if order is true</h3>
+<p>现象：只想排序，顺手写了 <code>eq=False</code>，定义时抛 <code>ValueError: eq must be true if order is true</code>。</p>
+<p>原因：排序方法需要相等语义兜底。</p>
+<p>修法：去掉 <code>eq=False</code>；确实不想要 <code>__eq__</code>，就自己实现 <code>__lt__</code> 等方法，不要传 <code>order=True</code>。</p>
+<h3>报错七 · AttributeError: object has no attribute __dict__</h3>
+<p>现象：开了 <code>slots=True</code> 之后，序列化库、<code>vars()</code>、<code>obj.__dict__.update(...)</code> 全部报 <code>AttributeError: 'S' object has no attribute '__dict__'</code>。</p>
+<p>原因：<code>__slots__</code> 生成的类实例没有实例字典。</p>
+<p>修法：改成显式遍历 <code>fields()</code> 取值，或者别对这个类开 <code>slots</code>：</p>
+<pre><code>{k: getattr(obj, k) for k in (f.name for f in fields(obj))}</code></pre>
+<h3>报错八 · TypeError: field is declared with init=False, it cannot be specified with replace()</h3>
+<p>现象：想用 <code>replace()</code> 改一个派生字段，抛 <code>TypeError: field b is declared with init=False, it cannot be specified with replace()</code>。</p>
+<p>原因：<code>replace()</code> 是重新调 <code>__init__</code>，而 <code>init=False</code> 的字段不在 <code>__init__</code> 的参数里。</p>
+<p>修法：先 <code>replace()</code> 改源字段，让 <code>__post_init__</code> 重算；确实要改派生值，就构造新实例或者把该字段改成 <code>init=True</code>。</p>
+<h2>上线前要跑的四条检查</h2>
+<p><strong>检查一 · 字段表对着注解数一遍</strong>。<code>print([(f.name, f.type) for f in fields(MyClass)])</code>，和类定义逐行对。数量对不上就是漏了注解。</p>
+<p><strong>检查二 · 用 <code>id()</code> 验默认值共享</strong>。对每个带默认值的字段，造两个实例比 <code>id(getattr(a, name)) == id(getattr(b, name))</code>。返回 <code>True</code> 的字段必须改成 <code>default_factory</code>。</p>
+<p><strong>检查三 · 按用途选哈希策略</strong>。要进 <code>set</code> / 当 <code>dict</code> 键：<code>frozen=True</code>；只用 <code>==</code> 判等：保持 <code>eq=True, frozen=False</code> 并接受它不可哈希；要 id 语义：显式写 <code>eq=False</code> 并在注释里说明原因。</p>
+<p><strong>检查四 · 有 <code>slots=True</code> 就重跑一遍 <code>isinstance</code> 与注册逻辑</strong>。把注册表里的类打印出来，和当前类比 <code>is</code>。这一条只能靠实测，静态检查看不出来。</p>
+<h2>把这九条压成一张对照表</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你写的</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你以为</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">3.13 实测</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>x = 0</code>（无注解）</td><td style="border:1px solid #ddd;padding:8px;">一个带默认值的字段</td><td style="border:1px solid #ddd;padding:8px;">类属性，不进 <code>fields()</code>，位置参数顺延给下一个字段</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>x: list = []</code></td><td style="border:1px solid #ddd;padding:8px;">静默共享</td><td style="border:1px solid #ddd;padding:8px;"><code>ValueError</code>，直接被拦</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>x: Box = Box()</code></td><td style="border:1px solid #ddd;padding:8px;">每个实例一份</td><td style="border:1px solid #ddd;padding:8px;">通过检查，所有实例共享同一个对象</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>eq=True</code>（默认）</td><td style="border:1px solid #ddd;padding:8px;">可以当字典键</td><td style="border:1px solid #ddd;padding:8px;"><code>__hash__</code> 是 <code>None</code>，抛 <code>unhashable type</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>eq=False</code></td><td style="border:1px solid #ddd;padding:8px;">只是不比内容</td><td style="border:1px solid #ddd;padding:8px;">退回 id 哈希，内容相同的两个实例在集合里算两个</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>frozen=True</code></td><td style="border:1px solid #ddd;padding:8px;">完全不可变</td><td style="border:1px solid #ddd;padding:8px;">只挡赋值语句；<code>object.__setattr__</code> 与可变字段内部照改</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>slots=True</code></td><td style="border:1px solid #ddd;padding:8px;">只是省内存</td><td style="border:1px solid #ddd;padding:8px;">返回新类；<code>isinstance</code> 与注册表失效；类属性变描述符</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>replace(obj, ...)</code></td><td style="border:1px solid #ddd;padding:8px;">复制并改一个字段</td><td style="border:1px solid #ddd;padding:8px;">重新跑 <code>__init__</code>，<code>__post_init__</code> 副作用执行第二次</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>order=True</code></td><td style="border:1px solid #ddd;padding:8px;">按字段排序</td><td style="border:1px solid #ddd;padding:8px;">混入 <code>None</code> 就 <code>TypeError</code>；字段顺序即比较顺序</td></tr></tbody></table>
+<h2>FAQ</h2>
+<p><strong>Q：为什么 <code>default=[]</code> 报错，<code>default=SomeObject()</code> 不报错？</strong></p>
+<p>因为检查的是哈希能力，不是可变性。<code>list</code> 不可哈希 → 被拦；普通类实例可哈希 → 放行，然后被所有实例共享。3.11 起就是这么判的，文档也承认这只是近似（「There is no general way for Data Classes to detect this condition」）。</p>
+<p><strong>Q：<code>slots=True</code> 到底值不值得开？</strong></p>
+<p>只在两个前提下开：字段数量大、实例数量多到内存真的吃紧；以及代码里没有任何「注册类对象再用 <code>isinstance</code> 判断」的地方。否则省下的内存换来的是三个静默失效：类属性变描述符、<code>__dict__</code> 消失、注册表里留下旧类。</p>
+<p><strong>Q：<code>frozen=True</code> 的实例能当字典键吗？</strong></p>
+<p>能。<code>eq=True</code> + <code>frozen=True</code> 会生成按字段的 <code>__hash__</code>，实测同一个内容造两次进 <code>set</code> 只剩 1 个。但字段里如果有 <code>list</code> / <code>dict</code>，哈希会在运行期抛 <code>unhashable type</code>，所以冻结类的字段本身也得是冻结的。</p>
+<p><strong>Q：这些行为和 3.12 之间有差别吗？</strong></p>
+<p>有，而且不止一处。3.11 把可变默认值的检查从「类型白名单」改成「不可哈希」；3.13 把 <code>__eq__</code> 从元组比较改成逐字段比较（含 NaN 的实例不再等于自己）。我这份实测是 3.13.14 上的结果，跨版本迁移时建议用上面「检查二」的脚本在你自己的类上重跑一遍。</p>
+<p>如果你也在排查「明明赋值了却没生效」这类问题，可以顺着另外三条线看：<a href="https://yaohehe.github.io/2026-11-25-encoding-python.html" class="internal-link">不写 encoding 时 Python 查哪张表</a> 讲的是默认值从哪来，<a href="https://yaohehe.github.io/2026-11-07-unittestmock-7.html" class="internal-link">测试全绿但代码是坏的</a> 讲的是断言为什么没拦住，<a href="https://yaohehe.github.io/2026-10-29-python-subprocess-0-7.html" class="internal-link">subprocess 的七个静默失效</a> 讲的是退出码为什么是 0。这三篇和本篇共用一个判断口径：先确认对象到底是什么，再谈它表现成什么样。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>dataclasses: nine silent rewrites I measured - TechPassive</title>
+  <meta name="description" content="An unannotated attribute is not a field, slots=True returns a new class and replace() re-runs __post_init__. Nine silent rewrites I measured on 3.13.14.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Python dataclasses: nine silent rewrites</h1>
+  <div class="post-tags">
+    <span class="tag">python</span><span class="tag">dataclass</span><span class="tag">data-modeling</span>
+  </div>
+  <div class="content">
+    <p>A job object had been running in production for three months without a complaint. Then two different jobs started sharing state: editing the note on job A changed the note on job B. There was no assignment between them anywhere in the business logic. Printing <code>id()</code> settled it — both instances held <strong>the same object</strong>, because the field was declared as a hashable custom class instance rather than <code>payload: dict = {}</code>.</p>
+<p><code>@dataclass</code> is not sugar for <code>__init__</code>. It is a code generator that runs <strong>once, at class creation</strong>, and what it generates depends on seven switches that interact with each other. Change one switch and you quietly change two others. I ran three rounds of probes on this machine (CPython 3.13.14, Windows 11 10.0.26300); every claim below has a captured return value or an unedited error message.</p>
+<p><strong>TL;DR</strong>:</p>
+<ul><li>An attribute without a type annotation is <strong>not a field</strong>. Positional arguments slide onto the next field with no exception.</li><li>Mutable defaults are only rejected when they are <em>unhashable</em>. A hashable custom instance passes and is shared by every instance.</li><li>With <code>eq=True</code> and <code>frozen=False</code>, <code>__hash__</code> is <code>None</code>; with <code>eq=False</code> it falls back to id hashing, so two equal-looking instances become two set members.</li><li><code>frozen=True</code> blocks the assignment statement, not mutability: <code>object.__setattr__</code> works and mutable fields keep mutating.</li><li><code>slots=True</code> returns a <strong>new class</strong>. Registries, <code>isinstance</code> checks and class-attribute defaults all break silently.</li><li><code>replace()</code> calls <code>__post_init__</code> again, so side effects run twice; <code>init=False</code> fields cannot be passed to it.</li><li>Since 3.13, <code>__eq__</code> compares field by field, so an instance holding NaN no longer equals itself.</li></ul>
+<p>Six of the nine never raise anything — 66.7% of these traps stay quiet and only show up in the data. So here is the order I actually use when a field refuses to behave:</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="How I trace a dataclass field that ignores me" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft1511d957grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft1511d957grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">How I trace a dataclass field that ignores me</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">print fields() and read the list</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">name missing: add a type annotation</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">name present: check default is MISSING</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">then check whether slots swapped the class</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">last: init and kw_only arguments</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>How I trace a dataclass field that ignores me · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>Two of the three hooks are decided at class creation</h2>
+<p><code>@dataclass</code> does exactly one thing: it reads <code>__annotations__</code>, builds an ordered mapping of fields, generates <code>__init__</code>, <code>__repr__</code>, <code>__eq__</code>, <code>__hash__</code> and the ordering methods according to the switches, and returns the class it was handed (with <code>slots=True</code> as the single exception, see rewrite five). All of this finishes at import time. Nothing re-reads your definition later.</p>
+<p>That has two consequences. First, <strong>a field is defined by its annotation, not by its assignment</strong>. Second, every silent failure happens in the generation phase: something that should have been generated was not, or something that should have been rejected was not.</p>
+<p>One sentence in the docs is easy to skip: <code>fields()</code> returns "a tuple of <code>Field</code> objects that define the fields for this dataclass" and "does not return pseudo-fields which are <code>ClassVar</code> or <code>InitVar</code>". That tuple is the only trustworthy inventory — every diagnosis below starts from it.</p>
+<h2>Rewrite one · an unannotated attribute is not a field, and positional arguments shift</h2>
+<p>Five lines reproduce it:</p>
+<pre><code>from dataclasses import dataclass, fields
+
+@dataclass
+class N:
+    x = 0
+    y: int = 0
+
+print([f.name for f in fields(N)])   # ['y']
+print(N(5).y)                        # 5
+print(N().x)                         # 0</code></pre>
+<p><code>x = 0</code> looks like a field but is only a class attribute: without an annotation it never reaches <code>__annotations__</code>, and the decorator ignores it. <code>fields(N)</code> returns <code>['y']</code>, so the 5 in <code>N(5)</code> lands on <code>y</code> — no exception, no warning. The instance <code>__dict__</code> was <code>{'y': 5}</code>.</p>
+<p>In real code this shows up as a forgotten annotation:</p>
+<pre><code>@dataclass
+class Job:
+    name: str
+    retries = 3          # intended as a default, not even a field
+    timeout: int = 30</code></pre>
+<p><code>Job("a", 30)</code> puts 30 into <code>timeout</code>; <code>retries</code> stays a class attribute at 3, cannot be set per instance, and never appears in <code>fields()</code>. The fix is to annotate it: <code>retries: int = 3</code>.</p>
+<p>The same "look it up by name and get nothing" shape appeared in the argument layer too: in <a href="https://yaohehe.github.io/2026-11-18-python-argparse-8-silent-divergences-in-argv-parsi-en.html" class="internal-link">eight silent divergences in argv parsing</a>, <code>type=</code> only applies to strings that came from the command line. Here it is the annotation that decides membership in the field table.</p>
+<h2>Rewrite two · mutable defaults are only blocked when they are unhashable</h2>
+<p><code>list</code>, <code>dict</code> and <code>set</code> are rejected outright:</p>
+<pre><code>ValueError: mutable default &lt;class 'list'&gt; for field items is not allowed: use default_factory</code></pre>
+<p>It is tempting to conclude that the decorator protects you from mutable defaults. It does not. It rejects <strong>unhashable</strong> defaults:</p>
+<p><strong>From the docs (3.11 change)</strong>: Instead of looking for and disallowing objects of type list, dict, or set, unhashable objects are now not allowed as default values. Unhashability is used to approximate mutability.</p>
+<p>The same passage adds the sentence that matters most: "There is no general way for Data Classes to detect this condition." Hashability is an approximation of mutability, not a test for it. A custom class with a default <code>__hash__</code> sails through:</p>
+<pre><code>class Box:
+    def __init__(self):
+        self.n = 0
+
+@dataclass
+class Good:
+    box: Box = Box()      # no error
+
+a, b = Good(), Good()
+a.box.n = 7
+print(a.box is b.box)     # True
+print(b.box.n)            # 7</code></pre>
+<p>Both instances hold the same <code>Box</code>; mutating A mutates B. The rule of thumb is blunt: <strong>if it can be a dict key, it can be a default value</strong>, even when everything inside it is mutable. The fix is the same as for <code>list</code>:</p>
+<pre><code>from dataclasses import dataclass, field
+
+@dataclass
+class Good:
+    box: Box = field(default_factory=Box)</code></pre>
+<p>Note that frozen dataclass instances are hashable, so using one as a default passes the same check and gets shared the same way.</p>
+<h2>Rewrite three · `__hash__` has three outcomes, and only one survives a set</h2>
+<p>This is the table I would memorise. The three rules, verbatim:</p>
+<p><strong>From the docs (the three hash rules)</strong>: If eq and frozen are both true, by default @dataclass will generate a <code>__hash__()</code> method for you. If eq is true and frozen is false, <code>__hash__()</code> will be set to None, marking it unhashable (which it is, since it is mutable). If eq is false, <code>__hash__()</code> will be left untouched meaning the <code>__hash__()</code> method of the superclass will be used (if the superclass is object, this means it will fall back to id-based hashing).</p>
+<p>Three classes, three completely different behaviours:</p>
+<pre><code>@dataclass
+class H1:
+    x: int
+
+@dataclass(eq=False)
+class H2:
+    x: int
+
+@dataclass(frozen=True)
+class H3:
+    x: int</code></pre>
+<p><code>H1.__hash__</code> is <code>None</code>, so <code>hash(H1(1))</code> raises <code>TypeError: unhashable type: 'H1'</code>. For <code>H2</code>, <code>__hash__ is object.__hash__</code> is <code>True</code>, which means <code>len({H2(1), H2(1)})</code> is <strong>2</strong> and <code>H2(1) == H2(1)</code> is <code>False</code> — turning off <code>eq</code> also turns off content comparison. Only <code>H3</code> behaves the way most people assume: <code>len({H3(1), H3(1)})</code> is 1.</p>
+<p>One more detail worth knowing: <code>A() == B()</code> between two different dataclasses is <code>False</code> even when the fields match exactly. The docs' "Both instances in the comparison must be of the identical type" is not a formality.</p>
+<h2>Rewrite four · `frozen=True` blocks the assignment, not mutability</h2>
+<pre><code>@dataclass(frozen=True)
+class F:
+    x: int
+    tags: list = field(default_factory=list)
+
+f = F(1)
+f.x = 2                      # FrozenInstanceError: cannot assign to field 'x'
+object.__setattr__(f, "x", 99)
+f.tags.append("mutated")
+print(f.x, f.tags)           # 99 ['mutated']</code></pre>
+<p><code>frozen</code> works by adding <code>__setattr__</code> and <code>__delattr__</code> to the class; hitting them raises <code>FrozenInstanceError</code>, a subclass of <code>AttributeError</code>. It cannot stop you from bypassing <code>__setattr__</code>, and it cannot stop a mutable field from mutating. "Frozen means immutable" is a convention, not a guarantee.</p>
+<p>Three related limits are hard errors:</p>
+<ul><li>Defining <code>__setattr__</code> in the class and passing <code>frozen=True</code> gives <code>TypeError: Cannot overwrite attribute __setattr__ in class A</code></li><li>A frozen class cannot have a non-frozen subclass: <code>TypeError: cannot inherit non-frozen dataclass from a frozen one</code></li><li>A non-frozen class cannot have a frozen subclass: <code>TypeError: cannot inherit frozen dataclass from a non-frozen one</code></li></ul>
+<p>The last one bites during refactors: flip a base class to <code>frozen=True</code> and every subclass fails at import time, all at once.</p>
+<p>There is a quieter variant. Assigning inside <code>__post_init__</code> of a frozen class raises <code>FrozenInstanceError: cannot assign to field 'b'</code>. Derived values must go through <code>object.__setattr__(self, "b", ...)</code>, which is exactly what the generated <code>__init__</code> does — the docs note that with <code>frozen=True</code>, "<code>__init__()</code> cannot use simple assignment to initialize fields, and must use <code>object.__setattr__()</code>".</p>
+<h2>Rewrite five · `slots=True` returns a new class, and your registry keeps the old one</h2>
+<p>This is the only place where the docs contradict themselves. The general description says:</p>
+<p><strong>From the docs (decorator overview)</strong>: The decorator returns the same class that it is called on; no new class is created.</p>
+<p>The <code>slots</code> parameter says:</p>
+<p><strong>From the docs (the slots parameter)</strong>: If true (the default is <code>False</code>), <code>__slots__</code> attribute will be generated and new class will be returned instead of the original one.</p>
+<p>Each sentence is true on its own; read together they are wrong. Three consequences, all measured.</p>
+<p>First, class attributes disappear. Without slots, <code>Plain.x</code> is <code>1</code>. With slots, <code>Slot.x</code> becomes a <code>member_descriptor</code>, and <code>getattr(Slot, "x", None) == 1</code> is <code>False</code>.</p>
+<p>Second, <code>__dict__</code> and weak references are gone:</p>
+<pre><code>@dataclass(slots=True)
+class S:
+    x: int = 1
+
+s = S()
+s.__dict__        # AttributeError: 'S' object has no attribute '__dict__'
+weakref.ref(s)    # TypeError: cannot create weak reference to 'S' object</code></pre>
+<p>Weak references require <code>weakref_slot=True</code> as well, available since 3.11; the two switches must be combined.</p>
+<p>Third, and this is the dangerous one: the registry holds the <strong>old</strong> class. I wrote the standard registration decorator and wrapped it with <code>slots=True</code>:</p>
+<pre><code>registry = []
+
+def register(cls):
+    registry.append(cls)
+    return cls
+
+@dataclass(slots=True)
+@register
+class X:
+    a: int = 0
+
+print(registry[0] is X)              # False
+print(isinstance(X(), registry[0]))  # False</code></pre>
+<p>Two <code>False</code> values and no exception. Any plugin-style code that registers a class and later checks it with <code>isinstance</code> breaks silently the moment <code>slots=True</code> is added. Reversing the decorator order (registration outermost) captures the new class instead — the outcome depends on which line is on top.</p>
+<p>One more: writing <code>__slots__</code> by hand and also passing <code>slots=True</code> raises <code>ValueError: 'x' in __slots__ conflicts with class variable</code>. The docs say <code>TypeError</code> for that case; the measured type is <code>ValueError</code>.</p>
+<h2>Rewrite six · when `__post_init__` runs, and why `replace()` runs it twice</h2>
+<p><code>__post_init__</code> is not a hook; it is a single call appended to the generated <code>__init__</code>. Its trigger condition therefore follows <code>init</code>:</p>
+<p><strong>From the docs</strong>: If no <code>__init__()</code> method is generated, then <code>__post_init__()</code> will not automatically be called.</p>
+<p>Fields declared with <code>init=False</code> still need <code>__post_init__</code> to get a value, but their default factory is always invoked — "the default factory function will always be called from the generated <code>__init__()</code> function".</p>
+<p>The real trap is <code>replace()</code>:</p>
+<pre><code>counter = {"n": 0}
+
+@dataclass
+class P:
+    a: int
+    b: int = 0
+
+    def __post_init__(self):
+        counter["n"] += 1
+        self.b = self.a * 2
+
+p = P(3)              # counter = {'n': 1}, b = 6
+q = replace(p, a=5)   # counter = {'n': 2}, q.b = 10</code></pre>
+<p>The docs state: "The newly returned object is created by calling the <code>__init__()</code> method of the dataclass. This ensures that <code>__post_init__()</code>, if present, is also called." If that method sends notifications, writes audit rows or decrements inventory, one <code>replace()</code> re-runs the whole side effect. My counter went from 1 to 2 and <code>b</code> from 6 to 10.</p>
+<p>There is a hard boundary: <code>init=False</code> fields cannot be passed to <code>replace()</code> — <code>TypeError: field b is declared with init=False, it cannot be specified with replace()</code>. And a misspelled field name gives <code>TypeError: R.__init__() got an unexpected keyword argument 'zzz'</code>, which points at <code>__init__</code> rather than at <code>replace()</code>; check the spelling first.</p>
+<h2>Rewrite seven · `MISSING` is a sentinel, and `if f.default:` misreads 0 and the empty string</h2>
+<p>Anyone writing a generic serializer, form renderer or config exporter iterates <code>fields()</code> to read default values. This trap is unavoidable:</p>
+<pre><code>@dataclass
+class D:
+    a: int = 0
+    b: list = field(default_factory=list)
+    c: str = ""</code></pre>
+<p>Measured, field by field:</p>
+<ul><li><code>a</code>: <code>default is MISSING</code> is <code>False</code>, but <code>bool(0)</code> is <code>False</code></li><li><code>b</code>: <code>default is MISSING</code> is <code>True</code>, because it uses <code>default_factory</code></li><li><code>c</code>: <code>default is MISSING</code> is <code>False</code>, but <code>bool("")</code> is <code>False</code></li></ul>
+<p>So <code>if f.default:</code> classifies <code>a</code> and <code>c</code> as having no default, and <code>b</code> as having one. All three are wrong. Test both sentinels separately:</p>
+<pre><code>from dataclasses import MISSING
+
+for f in fields(D):
+    has_default = f.default is not MISSING
+    has_factory = f.default_factory is not MISSING</code></pre>
+<p><code>MISSING</code> is a module-level sentinel; compare with <code>is</code>. Two related errors are explicit enough to need no guessing: <code>fields()</code> on a non-dataclass raises <code>TypeError: must be called with a dataclass type or instance</code>, and <code>asdict()</code> raises <code>asdict() should be called on dataclass instances</code>.</p>
+<h2>Rewrite eight · `order=True` compares declaration order, and `kw_only` fixes the order but not pattern matching</h2>
+<p><code>order=True</code> generates comparisons over a tuple of fields in declaration order, so a mixed <code>None</code> breaks sorting:</p>
+<pre><code>@dataclass(order=True)
+class O:
+    v: int
+
+sorted([O(2), O(None)])
+# TypeError: '&lt;' not supported between instances of 'NoneType' and 'int'</code></pre>
+<p>Two more preconditions. <code>order=True</code> requires <code>eq=True</code>, otherwise <code>ValueError: eq must be true if order is true</code>. And if the class already defines <code>__lt__</code>, passing <code>order=True</code> raises <code>TypeError: Cannot overwrite attribute __lt__ in class C Consider using functools.total_ordering</code>.</p>
+<p>The field-order dead end — a defaulted field cannot precede a field without a default: <code>TypeError: non-default argument 'b' follows default argument 'a'</code> — shows up most often with inheritance: the base class is fully defaulted, the subclass adds one required field, and import fails. <code>kw_only=True</code> resolves it:</p>
+<pre><code>@dataclass(kw_only=True)
+class C(P):
+    b: int</code></pre>
+<p>Measured: <code>C(b=3)</code> constructs fine with <code>a</code> defaulting to 0. The cost is that those fields leave <code>__match_args__</code> — "Keyword-only fields are not included in <code>__match_args__</code>". Positional pattern matching then fails:</p>
+<pre><code>@dataclass(kw_only=True)
+class Q:
+    x: int
+    y: int
+
+match Q(x=0, y=0):
+    case Q(0, 0):     # TypeError: Q() accepts 0 positional sub-patterns (2 given)
+        pass</code></pre>
+<p>Keyword patterns (<code>case Q(x=0)</code>) still work. The <code>KW_ONLY</code> pseudo-field behaves the same way: it never appears in <code>fields()</code>, <code>__match_args__</code> keeps only <code>('a',)</code>, and <code>K(1, 2)</code> raises <code>takes from 1 to 2 positional arguments but 3 were given</code>.</p>
+<h2>Rewrite nine · since 3.13 `__eq__` compares field by field, so NaN instances stop equalling themselves</h2>
+<p>This one is a version drift, documented under <code>eq</code>:</p>
+<p><strong>From the docs (3.13 change)</strong>: The generated <code>__eq__</code> method now compares each field individually (for example, <code>self.a == other.a and self.b == other.b</code>), rather than comparing tuples of fields as in previous versions.</p>
+<p>Why does it bite? Tuple comparison short-circuits on identity: <code>(n,) == (n,)</code> returns <code>True</code> when both elements are the same <code>nan</code> object, even though <code>n == n</code> is <code>False</code>. Per-field comparison has no such shortcut:</p>
+<pre><code>n = float("nan")
+
+P(n) == P(n)        # False   (3.13)
+(n,) == (n,)        # True    (the old shape)
+n == n              # False</code></pre>
+<p>The consequence: code that deduplicates dataclass instances or uses <code>==</code> to decide "this record did not change" will treat one record as two as soon as a field holds NaN — a missing float, a null from pandas, a division by zero. In numerical pipelines this is not hypothetical.</p>
+<p>Two decorator conflicts belong here as well, both hard errors: <code>unsafe_hash=True</code> together with a hand-written <code>__hash__</code> gives <code>TypeError: Cannot overwrite attribute __hash__ in class B</code>; applying <code>@dataclass</code> twice is safe — it returns the same class object and the field table is unchanged.</p>
+<h2>Troubleshooting: eight real errors and their fixes</h2>
+<p>All eight come from the unedited output of CPython 3.13.14 on this machine, ordered by symptom, cause and fix. The snippets are copyable.</p>
+<h3>Error one · ValueError: mutable default, use default_factory</h3>
+<p>Symptom: the class definition line fails at import with <code>ValueError: mutable default &lt;class 'list'&gt; for field items is not allowed: use default_factory</code>.</p>
+<p>Cause: <code>list</code> is unhashable, so it is rejected as a default. This is protection, not a bug.</p>
+<p>Fix:</p>
+<pre><code>from dataclasses import dataclass, field
+
+@dataclass
+class Job:
+    items: list = field(default_factory=list)</code></pre>
+<h3>Error two · TypeError: non-default argument follows default argument</h3>
+<p>Symptom: a fully defaulted base class plus one required field in the subclass fails at import with <code>TypeError: non-default argument 'b' follows default argument 'a'</code>.</p>
+<p>Cause: fields are collected in reverse MRO order, base fields first; a field without a default cannot follow one with a default.</p>
+<p>Fix one: give the subclass field a default. Fix two: use keyword-only fields:</p>
+<pre><code>@dataclass(kw_only=True)
+class Child(Base):
+    b: int</code></pre>
+<h3>Error three · TypeError: cannot inherit non-frozen dataclass from a frozen one</h3>
+<p>Symptom: changing the base class to frozen breaks every subclass at import time.</p>
+<p>Cause: frozen and non-frozen classes cannot share an inheritance chain, in either direction.</p>
+<p>Fix: make the whole chain <code>frozen=True</code>, or replace inheritance with composition by holding the frozen instance as a field.</p>
+<h3>Error four · TypeError: unhashable type</h3>
+<p>Symptom: putting an instance in a <code>set</code> or using it as a dict key raises <code>TypeError: unhashable type: 'H1'</code>.</p>
+<p>Cause: with <code>eq=True</code> and <code>frozen=False</code>, the generated <code>__hash__</code> is explicitly set to <code>None</code>.</p>
+<p>Fix: use <code>frozen=True</code> for field-based hashing; or exclude mutable fields with <code>field(compare=False)</code> and add <code>unsafe_hash=True</code>; or key on a <code>tuple</code>.</p>
+<h3>Error five · FrozenInstanceError: cannot assign to field</h3>
+<p>Symptom: assigning inside <code>__post_init__</code> of a frozen class raises <code>FrozenInstanceError: cannot assign to field 'b'</code>.</p>
+<p>Cause: <code>frozen</code> installs <code>__setattr__</code>, and that assignment goes through it.</p>
+<p>Fix:</p>
+<pre><code>def __post_init__(self):
+    object.__setattr__(self, "b", self.a * 2)</code></pre>
+<h3>Error six · ValueError: eq must be true if order is true</h3>
+<p>Symptom: adding <code>eq=False</code> while asking for ordering fails at definition time with <code>ValueError: eq must be true if order is true</code>.</p>
+<p>Cause: the ordering methods need equality semantics underneath.</p>
+<p>Fix: drop <code>eq=False</code>; if you truly do not want <code>__eq__</code>, implement <code>__lt__</code> and friends yourself and skip <code>order=True</code>.</p>
+<h3>Error seven · AttributeError: object has no attribute __dict__</h3>
+<p>Symptom: after enabling <code>slots=True</code>, serializers, <code>vars()</code> and <code>obj.__dict__.update(...)</code> all raise <code>AttributeError: 'S' object has no attribute '__dict__'</code>.</p>
+<p>Cause: instances of a slots class have no instance dictionary.</p>
+<p>Fix: read values through <code>fields()</code>, or do not enable slots for that class:</p>
+<pre><code>{k: getattr(obj, k) for k in (f.name for f in fields(obj))}</code></pre>
+<h3>Error eight · TypeError: field is declared with init=False</h3>
+<p>Symptom: using <code>replace()</code> to change a derived field raises <code>TypeError: field b is declared with init=False, it cannot be specified with replace()</code>.</p>
+<p>Cause: <code>replace()</code> re-calls <code>__init__</code>, and an <code>init=False</code> field is not one of its parameters.</p>
+<p>Fix: <code>replace()</code> the source field and let <code>__post_init__</code> recompute, or build a new instance, or make the field <code>init=True</code>.</p>
+<h2>Four checks before this ships</h2>
+<p><strong>Check one · count the field table against the annotations.</strong> Run <code>print([(f.name, f.type) for f in fields(MyClass)])</code> and walk it line by line against the class body. A missing name means a missing annotation.</p>
+<p><strong>Check two · prove default sharing with <code>id()</code>.</strong> For every field with a default, build two instances and compare <code>id(getattr(a, name)) == id(getattr(b, name))</code>. Any <code>True</code> means that field must move to <code>default_factory</code>.</p>
+<p><strong>Check three · pick the hash strategy by use.</strong> Needs to go in a <code>set</code> or act as a dict key: <code>frozen=True</code>. Only needs <code>==</code>: keep <code>eq=True, frozen=False</code> and accept that it is unhashable. Needs identity semantics: write <code>eq=False</code> and say why in a comment.</p>
+<p><strong>Check four · if <code>slots=True</code>, re-run every <code>isinstance</code> and registry path.</strong> Print the class stored in the registry and compare it with the current class using <code>is</code>. No static check will catch this one.</p>
+<h2>The nine rewrites on one page</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What you wrote</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What you assumed</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">What 3.13 does</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>x = 0</code> (no annotation)</td><td style="border:1px solid #ddd;padding:8px;">a field with a default</td><td style="border:1px solid #ddd;padding:8px;">a class attribute; absent from <code>fields()</code>, arguments shift to the next field</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>x: list = []</code></td><td style="border:1px solid #ddd;padding:8px;">silently shared</td><td style="border:1px solid #ddd;padding:8px;"><code>ValueError</code>, rejected outright</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>x: Box = Box()</code></td><td style="border:1px solid #ddd;padding:8px;">one copy per instance</td><td style="border:1px solid #ddd;padding:8px;">passes the check, one object shared by all instances</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>eq=True</code> (default)</td><td style="border:1px solid #ddd;padding:8px;">usable as a dict key</td><td style="border:1px solid #ddd;padding:8px;"><code>__hash__</code> is <code>None</code>, raises <code>unhashable type</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>eq=False</code></td><td style="border:1px solid #ddd;padding:8px;">only skips content equality</td><td style="border:1px solid #ddd;padding:8px;">falls back to id hashing; equal-looking instances become two set members</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>frozen=True</code></td><td style="border:1px solid #ddd;padding:8px;">fully immutable</td><td style="border:1px solid #ddd;padding:8px;">blocks assignment only; <code>object.__setattr__</code> and mutable fields still work</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>slots=True</code></td><td style="border:1px solid #ddd;padding:8px;">just saves memory</td><td style="border:1px solid #ddd;padding:8px;">returns a new class; <code>isinstance</code> and registries break; class attributes become descriptors</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>replace(obj, ...)</code></td><td style="border:1px solid #ddd;padding:8px;">copy with one field changed</td><td style="border:1px solid #ddd;padding:8px;">re-runs <code>__init__</code>, so <code>__post_init__</code> side effects run twice</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>order=True</code></td><td style="border:1px solid #ddd;padding:8px;">sorts by field values</td><td style="border:1px solid #ddd;padding:8px;">a <code>None</code> raises <code>TypeError</code>; declaration order is comparison order</td></tr></tbody></table>
+<h2>FAQ</h2>
+<p><strong>Q: Why does <code>default=[]</code> fail while <code>default=SomeObject()</code> passes?</strong></p>
+<p>Because the check tests hashability, not mutability. A list is unhashable and gets rejected; a plain instance is hashable and gets shared by every instance. That has been the rule since 3.11, and the docs admit it is an approximation.</p>
+<p><strong>Q: Is <code>slots=True</code> worth enabling?</strong></p>
+<p>Only under two conditions: the class has many fields and you create enough instances that memory genuinely matters, and nothing in the codebase registers the class object and later checks it with <code>isinstance</code>. Otherwise you trade memory for three silent failures: class attributes become descriptors, <code>__dict__</code> disappears, and the registry keeps the old class.</p>
+<p><strong>Q: Can a frozen instance be used as a dict key?</strong></p>
+<p>Yes. <code>eq=True</code> plus <code>frozen=True</code> generates a field-based <code>__hash__</code>; two instances with identical content collapse to one set member in my run. But if any field holds a <code>list</code> or <code>dict</code>, hashing raises <code>unhashable type</code> at runtime, so the fields of a frozen class have to be frozen too.</p>
+<p><strong>Q: Do these behaviours differ from 3.12?</strong></p>
+<p>Yes, in more than one place. Python 3.11 changed the mutable-default check from a type whitelist to a hashability test; 3.13 changed <code>__eq__</code> from tuple comparison to per-field comparison, so NaN-holding instances stop equalling themselves. Everything here was measured on 3.13.14, and I would re-run check two against your own classes before a version bump.</p>
+<p>If you are chasing the same family of bug — "I assigned it, so why did nothing change" — three more layers are worth reading: <a href="https://yaohehe.github.io/2026-11-25-python-default-encoding-six-defaults-in-one-proces-en.html" class="internal-link">six defaults in one process</a> covers where default values come from, <a href="https://yaohehe.github.io/2026-11-07-tests-green-code-broken-7-silent-unittest-traps-en.html" class="internal-link">tests green, code broken</a> covers why assertions never fired, and <a href="https://yaohehe.github.io/2026-10-29-python-subprocess-7-silent-failures-behind-exit-co-en.html" class="internal-link">seven silent subprocess failures</a> covers why the exit code was 0. All of them share this article's rule: establish what the object actually is before discussing how it behaves.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
