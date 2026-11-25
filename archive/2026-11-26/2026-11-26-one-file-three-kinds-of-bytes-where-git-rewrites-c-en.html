@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>One File, Three Kinds of Bytes: Where Git Rewrites CRLF - TechPassive</title>
+  <meta name="description" content="Twelve Git line-ending experiments on Windows: three autocrlf settings, four attributes, why old CRLF blobs never heal, and the six warnings you will actually hit.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>One File, Three Kinds of Bytes: Where Git Rewrites CRLF</h1>
+  <div class="post-tags">
+    <span class="tag">Git</span><span class="tag">line endings</span><span class="tag">version control</span>
+  </div>
+  <div class="content">
+    <p>Three lines in a text file. I changed two letters on the middle line. The merge handed me one big conflict block: three lines on the left, three on the right, identical line by line, differing only in the bytes at the end of each line.</p>
+<p>That is not a bug. Git stores the same file three times, and you spend most of your day looking at one of those copies.</p>
+<p>I split the question into twelve experiments on a single machine: Windows 11 10.0.26300, <code>git version 2.55.0.windows.3</code>, every repo isolated with <code>GIT_CONFIG_GLOBAL</code> and <code>GIT_CONFIG_SYSTEM</code> pointing at an empty file so my own config could not leak in. Every byte and every warning below is raw output.</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="From git add to checkout, byte by byte" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft36945897grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft36945897grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">From git add to checkout, byte by byte</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Disk holds CRLF</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">clean filter makes LF</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Index and blob keep LF</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">smudge filter restores</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Work tree is CRLF again</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>From git add to checkout, byte by byte · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#F03C2E" role="img" aria-label="Git" style="flex:none;"><path d="M13.09 23.549a1.54 1.54 0 0 1-2.18 0L.451 13.089a1.54 1.54 0 0 1 0-2.179l7.191-7.19 2.733 2.733a1.85 1.85 0 0 0 .964 2.326v6.66a1.849 1.849 0 1 0 1.54 0V8.957l2.508 2.508a1.85 1.85 0 1 0 1.09-1.09l-2.634-2.634a1.85 1.85 0 0 0-2.378-2.377L8.73 2.63 10.91.451a1.54 1.54 0 0 1 2.179 0l10.459 10.46a1.54 1.54 0 0 1 0 2.179z"/></svg><span>Git</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>Three copies, one file</h2>
+<p>Take a two-line file, <code>line1\r\nline2\r\n</code>, 14 bytes, under <code>core.autocrlf=true</code>:</p>
+<ul><li>work tree: <code>b'line1\r\nline2\r\n'</code></li><li>index and blob: <code>b'line1\nline2\n'</code>, 12 bytes</li><li><code>git ls-files --eol</code>: <code>i/lf    w/crlf  attr/    a.txt</code></li></ul>
+<p><code>i/</code> is the index, <code>w/</code> is the work tree, <code>attr/</code> is the attribute that applies. Print all three and you finally know which copy you are looking at.</p>
+<p>The sharper test is hashing the same file twice:</p>
+<pre><code>$ git hash-object a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8
+$ git hash-object --no-filters a.txt
+8561d5d6dca37a4e5d7a60b130242f748fcfec84
+$ git rev-parse :a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8</code></pre>
+<p>The filtered hash equals the blob in the index. The unfiltered hash is the disk. In other words, by the time <code>git add</code> finishes, the file is not the file anymore. The rewrite happens before the index ever sees it, which settles the most common argument about this topic: whether Git touches your file depends entirely on which direction you are asking about.</p>
+<h2>autocrlf in three settings</h2>
+<p>One CRLF file, three fresh repos, one variable changed:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">autocrlf</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">blob bytes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">ls-files --eol</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">work tree after re-checkout</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">stderr on add</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">false</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">i/crlf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">none</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">true</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">i/lf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">none</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">input</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">i/lf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">warning: CRLF will be replaced by LF</td></tr></tbody></table>
+<p><code>true</code> and <code>input</code> write the same bytes into the repository and hand back opposite bytes on checkout. The manual is worth quoting because most tutorials paraphrase it badly: setting this variable to true is the same as setting the <code>text</code> attribute to <code>auto</code> on all files and <code>core.eol</code> to <code>crlf</code>, and <code>input</code> means no output conversion is performed.</p>
+<p>So <code>autocrlf=true</code> is not "handle line endings for me". It is a rewrite rule with two halves, and neither half covers binary detection failures or CRLF blobs already sitting in history. Both of those come up later.</p>
+<p>One detail that explains a lot of team confusion: on this machine <code>git config --system --get core.autocrlf</code> returns <code>true</code>, while <code>git config --global --get core.autocrlf</code> returns nothing and exits 1. The Git for Windows installer writes that value at system level, so "nobody configured anything" and "everybody configured it" are both true. Run those two commands before reading any guide.</p>
+<h2>text, text=auto, -text and eol</h2>
+<p>Attributes travel with the repo, which makes them worth more of your time than config. Five spellings, same CRLF file on disk, with <code>core.autocrlf=false</code>:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">.gitattributes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">blob</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">checkout gives</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">attr shown</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text=auto</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text=auto</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text eol=lf</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">text eol=lf</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text eol=crlf</code> (disk held LF)</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text eol=crlf</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt -text</code></td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">-text</td></tr></tbody></table>
+<p>The official wording: with <code>text</code> set, line endings are normalized to LF in the index every time the file is checked in; <code>text=auto</code> adds content detection; <code>-text</code> tells Git not to attempt any end-of-line conversion on checkin or checkout.</p>
+<p>Two traps hide in that table.</p>
+<p>First, <code>eol=lf</code> does not mean "the work tree is LF". The manual says this setting uses the same line endings in the working directory as in the index when the file is checked out. It compares against the index, not against the letters L and F. I took a blob that had been committed as CRLF and applied <code>text eol=lf</code>: checkout still produced <code>b'line1\r\nline2\r\n'</code>, and <code>git status</code> immediately reported <code>M</code>. To get LF on disk you first have to get CRLF out of the blob.</p>
+<p>Second, <code>!text</code> cannot undo <code>eol</code>. Writing <code>*.txt text eol=lf</code> and then <code>special.txt !text</code> looks like an exemption, but the attribute still reads <code>text eol=lf</code>, because specifying <code>eol</code> automatically sets <code>text</code> whenever <code>text</code> was left unspecified. Reset both: <code>special.txt -text -eol</code>.</p>
+<h2>Who wins: directory, order, case</h2>
+<p>Precedence is documented plainly. <code>$GIT_DIR/info/attributes</code> ranks highest, then the <code>.gitattributes</code> in the same directory as the path, then its parents up to the top of the work tree, then global and system files.</p>
+<p>I built three levels to check: root sets <code>*.txt text eol=lf</code>, <code>sub/.gitattributes</code> sets only <code>*.txt eol=crlf</code> without <code>text</code>, <code>sub/deep/.gitattributes</code> sets <code>*.txt -text</code>. Same content in all three files:</p>
+<pre><code>i/lf   w/crlf  attr/text eol=lf      a.txt
+i/lf   w/crlf  attr/text eol=crlf    sub/b.txt
+i/crlf w/crlf  attr/-text            sub/deep/c.txt</code></pre>
+<p>Closer wins, and a child file that only declares <code>eol</code> does not lose the <code>text</code> inherited from its parent: attributes override one by one, not line by line. Then I wrote <code>*.txt -text</code> into <code>.git/info/attributes</code> and the root file flipped to <code>-text</code> instantly. That file outranks everything and never leaves your machine, which makes it a fine debugging tool and a poor permanent policy.</p>
+<p>There is also a Windows-only variable in play: <code>core.ignoreCase</code>. With this attribute file:</p>
+<pre><code>*.txt text eol=lf
+*.TXT -text</code></pre>
+<p>under <code>core.ignoreCase=true</code>, which is the Windows default, <code>a.txt</code> ends up with <code>-text</code> and its blob keeps CRLF. Set <code>core.ignoreCase</code> to false and rerun: <code>a.txt</code> goes back to <code>text eol=lf</code> and only <code>b.TXT</code> stays <code>-text</code>. This also confirms the ordering rule: when more than one pattern matches, a later line overrides an earlier line, and with case folding on, <code>.txt</code> and <code>.TXT</code> are the same pattern.</p>
+<h2>Binary files and lone CR</h2>
+<p><code>text=auto</code> decides text or binary on its own. A file starting with <code>\x89PNG\r\n</code> and containing a NUL byte survives untouched under <code>* text=auto eol=lf</code>, reported as <code>i/-text</code>. Running <code>git add --renormalize .</code> across twenty text files plus that PNG rewrote exactly the twenty text files and left the image byte for byte identical.</p>
+<p>Explicit <code>text</code> removes that protection. The same NUL-containing file under <code>*.dat text</code> came out of the index as <code>b'ABC\x00\ndef\n'</code>: the CRLFs were stripped even though <code>ls-files --eol</code> still reported <code>i/-text</code>. This combination can genuinely corrupt images and executables, which is precisely what the manual means by the conversion corrupting data when binary files are accidentally classified as text.</p>
+<p>A file with lone CR endings is a separate case. <code>b'a\rb\rc\r'</code> entered the repository unchanged under <code>autocrlf=true</code> and <code>ls-files --eol</code> called it <code>i/-text</code>: Git does not consider it text at all. Change one character and <code>git diff --numstat</code> reports <code>1 1</code>, the whole file treated as a single line. The <code>--renormalize</code> documentation even keeps the boundary explicit: lone CR characters are untouched, so a CRLF cleans to LF while a CRCRLF sequence is only partially cleaned to CRLF.</p>
+<p>That <code>\r\r\n</code> shape is what <code>open()</code> produces when you forget <code>newline=''</code> while writing CSV, which I measured in <a href="https://yaohehe.github.io/2026-11-13-python-csv-8-boundaries-that-silently-move-your-da-en.html" class="internal-link">the eight record boundaries of Python csv</a>. After renormalize it becomes <code>\r\n</code>, with a stray CR left behind as a mixed line ending, and mixed endings are exactly what makes safecrlf refuse a commit.</p>
+<h2>Old CRLF blobs never heal themselves</h2>
+<p>A <a href="https://yaohehe.github.io/2026-10-22-git-255-tested-blobnone-sparse-lfs-7-errors-en.html" class="internal-link">git 2.55 repository diet</a> I wrote earlier hit the same mechanism from the other side: a <code>-text</code> attribute written by <code>git lfs track</code> takes effect immediately. This time I asked the reverse question. When attributes take effect, does content already in history follow?</p>
+<p>No. The <code>text=auto</code> description carries a condition: if it is text and the file was not already in Git with CRLF endings, line endings are converted. A file committed as CRLF is exempt by that sentence. Measured: commit a CRLF blob, then commit <code>* text=auto eol=lf</code>, delete the file, check it out again, and CRLF comes back while <code>git status</code> stays perfectly clean.</p>
+<p>Explicit <code>text</code> looks worse before it looks better. Status starts reporting <code>M a.txt</code>, the blob is still CRLF, and checkout still returns CRLF. There is one way out:</p>
+<pre><code>$ git add --renormalize .
+$ git status --short
+$ git commit -m "normalize line endings"</code></pre>
+<p>The option exists for this exact step: apply the clean process freshly to all tracked files to forcibly add them again to the index, useful after changing <code>core.autocrlf</code> or the <code>text</code> attribute to correct files added with wrong line endings.</p>
+<p>The measured cost: three two-line files became <code>3 files changed, 9 insertions(+), 9 deletions(-)</code>; twenty files became <code>20 files changed, 40 insertions(+), 40 deletions(-)</code>; the PNG stayed out of the diff. The command prints nothing at all, stdout and stderr both empty, so the only way to know what it did is <code>git status</code> or <code>git diff --cached --stat</code>. On a large repository this rewrites a lot of blobs, so warn reviewers and CI before pushing it.</p>
+<h2>When status says modified and diff says nothing</h2>
+<p>This one deserves its own section. With <code>text</code> set, I replaced the work tree file's CRLF with LF, content otherwise identical:</p>
+<pre><code>$ git diff --quiet ; echo $?
+0
+$ git diff --stat
+(empty)
+$ git status --porcelain
+M a.txt
+$ git hash-object a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8
+$ git update-index --refresh
+a.txt: needs update</code></pre>
+<p><code>diff</code> reports no change and exits 0, <code>status</code> insists there is one, and the hash proves the content is identical. Running <code>git add a.txt</code> clears status while the blob sha stays <code>c0d0fb45…</code>: nothing was staged, the stat data in the index was simply refreshed. When a change looks like "only line endings moved", check <code>git diff</code> before reaching for <code>git commit -a</code>, or you will invent an empty commit.</p>
+<p>With <code>-text</code> set, the same edit is real: <code>a.txt | 4 ++--</code>, both lines red. To ignore line-ending noise without touching attributes, use <code>git diff --ignore-cr-at-eol</code>. I took a twenty-line file, edited line 8 and converted the whole file to LF: plain <code>git diff --numstat</code> gave <code>20 20</code>, the same command with the flag gave <code>1 1</code>. A pull request that changes one variable and lights up the entire file is usually this, and it belongs to the same family as <a href="https://yaohehe.github.io/2026-11-14-windows-paths-8-silent-divergences-from-strings-en.html" class="internal-link">the eight silent divergences in Windows paths</a>: the strings look the same, the bytes do not.</p>
+<h2>Troubleshooting: six messages and what to do</h2>
+<p><strong>One: <code>warning: in the working copy of 'a.txt', CRLF will be replaced by LF the next time Git touches it</code></strong></p>
+<p>Appears when adding a CRLF file under <code>autocrlf=input</code> or <code>text eol=lf</code>. It is a receipt, not an error: the index now holds LF and the next checkout will show you LF. That is what "no output conversion is performed" means in practice.</p>
+<p><strong>Two: <code>warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it</code></strong></p>
+<p>The mirror case, under <code>autocrlf=true</code> or <code>eol=crlf</code>, when the disk holds LF. Mixed endings trigger it too: my <code>a\r\nb\nc\r\n</code> sample was normalized to <code>a\nb\nc\n</code> on add.</p>
+<p><strong>Three: <code>fatal: LF would be replaced by CRLF in mixed.txt</code>, exit code 128</strong></p>
+<p><code>core.safecrlf=true</code> refusing a mixed-ending file. Git verifies whether the conversion is reversible, and a pure CRLF file passes, which I confirmed with rc 0; mixed endings cannot be reconstructed, so the commit is blocked. <code>safecrlf=warn</code> warns and proceeds, <code>false</code> says nothing. Turning it on team-wide catches corruption early, at the price of forcing you to clean legacy files first.</p>
+<p><strong>Four: <code>CONFLICT (content): Merge conflict in a.txt</code> followed by <code>Automatic merge failed; fix conflicts and then commit the result.</code></strong></p>
+<p>My reproduction: base is three CRLF lines, <code>feat</code> edits line 2 and stays CRLF, <code>main</code> converts the file to LF. The merge produces a single conflict block whose two sides are three identical lines each:</p>
+<pre><code>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD
+one
+two
+three
+=======
+one
+TWO
+three
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; feat</code></pre>
+<p>Line-by-line comparison shows nothing; you need <code>git diff --word-diff</code> or <code>cat -A</code> to see it. The root cause is not a text conflict but two different definitions of a line, and picking a side does not fix it. Both sides need matching endings first.</p>
+<p><strong>Five: <code>a.txt: needs update</code> from <code>git update-index --refresh</code></strong></p>
+<p>Pairs with a status that reports <code>M</code> forever. It means stat and index disagree, not content. Same remedy as above: <code>git add</code>, confirm <code>git diff --cached</code> is empty, move on.</p>
+<p><strong>Six: a <code>.bat</code> file that looks fine and fails in cmd</strong></p>
+<p>Not a message, a consequence. With <code>autocrlf=input</code> and no attributes, a CRLF <code>.bat</code> file is checked out as <code>b'@echo off\ndir\n'</code>. Add <code>*.bat text eol=crlf</code> in the same repo and checkout returns <code>b'@echo off\r\ndir\r\n'</code>. The batch parser is unreliable with bare LF, so pin those files.</p>
+<h2>A configuration you can copy</h2>
+<pre><code>* text=auto eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.png  binary
+*.jpg  binary
+*.pdf  binary</code></pre>
+<p><code>binary</code> is a built-in macro, defined as <code>[attr]binary -diff -merge -text</code>, which turns off three attributes at once. <code>* text=auto eol=lf</code> is the single cut that solves most of it: text in as LF, text out as LF, with exceptions only for cmd and PowerShell scripts plus older tooling that validates the bytes.</p>
+<p>Three checks are faster than reading documentation:</p>
+<ul><li><code>git ls-files --eol | grep -v "i/lf"</code> lists every file whose index copy is not LF, which is where stale CRLF blobs surface.</li><li><code>git diff --ignore-cr-at-eol --stat</code> before review, to separate real edits from line-ending noise.</li><li><code>git status --porcelain</code> next to <code>git diff --quiet</code>: one says modified, the other says nothing, and you have a phantom change.</li></ul>
+<p>Then do the steps in order: commit <code>.gitattributes</code>, run <code>git add --renormalize .</code>, commit the normalization, and finally have everyone re-clone or clear their work tree cache. Skip that last step and a colleague's CRLF work tree will quietly push the old bytes back. A CI assertion on <code>git ls-files --eol</code> is cheaper than a later review, and it is the same principle as <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-and-etag-eight-silent-defaults-en.html" class="internal-link">using ETag to decide whether content really changed</a>: bytes changed is the only definition of changed.</p>
+<h2>FAQ</h2>
+<p><strong>Q: Is <code>core.autocrlf=true</code> enough?</strong></p>
+<p>No. It equals <code>* text=auto</code> plus <code>core.eol=crlf</code> and only affects files that have not been committed yet. Every historical CRLF blob stays exactly as it is, because the <code>text=auto</code> rule exempts files already in Git with CRLF endings. Attributes plus a renormalize pass is the complete answer.</p>
+<p><strong>Q: Why do my Linux and macOS colleagues never see this?</strong></p>
+<p>Because their defaults differ. Outside Windows the default <code>eol</code> is <code>lf</code> and <code>autocrlf</code> is usually <code>false</code> or <code>input</code>, so the conversion has no step to perform. The problem only appears where platforms meet, and that meeting point is usually CI plus the one person on Windows.</p>
+<p><strong>Q: Hundreds of CRLF files are already committed. How do I fix them once and for all?</strong></p>
+<p>Follow the four steps above, then add a CI check that fails when <code>git ls-files --eol | grep "i/crlf"</code> returns anything. Remember that <code>--renormalize</code> rewrites blobs: old commit hashes stay put, later diffs get longer, and the change deserves its own commit.</p>
+<p><strong>Q: What does <code>mixed</code> mean in <code>git ls-files --eol</code>?</strong></p>
+<p>The index or work tree copy contains both LF and CRLF. Treat it as more urgent than <code>crlf</code>, since mixed endings block commits under <code>safecrlf=true</code> and produce whole-file conflicts at merge time.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
