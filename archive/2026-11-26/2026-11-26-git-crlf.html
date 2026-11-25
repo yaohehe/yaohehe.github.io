@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Git 换行符 CRLF：同一个文件的三份字节 - TechPassive</title>
+  <meta name="description" content="我在 Windows 11 上用 Git 2.55 跑了 12 组换行符实验：autocrlf 三档、text 与 eol 四个属性的差异、历史 CRLF blob 为什么永远改不掉、status 说改了 diff 说没改，附 6 条报错原文与一份可直接抄的 .gitattributes 配置。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>同一个文件在 Git 里有三份字节：换行符在哪一层被改写</h1>
+  <div class="post-tags">
+    <span class="tag">Git</span><span class="tag">换行符</span><span class="tag">版本控制</span>
+  </div>
+  <div class="content">
+    <p>一个三行的文本文件，我只在中间那行改了两个字母，合并时 Git 给了一整块冲突：左边三行，右边三行，逐行内容一模一样，只有行尾不一样。这不是 Git 的 bug，而是它把同一个文件存了三份，你平时只看见其中一份。</p>
+<p>我把这件事拆成 12 组实验，全部跑在同一台机器上：Windows 11 10.0.26300、<code>git version 2.55.0.windows.3</code>、每个仓库都用独立的 <code>GIT_CONFIG_GLOBAL</code> 与 <code>GIT_CONFIG_SYSTEM</code> 指向空文件，避免被本机全局配置污染。下面出现的每一个字节、每一条报错都是原始输出。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="一次 git add 到 checkout 的字节路径" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft18eadcdbgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ft18eadcdbgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">一次 git add 到 checkout 的字节路径</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">磁盘写入 CRLF</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">clean 过滤归一为 LF</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">索引与 blob 只存 LF</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">smudge 过滤按 eol 还原</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">工作区又是 CRLF</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>一次 git add 到 checkout 的字节路径 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#F03C2E" role="img" aria-label="Git" style="flex:none;"><path d="M13.09 23.549a1.54 1.54 0 0 1-2.18 0L.451 13.089a1.54 1.54 0 0 1 0-2.179l7.191-7.19 2.733 2.733a1.85 1.85 0 0 0 .964 2.326v6.66a1.849 1.849 0 1 0 1.54 0V8.957l2.508 2.508a1.85 1.85 0 1 0 1.09-1.09l-2.634-2.634a1.85 1.85 0 0 0-2.378-2.377L8.73 2.63 10.91.451a1.54 1.54 0 0 1 2.179 0l10.459 10.46a1.54 1.54 0 0 1 0 2.179z"/></svg><span>Git</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>三份字节同时存在</h2>
+<p>拿同一个两行文件 <code>line1\r\nline2\r\n</code>（14 字节）做对照，<code>core.autocrlf=true</code> 下：</p>
+<ul><li>工作区字节：<code>b'line1\r\nline2\r\n'</code></li><li>索引与 blob 字节：<code>b'line1\nline2\n'</code>（12 字节）</li><li><code>git ls-files --eol</code> 输出：<code>i/lf    w/crlf  attr/    a.txt</code></li></ul>
+<p><code>i/</code> 是索引，<code>w/</code> 是工作区，<code>attr/</code> 是当前生效的属性。三个字段同时打出来，你才知道自己看到的是哪一层。</p>
+<p>更能说明问题的是同一个文件的两个哈希：</p>
+<pre><code>$ git hash-object a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8
+$ git hash-object --no-filters a.txt
+8561d5d6dca37a4e5d7a60b130242f748fcfec84
+$ git rev-parse :a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8</code></pre>
+<p>带过滤器的哈希等于索引里的 blob 哈希，不带过滤器的哈希是磁盘上的原始字节。换句话说：<code>git add</code> 的那一刻文件已经不是原来那份了，改写发生在进入索引之前。这一点决定了后面所有结论 —— 讨论「Git 会不会改我的文件」，必须先问是进库时还是出库时。</p>
+<h2>autocrlf 三档：同一份文件三种落盘</h2>
+<p>同一份 CRLF 文件，只改 <code>core.autocrlf</code>，结果如下（三组独立仓库，各跑一次 add 与一次删除后 checkout）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">autocrlf</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">blob 字节</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">ls-files --eol</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">重新 checkout 后工作区</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">add 时 stderr</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">false</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">i/crlf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">无</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">true</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">i/lf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">无</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">input</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">i/lf w/crlf</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">warning: CRLF will be replaced by LF</td></tr></tbody></table>
+<p><code>true</code> 与 <code>input</code> 的入库结果一样，出库结果相反。官方 git-config 文档对这个变量的定义值得逐字读：「Setting this variable to "true" is the same as setting the text attribute to "auto" on all files and core.eol to "crlf".」以及「This variable can be set to input, in which case no output conversion is performed.」</p>
+<p>所以 <code>autocrlf=true</code> 不是「自动处理换行符」，它是一条等价改写：全仓库 <code>text=auto</code> 加 <code>core.eol=crlf</code>。它管不到二进制检测的例外，也管不到已经在库里的 CRLF blob —— 这两件事后面都会讲到。</p>
+<p>还有一件容易被忽略的事：本机 <code>git config --system --get core.autocrlf</code> 返回 <code>true</code>，而 <code>git config --global --get core.autocrlf</code> 返回空（退出码 1）。Git for Windows 安装时把这一项写进了系统级配置，于是团队里「谁都没配过」和「谁都配过」同时成立。排查换行符问题时，先跑这两条命令把结论落到具体层级，比看任何教程都有用。</p>
+<h2>text / text=auto / -text / eol 四个词</h2>
+<p>属性比配置更值得花时间，因为它跟着仓库走。五种写法，同一份磁盘 CRLF 文件（<code>core.autocrlf=false</code>）：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">.gitattributes</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">blob</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">checkout 出</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">attr 显示</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text=auto</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text=auto</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text eol=lf</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">text eol=lf</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text eol=crlf</code>（磁盘给的是 LF）</td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text eol=crlf</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt text</code></td><td style="border:1px solid #ddd;padding:8px;">LF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">text</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>*.txt -text</code></td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">CRLF</td><td style="border:1px solid #ddd;padding:8px;">-text</td></tr></tbody></table>
+<p>官方 gitattributes 文档的说法是：设了 <code>text</code> 之后「Line endings are normalized to LF in the index every time the file is checked in」；<code>text=auto</code> 多一道内容检测；<code>-text</code> 是「tells Git not to attempt any end-of-line conversion upon checkin or checkout」。</p>
+<p>两个坑就藏在这张表里。</p>
+<p>第一，<code>eol=lf</code> 不等于「工作区一定是 LF」。官方原文：「This setting uses the same line endings in the working directory as in the index when the file is checked out.」它比的是索引，不是字母 L 和 F。我拿一个历史上以 CRLF 入库的 blob 套上 <code>text eol=lf</code>，checkout 出来仍然是 <code>b'line1\r\nline2\r\n'</code>，而 <code>git status</code> 立刻报 <code>M</code>。想让工作区真的变 LF，得先把 blob 里的 CRLF 清掉。</p>
+<p>第二，<code>!text</code> 撤不掉 <code>eol</code>。写 <code>*.txt text eol=lf</code> 再补一行 <code>special.txt !text</code>，本意是让这个文件免转换，实测它的属性仍然显示 <code>text eol=lf</code>。原因是同一份文档里那句「specifying <code>eol</code> automatically sets <code>text</code> if <code>text</code> was left unspecified」—— <code>!text</code> 把 <code>text</code> 退回未指定，<code>eol</code> 立刻又把它设了回去。要真正免转换，两个都写：<code>special.txt -text -eol</code>。</p>
+<h2>属性谁说了算：目录、顺序、大小写</h2>
+<p>优先级官方给得很清楚：<code>$GIT_DIR/info/attributes</code> 最高，然后是「<code>.gitattributes</code> file in the same directory as the path in question, and its parent directories up to the toplevel of the work tree」，最后才是全局与系统级。</p>
+<p>我建了三级目录验证：根 <code>.gitattributes</code> 写 <code>*.txt text eol=lf</code>，<code>sub/.gitattributes</code> 只写 <code>*.txt eol=crlf</code>（不带 text），<code>sub/deep/.gitattributes</code> 写 <code>*.txt -text</code>。三份文件同内容，结果：</p>
+<pre><code>i/lf   w/crlf  attr/text eol=lf      a.txt
+i/lf   w/crlf  attr/text eol=crlf    sub/b.txt
+i/crlf w/crlf  attr/-text            sub/deep/c.txt</code></pre>
+<p>两点：近的覆盖远的；子目录里只写 <code>eol</code> 也不会丢掉父目录给的 <code>text</code>，属性是逐条覆盖而不是整行替换。之后我往 <code>.git/info/attributes</code> 写一行 <code>*.txt -text</code>，根目录那个文件的 <code>attr</code> 立刻变成 <code>-text</code> —— 这项优先级最高，而且不随仓库分发，适合临时排障，不适合长期方案。</p>
+<p>还有一个只在 Windows 上出现的变量：<code>core.ignoreCase</code>。同样的 <code>.gitattributes</code>：</p>
+<pre><code>*.txt text eol=lf
+*.TXT -text</code></pre>
+<p><code>core.ignoreCase=true</code>（Windows 默认）下，<code>a.txt</code> 的属性是 <code>-text</code>，blob 保留 CRLF；把 <code>core.ignoreCase</code> 设成 <code>false</code> 再跑，<code>a.txt</code> 恢复 <code>text eol=lf</code>，只有 <code>b.TXT</code> 是 <code>-text</code>。这也印证了另一条规则：「When more than one pattern matches the path, a later line overrides an earlier line.」后写的赢，而且大小写不敏感时 <code>.txt</code> 与 <code>.TXT</code> 是同一个模式。</p>
+<h2>二进制与纯 CR：Git 的眼界</h2>
+<p><code>text=auto</code> 会自己判断文本与二进制。一个以 <code>\x89PNG\r\n</code> 开头、带 NUL 字节的文件，在 <code>* text=auto eol=lf</code> 下保持原样，<code>ls-files</code> 给 <code>i/-text</code>；跑 <code>git add --renormalize .</code> 扫 20 个文本文件，也正好只动那 20 个，png 一个字节没变。</p>
+<p>但显式写 <code>text</code> 就没有这层保护。同一个带 NUL 的文件，<code>.gitattributes</code> 写 <code>*.dat text</code>，入库后 blob 变成 <code>b'ABC\x00\ndef\n'</code> —— CRLF 被清掉了，<code>ls-files --eol</code> 却还在报 <code>i/-text</code>。这个组合是真能损坏图片和可执行文件的，官方文档里那段「for binary files that are accidentally classified as text the conversion can corrupt data」说的就是它。</p>
+<p>纯 CR 行尾（老 Mac 风格）是另一回事。一个 <code>b'a\rb\rc\r'</code> 的文件，<code>core.autocrlf=true</code> 下入库后 blob 一个字节不变，<code>ls-files --eol</code> 直接判 <code>i/-text</code> —— 在 Git 眼里它不是文本。把其中一个字符改掉，<code>git diff --numstat</code> 给 <code>1 1</code>，整个文件被当成一行。<code>git add --renormalize</code> 的官方说明也留了边界：「Lone CR characters are untouched, thus while a CRLF cleans to LF, a CRCRLF sequence is only partially cleaned to CRLF.」</p>
+<p>顺便说一句 <code>\r\r\n</code>：用 <code>open()</code> 不带 <code>newline=''</code> 写 CSV 就会在磁盘上留下这种字节，我在 <a href="https://yaohehe.github.io/2026-11-13-python-csv.html" class="internal-link">Python csv 的八个记录边界</a> 里量过。它在 renormalize 之后只会被清成 <code>\r\n</code>，中间那个 CR 会留下来变成混合行尾，这正是 safecrlf 报警的来源。</p>
+<h2>历史 CRLF blob 不会自己好</h2>
+<p>2026-10 那篇 <a href="https://yaohehe.github.io/2026-10-22-git-255-blobnone-sparse-lfs.html" class="internal-link">git 2.55 瘦身</a> 里提过一个自锁：<code>git lfs track</code> 写进 <code>.gitattributes</code> 的 <code>-text</code> 会立刻生效。这次换个方向验证同一件事 —— 属性生效了，已入库的内容会不会跟着改。</p>
+<p>不会。<code>text=auto</code> 的官方描述里有个条件句：「If it is text and the file was not already in Git with CRLF endings, line endings are converted」。已经以 CRLF 入库的文件正好被这句话豁免。实测：先提交一个 CRLF blob，再提交 <code>* text=auto eol=lf</code>，删掉文件重新 checkout，出来的还是 CRLF，<code>git status</code> 干净得像什么都没发生。</p>
+<p>换成显式 <code>text</code>（不带 auto）就更难看：status 开始报 <code>M a.txt</code>，可 blob 还是 CRLF、checkout 出来还是 CRLF，看着像 Git 在闹脾气。真修只有一条路：</p>
+<pre><code>$ git add --renormalize .
+$ git status --short
+$ git commit -m "normalize line endings"</code></pre>
+<p><code>--renormalize</code> 的官方定义就是为这一步写的：「Apply the "clean" process freshly to all tracked files to forcibly add them again to the index. This is useful after changing core.autocrlf configuration or the text attribute in order to correct files added with wrong CRLF/LF line endings.」</p>
+<p>实测代价：3 个两行文件 → <code>3 files changed, 9 insertions(+), 9 deletions(-)</code>；20 个文件 → <code>20 files changed, 40 insertions(+), 40 deletions(-)</code>；png 不在 diff 里。命令本身完全静默，stdout 与 stderr 都是空，你只能靠 <code>git status</code> 或 <code>git diff --cached --stat</code> 确认它真的动了什么。大仓库里这一步会改写大量 blob，评审和 CI 都要提前打招呼。</p>
+<h2>status 说改了，diff 说没改</h2>
+<p>这是本次实验里最值得单独记一条的现象。<code>text</code> 属性下，我把工作区文件从 CRLF 换成 LF（内容逐行相同），然后：</p>
+<pre><code>$ git diff --quiet ; echo $?
+0
+$ git diff --stat
+（空）
+$ git status --porcelain
+M a.txt
+$ git hash-object a.txt
+c0d0fb45c382919737f8d0c20aaf57cf89b74af8
+$ git update-index --refresh
+a.txt: needs update</code></pre>
+<p><code>diff</code> 说没有差异（退出码 0），<code>status</code> 坚持说改了，哈希证明内容一模一样。这时 <code>git add a.txt</code> 之后 status 变干净，而 blob 的 sha 仍是 <code>c0d0fb45…</code> —— 什么都没提交，只是把索引里的 stat 信息刷新了一遍。所以看到「只有行尾变了」的改动，先用 <code>git diff</code> 确认是不是真有内容变化，别顺手 <code>git commit -a</code> 制造一个空提交。</p>
+<p>反过来，如果属性是 <code>-text</code>，同样的操作就是真改动：<code>a.txt | 4 ++--</code>，两行全红。想让 diff 忽略行尾差异又不改属性，用 <code>git diff --ignore-cr-at-eol</code>。我拿一个 20 行的文件做对照：只改了第 8 行的内容、顺手把整个文件换成 LF，普通 <code>git diff --numstat</code> 给 <code>20 20</code>（整篇重写），加上参数之后是 <code>1 1</code>。评审时看到「一个变量改动、全文件飘红」，多数就是这个原因，和 <a href="https://yaohehe.github.io/2026-11-14-windows-path-8.html" class="internal-link">Windows 路径与文件名的八处静默分歧</a> 属于同一类问题：字符串看着一样，字节不一样。</p>
+<h2>Troubleshooting：六条原文与处置</h2>
+<p><strong>报错一：<code>warning: in the working copy of 'a.txt', CRLF will be replaced by LF the next time Git touches it</code></strong></p>
+<p>出现在 <code>autocrlf=input</code> 或 <code>text eol=lf</code> 下 add 一个 CRLF 文件时。它不是错误，是通知：这次已经按 LF 入库，下次 checkout 你会看到 LF。<code>input</code> 的含义就是官方那句「no output conversion is performed」。</p>
+<p><strong>报错二：<code>warning: in the working copy of 'a.txt', LF will be replaced by CRLF the next time Git touches it</code></strong></p>
+<p>反过来：<code>autocrlf=true</code> 或 <code>eol=crlf</code> 下 add 一个磁盘上是 LF 的文件。混合行尾文件也会触发，我那个 <code>a\r\nb\nc\r\n</code> 的样本入库后被统一成 <code>a\nb\nc\n</code>。</p>
+<p><strong>报错三：<code>fatal: LF would be replaced by CRLF in mixed.txt</code>（退出码 128）</strong></p>
+<p><code>core.safecrlf=true</code> 加上混合行尾时的硬拒绝。官方解释是「Git verifies if the conversion is reversible」—— 纯 CRLF 文件可以通过（我验证过，rc=0），混合行尾不可逆，所以直接挡下来。<code>safecrlf=warn</code> 只警告不挡，<code>false</code> 完全静默。团队统一开 <code>true</code> 能提前拦住损坏，代价是历史脏文件必须先统一行尾才能提交。</p>
+<p><strong>报错四：<code>CONFLICT (content): Merge conflict in a.txt</code> 加 <code>Automatic merge failed; fix conflicts and then commit the result.</code></strong></p>
+<p>我复现的现场：base 是三行 CRLF；<code>feat</code> 分支改第 2 行（仍是 CRLF）；<code>main</code> 分支把整个文件换成 LF。合并后冲突块只有 1 个，但块里两侧各三行、内容逐行相同：</p>
+<pre><code>&lt;&lt;&lt;&lt;&lt;&lt;&lt; HEAD
+one
+two
+three
+=======
+one
+TWO
+three
+&gt;&gt;&gt;&gt;&gt;&gt;&gt; feat</code></pre>
+<p>逐行对比看不出任何差别，肉眼只能靠 <code>git diff --word-diff</code> 或 <code>cat -A</code>。根因不是文本冲突，是两边对「行」的定义不同。这类冲突不能靠「选一边」解决，必须让两边行尾先一致。</p>
+<p><strong>报错五：<code>a.txt: needs update</code>（<code>git update-index --refresh</code> 的输出）</strong></p>
+<p>配合 status 长期报 <code>M</code> 使用。它说的是 stat 与索引对不上，不是内容对不上。处置同上一节：<code>git add</code> 刷新，确认 <code>git diff --cached</code> 为空再退出。</p>
+<p><strong>报错六：<code>.bat</code> 脚本在 cmd 里报错，但文件看着正常</strong></p>
+<p>不是报错文本，而是真实后果。<code>autocrlf=input</code> 且没有属性的情况下，一个 CRLF 的 <code>.bat</code> 提交后再 checkout，工作区拿到的是 <code>b'@echo off\ndir\n'</code>；同一个仓库里给 <code>*.bat</code> 写上 <code>text eol=crlf</code> 之后，checkout 出来是 <code>b'@echo off\r\ndir\r\n'</code>。批处理解析器对纯 LF 的处理并不可靠，这类文件必须钉死。</p>
+<h2>一份可以直接抄的配置</h2>
+<pre><code>* text=auto eol=lf
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+*.png  binary
+*.jpg  binary
+*.pdf  binary</code></pre>
+<p><code>binary</code> 是内置宏，官方定义为 <code>[attr]binary -diff -merge -text</code>，一次把三个属性关掉。<code>* text=auto eol=lf</code> 是最省事的一刀：文本一律按 LF 入库、按 LF 出库，Windows 上唯一需要例外的是 cmd 与 PowerShell 脚本，以及那些按行尾字节做校验的老工具。</p>
+<p>配套三条检查，比读文档快：</p>
+<ul><li><code>git ls-files --eol | grep -v "i/lf"</code>：列出所有入库不是 LF 的文件，CRLF blob 会在这里露头。</li><li><code>git diff --ignore-cr-at-eol --stat</code>：评审前跑一次，把纯行尾噪音从真改动里摘出去。</li><li><code>git status --porcelain</code> 与 <code>git diff --quiet</code> 同时跑：一个说改了、一个说没改，就是假改动。</li></ul>
+<p>改完属性记得按顺序走：先提交 <code>.gitattributes</code>，再 <code>git add --renormalize .</code>，再提交规范化，最后让所有人重新 clone 或清一次工作区缓存。跳过最后一步，别人本地的 CRLF 工作区会继续把旧字节提交回去。顺便给 CI 留一条 <code>git ls-files --eol</code> 的非零断言，比事后 review 便宜 —— 这和 <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-etag.html" class="internal-link">HTTP 缓存用 ETag 判断内容是否真变了</a> 是同一个思路：字节变了才叫变了。</p>
+<h2>FAQ</h2>
+<p><strong>Q：只设 <code>core.autocrlf=true</code> 够不够？</strong></p>
+<p>不够。它等价于 <code>* text=auto</code> 加 <code>core.eol=crlf</code>，只对还没进库的文件有效；历史上的 CRLF blob 一个都不会改，<code>text=auto</code> 那句「was not already in Git with CRLF endings」的豁免就是专门留给它们的。想要仓库干净，属性加 renormalize 才是完整答案。</p>
+<p><strong>Q：为什么 Linux 和 macOS 的同事从来没遇到这个问题？</strong></p>
+<p>因为平台默认值不同：非 Windows 上 <code>eol</code> 的缺省是 <code>lf</code>，<code>autocrlf</code> 常常是 <code>false</code> 或 <code>input</code>，入库出库都是 LF，链条上没有转换点。问题只在跨平台交界处暴露，而交界处通常就是 CI，以及那个唯一用 Windows 的人。</p>
+<p><strong>Q：已经提交了几百个 CRLF 文件，怎么一次修干净？</strong></p>
+<p>按上一节的四步走，然后在 CI 里加一条 <code>git ls-files --eol | grep "i/crlf"</code> 的非零退出断言，防止新文件再漏进来。注意 <code>--renormalize</code> 会改写 blob，历史 commit 的哈希不变但后续 diff 会变长，PR 需要单独一个 commit 承载这件事。</p>
+<p><strong>Q：<code>git ls-files --eol</code> 里的 <code>mixed</code> 是什么意思？</strong></p>
+<p>索引或工作区里同一个文件既有 LF 又有 CRLF。它比 <code>crlf</code> 更值得处理，因为混合行尾在 <code>safecrlf=true</code> 下会直接拒绝提交，在合并时又会制造整块冲突。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
