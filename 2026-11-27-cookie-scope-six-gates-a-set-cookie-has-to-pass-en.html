@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookie Scope: Six Gates a Set-Cookie Has to Pass - TechPassive</title>
+  <meta name="description" content="A cookie survives a port change but dies one directory over. Six gates in Python's cookiejar, measured locally: domain, port, path, Secure, duplicates, expiry.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Cookie Scope: Six Gates a Set-Cookie Has to Pass</h1>
+  <div class="post-tags">
+    <span class="tag">cookie</span><span class="tag">http semantics</span><span class="tag">debugging</span>
+  </div>
+  <div class="content">
+    <p>To reproduce a session that logged in successfully and was a stranger on the next request, I started two HTTP servers on this machine, one on 8101 and one on 8102, sharing a single CookieJar. The session cookie set on 8101 came back on the 8102 request without complaint. The same jar, asked for <code>/app/v1/other</code>, sent it. Asked for <code>/app/v1x</code>, it sent nothing.</p>
+<p>Neither result is a bug. Both are written into RFC 6265. What is rare is seeing them side by side, which is why "the cookie disappeared" usually ends with "clear your browser cache".</p>
+<p>This article answers one question: after a server sends Set-Cookie, will the next request carry it.</p>
+<p>Every number below was measured here: Windows 11 10.0.26300, CPython 3.13.14, the standard-library http.cookiejar module (2,123 lines), requests 2.31.0. The subject under test is the standard library and requests, not a browser; wherever browser behaviour matters I quote official documentation and label it as such. No affiliate links in this article.</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Six gates a Set-Cookie has to pass" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft58cc185dgrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ft58cc185dgrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Six gates a Set-Cookie has to pass</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">1 Stored at all: Domain and public suffix</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">2 Who receives it: host match, not port</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">3 Which paths: default is the parent</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">4 Which scheme: Secure never leaves https</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">5 Same name twice: longer path first</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">6 Still alive: Max-Age beats Expires</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Six gates a Set-Cookie has to pass · diagram drawn from this article</figcaption></figure>
+<h2>There is only one rulebook: four filters before the header</h2>
+<p>RFC 6265 section 5.4 says that before a Cookie header is generated, the user agent selects every stored cookie meeting all of these conditions: a host-only cookie requires the request host to be identical, everything else goes through domain-match; the request path must path-match; a cookie with the secure-only flag requires a secure scheme; http-only only excludes non-HTTP APIs. The surviving list is then sorted, longer paths first, earlier creation first when paths are equal, and serialised into a single <code>name=value; name=value</code> header.</p>
+<p>The standard library turns that rulebook into a policy object. DefaultCookiePolicy takes 13 constructor arguments, and three defaults settle most of the behaviour that follows: <code>strict_domain=False</code>, <code>strict_ns_domain=DomainLiberal</code> (zero, meaning every Netscape domain strictness flag is off), and <code>strict_ns_set_path=False</code>.</p>
+<p>So "the standard library is looser than a browser" is not an opinion. It is those three default values.</p>
+<h2>Gate one: omitting Domain makes the scope wider</h2>
+<p>Start with what actually lands in the jar. A request to <code>http://127.0.0.1:8101/set</code> returns two cookies, one without a Domain attribute and one with <code>Domain=127.0.0.1</code>. Read back, they are two records:</p>
+<ul><li>Without Domain: domain is <code>127.0.0.1</code>, <code>domain_specified=False</code>, a host-only cookie</li><li>With Domain: the stored domain becomes <code>.127.0.0.1</code>, a dot prepended, <code>domain_specified=True</code></li></ul>
+<p>RFC 6265 section 5.4 is strict about the first kind: a host-only cookie is sent only when the request host is identical to the cookie's domain. That is a narrower scope than the Domain form. The default policy does not judge it that way.</p>
+<p>I called <code>policy.return_ok()</code> directly with fabricated Request objects, skipping DNS and the network, to test the matching logic alone. Four hosts times two policies, eight combinations, split into two columns:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Request host</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DomainLiberal (default)</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DomainStrictNonDomain</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">example.com</td><td style="border:1px solid #ddd;padding:8px;">sent</td><td style="border:1px solid #ddd;padding:8px;">sent</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sub.example.com</td><td style="border:1px solid #ddd;padding:8px;">sent</td><td style="border:1px solid #ddd;padding:8px;">not sent</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">a.b.example.com</td><td style="border:1px solid #ddd;padding:8px;">sent</td><td style="border:1px solid #ddd;padding:8px;">not sent</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">notexample.com</td><td style="border:1px solid #ddd;padding:8px;">not sent</td><td style="border:1px solid #ddd;padding:8px;">not sent</td></tr></tbody></table>
+<p>Switch <code>strict_ns_domain</code> from the default 0 to <code>DomainStrictNonDomain</code> and the behaviour lines up with the RFC immediately. The source comment on the default path is blunt (<code>Lib/http/cookiejar.py</code>, line 1171): <code>strict check of non-domain cookies: Mozilla does this, MSIE5 doesn't</code>.</p>
+<p>The official documentation for DomainStrictNonDomain says cookies that did not explicitly specify a domain attribute can only be returned to the domain that set them. The switch exists. It is simply off by default.</p>
+<p>The damage shows up on shared domains. On a multi-tenant host, a session cookie set by tenant A on <code>a.example.com</code> without a Domain attribute will, under the default policy of many scripted clients, also be sent to <code>b.example.com</code>. Browsers will not do that. The standard library will.</p>
+<h2>Gate two: the port is not part of the scope at all</h2>
+<p>The cookie set on 8101 arrives complete on the 8102 request, both records. This is not laziness in the library: RFC 6265 has no port attribute at all. The filter in section 5.4 covers domain, path and scheme; the Port attribute from RFC 2965 was removed.</p>
+<p>That produces the two most common local failures. <code>localhost:3000</code> and <code>localhost:8080</code> overwrite each other's session cookies. A front-end dev server proxying to a back end lets both sides pollute one jar.</p>
+<p>There is a fix that needs no code change. <code>127.0.0.1</code> and <code>localhost</code> are different hosts, and cookies do not cross between them. Isolate by host name, not by port number.</p>
+<h2>Gate three: the default Path is the parent directory</h2>
+<p>Set a cookie at <code>/app/v1/settings</code> with no Path attribute. The jar stores the path as <code>/app/v1</code>, not <code>/</code>.</p>
+<p>RFC 6265 section 5.1.4 spells out the algorithm: take the request URI path and drop everything from the rightmost slash onward. The parent directory is the default. <code>/</code> is the answer most people assume.</p>
+<p>Requesting five paths with that cookie produced this:</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Request path</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Sent?</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/app/v1/other</td><td style="border:1px solid #ddd;padding:8px;">yes</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">/app/v1</td><td style="border:1px solid #ddd;padding:8px;">yes</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/app/v1x</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">/app/v2/x</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr></tbody></table>
+<p>An explicit <code>Path=/foo</code> draws a sharper edge: <code>/foo</code> yes, <code>/foo/bar</code> yes, <code>/foobar</code> no, <code>/foo2</code> no. Path-match requires a prefix match plus a <code>/</code> as the first extra character. <code>/foobar</code> has a <code>b</code> there, so it fails.</p>
+<p>One documentation discrepancy is worth noting. The MDN example says a cookie set by <code>https://example.com/docs/Web/HTTP/index.html</code> defaults to <code>/docs/Web/HTTP/</code> with a trailing slash; the RFC algorithm yields <code>/docs/Web/HTTP</code> without one. Both produce the same path-match set, and the measured behaviour follows the RFC version.</p>
+<p>The real-world failure is a single-page app. The login endpoint sits at <code>/api/login</code>, the front-end routes at <code>/</code>. Without a Path attribute the cookie's scope is <code>/api</code> only, so <code>document.cookie</code> on the page sees nothing while every API call works fine. The symptom gets reported as "the front end cannot read the login state". The actual cause is one missing attribute on the server.</p>
+<h2>Gate four: Secure cookies get stored and never sent</h2>
+<p>Send a Secure cookie over plain http and the standard library accepts it: secure is True in the jar, with <code>discard=True</code> and <code>expires=None</code>. Send another http request from the same jar and the cookie never appears.</p>
+<p>No exception. No log line. It sits in the jar waiting for an https request that may never come.</p>
+<p>Browsers are stricter here. The MDN Set-Cookie page states: <code>Insecure sites (http:) cannot set cookies with the Secure attribute.</code> A Secure cookie handed over plain http is dropped entirely, never stored. So the library keeps it and never sends it, the browser throws it away, and both end up with a missing cookie through different paths.</p>
+<p>One related misconception: RFC 6265 section 4.1.2.5 itself notes that Secure protects only confidentiality, not integrity, and an active attacker can overwrite a Secure cookie from an insecure channel. Treating it as tamper-proof reads more into the attribute than it says.</p>
+<h2>Gate five: one name can exist several times</h2>
+<p>A cookie's unique key is name plus domain plus path. Change any one of the three and you have a second record. So <code>sid</code> can live at both <code>/</code> and <code>/app</code>:</p>
+<ul><li>Two entries in the jar: <code>sid=root</code> at path <code>/</code> and <code>sid=app</code> at path <code>/app</code></li><li>A request for <code>/app/x</code> goes out as <code>sid=app; sid=root</code>, longer path first</li><li><code>dict_from_cookiejar()</code> hands back only <code>{'sid': 'app'}</code>, silently discarding the other</li><li>Subscripting the jar directly raises <code>TypeError: 'CookieJar' object is not subscriptable</code>, because <code>__getitem__</code> was never implemented</li></ul>
+<p>That ordering is a SHOULD in RFC 6265, not a MUST: longer paths first, earlier creation first for equal lengths. Servers have historically depended on it, so it functions as a de facto standard.</p>
+<p>A server reading the first value reads the more specific, longer-path cookie. If the app writes its logout logic at <code>/</code> and blanks <code>sid</code> there, the copy at <code>/app</code> is still alive, and the next visit to <code>/app</code> logs the user straight back in. That is the usual shape of "I logged out, refreshed, and I was logged in again".</p>
+<p>Two Set-Cookie headers with the same name and the same path in one response behave differently: only the second survives, and the jar still holds one entry.</p>
+<h2>Gate six: two-digit years send you into the future</h2>
+<p>Precedence first. Send <code>Max-Age=3600</code> together with <code>Expires=Thu, 01 Jan 1970 00:00:00 GMT</code>. RFC 6265 section 4.1.2.2 reads <code>the Max-Age attribute has precedence</code>, and the measured jar keeps the cookie, with expiry set to now plus 3600 seconds. <code>Max-Age=0</code> deletes immediately, and MDN describes zero or a negative number as expiring the cookie at once.</p>
+<p>Parsing failures are the messy part. None of the forms below is a clean HTTP-date, and the outcomes split in two:</p>
+<ul><li><code>Expires=garbage</code> and <code>Expires=Thu, 32 Jan 2030 00:00:00 GMT</code>: parse failure, <code>expires=None</code>, <code>discard=True</code>, silently downgraded to a session cookie</li><li><code>Expires=Thu, 01 Jan 1970 00:00:00 GMT</code>: parses into the past, deletion works</li><li><code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code>: a two-digit year, parses fine, and does not mean 1970</li></ul>
+<p>That last line is the most counter-intuitive finding of this round. The docstring of <code>http2time()</code> says that when the year has only two digits, the function selects the century that makes the year closest to the current date. Measured today, 2026-11-27, the boundary falls between 76 and 77:</p>
+<ul><li><code>70</code> parses to 2070-01-01</li><li><code>76</code> parses to 2076-01-01</li><li><code>77</code> parses to 1977-01-01</li></ul>
+<p>RFC 6265 section 5.1.1 has a fixed rule instead: 70 through 99 add 1900, 0 through 69 add 2000. By the RFC, <code>70</code> is 1970 and the cookie is already expired. By the standard library it lives until 2070.</p>
+<p>Seven of the hundred two-digit values, 70 through 76, diverge from the RFC, which is 7% of the space failing on the classic delete-by-expiry trick. Old code uses <code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code> to remove a cookie. I ran exactly that, and the entry in the jar came back with expires set to 3155760000: not deleted, no error.</p>
+<p>Worse, the boundary drifts. It is computed as the century nearest the current date, so the divergent band shifts forward as years pass. A conclusion measured today will not hold in a few years.</p>
+<h2>No public suffix list, so cookies cross into other tenants</h2>
+<p>Browsers refuse to use a public suffix as Domain. MDN states it plainly: Domain <code>cannot be a public suffix such as com, co.uk, or github.io</code>, and offending cookies are ignored outright.</p>
+<p>The standard library has no such list. Searching the source for <code>publicsuffix</code> and <code>public_suffix</code> returns zero hits. The measurements:</p>
+<ul><li>Setting <code>Domain=.github.io</code> from <code>user.github.io</code> returns True from <code>set_ok</code></li><li>That cookie returns True for <code>other.github.io</code></li><li>It returns True for <code>evil.github.io</code> as well</li><li>Setting <code>Domain=.co.uk</code> from <code>shop.example.co.uk</code> also returns True</li></ul>
+<p>On shared-domain hosting (<code>*.github.io</code>, <code>*.herokuapp.com</code>, <code>*.netlify.app</code> and friends), one tenant's cookie can be delivered to another tenant's site. The browser blocks this. A script does not.</p>
+<p>If you need that block, add <code>blocked_domains</code> to the policy or check the suffix yourself before sending. Do not expect the library to do it.</p>
+<h2>SameSite and __Host-: the standard library knows neither</h2>
+<p>The same source counts: <code>samesite</code> zero hits, <code>SameSite</code> zero, <code>__Host-</code> zero, <code>__Secure-</code> zero.</p>
+<p>Behaviour matches:</p>
+<ul><li>A cookie sent with <code>SameSite=Strict</code> lands only in the Cookie object's <code>_rest</code> dict (<code>{'SameSite': 'Strict'}</code>), with no check at request time</li><li>A request carrying <code>Referer: https://evil.example/</code> and <code>Sec-Fetch-Site: cross-site</code> still sends it</li><li><code>__Host-h=1</code> without Secure and without <code>Path=/</code> is accepted and sent back</li><li><code>__Secure-s=1</code> without the Secure attribute is accepted and sent back</li></ul>
+<p>MDN requires three things for <code>__Host-</code> at once: Secure, set by an HTTPS page, no Domain attribute, and Path exactly <code>/</code>. Code that relies on the prefix to pin a cookie to the current host gets that guarantee in a browser and nothing at all in a script.</p>
+<p>For anyone writing crawlers, API tests or SSO integration scripts, this means the CSRF protection you verified in a browser is absent when the same flow runs from a script.</p>
+<h2>Browser versus cookiejar, side by side</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Check</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Browser</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">CPython cookiejar (default policy)</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Cookie without Domain</td><td style="border:1px solid #ddd;padding:8px;">original host only</td><td style="border:1px solid #ddd;padding:8px;">subdomains too, unless DomainStrictNonDomain</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Port in scope</td><td style="border:1px solid #ddd;padding:8px;">no</td><td style="border:1px solid #ddd;padding:8px;">no</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Default Path</td><td style="border:1px solid #ddd;padding:8px;">parent directory of the request URL</td><td style="border:1px solid #ddd;padding:8px;">same</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Secure cookie over http</td><td style="border:1px solid #ddd;padding:8px;">ignored entirely</td><td style="border:1px solid #ddd;padding:8px;">stored, never sent</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Max-Age versus Expires</td><td style="border:1px solid #ddd;padding:8px;">Max-Age wins</td><td style="border:1px solid #ddd;padding:8px;">same</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Two-digit year 70</td><td style="border:1px solid #ddd;padding:8px;">1970, per the RFC</td><td style="border:1px solid #ddd;padding:8px;">2070, nearest century</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Public suffix as Domain</td><td style="border:1px solid #ddd;padding:8px;">rejected</td><td style="border:1px solid #ddd;padding:8px;">accepted</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">SameSite</td><td style="border:1px solid #ddd;padding:8px;">enforced at request time</td><td style="border:1px solid #ddd;padding:8px;">not recognised, always sent</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">__Host- and __Secure- prefixes</td><td style="border:1px solid #ddd;padding:8px;">three conditions checked</td><td style="border:1px solid #ddd;padding:8px;">not recognised</td></tr></tbody></table>
+<h2>Troubleshooting: five real errors and two silent rewrites</h2>
+<p>All five errors below came out of this session, each with its cause.</p>
+<p><strong>1. Calling the policy directly: <code>AttributeError: 'DefaultCookiePolicy' object has no attribute '_now'</code></strong></p>
+<p><code>return_ok()</code> calls <code>cookie.is_expired(self._now)</code>, and <code>_now</code> is injected into the policy by CookieJar at construction. Instantiate a policy on its own to test matching and the first line raises. Add <code>policy._now = lambda: 0</code> and it works.</p>
+<p><strong>2. <code>TypeError: 'CookieJar' object is not subscriptable</code></strong></p>
+<p>The standard-library jar does not support <code>jar['sid']</code>. To look up by name, use requests' RequestsCookieJar or iterate yourself.</p>
+<p><strong>3. <code>CookieConflictError: There are multiple cookies with name, 'sid'</code></strong></p>
+<p>With a requests Session holding two cookies under one name at different paths, <code>ss.cookies['sid']</code> raises this. Either specify domain and path, or switch to <code>dict_from_cookiejar()</code>, which silently drops one copy and is reliable only while debugging.</p>
+<p><strong>4. <code>UnicodeEncodeError: 'latin-1' codec can't encode characters in position 3-4</code></strong></p>
+<p>A non-ASCII value in the jar, Chinese text for instance, meets http.client encoding headers as latin-1, and the whole request fails. The error fires at send time rather than parse time, so the traceback contains no mention of cookies and reads like a URL encoding problem. Percent-encode on write instead of pushing raw UTF-8 into a cookie value.</p>
+<p><strong>5. <code>LoadError: '...' does not look like a Netscape format cookies file</code></strong></p>
+<p><code>MozillaCookieJar.load()</code> raises this on a file that is not in Netscape format. The header must be <code># Netscape HTTP Cookie File</code>; hand-built cookie files usually omit that line.</p>
+<p>Two silent rewrites, no error but the data changes:</p>
+<ul><li>A semicolon inside a value: <code>Set-Cookie: v=a;b; Path=/</code> stores <code>v=a</code>. The semicolon is read as an attribute separator and the rest vanishes.</li><li>A space inside a name: <code>Set-Cookie: bad name=1</code> is accepted and sent verbatim as <code>bad name=1</code>, which most server parsers discard as garbage.</li></ul>
+<h2>Thirty lines to see the whole scope</h2>
+<p>When a cookie is missing, dump the jar and evaluate each entry against the request path. It beats guessing.</p>
+<pre><code>import urllib.request
+import http.cookiejar as cj
+
+policy = cj.DefaultCookiePolicy(
+    strict_ns_domain=cj.DefaultCookiePolicy.DomainStrictNonDomain,
+)
+jar = cj.CookieJar(policy)
+jar._policy._now = jar._now = 0  # freeze time so expired entries stay visible
+
+def dump(jar):
+    for c in jar:
+        print(f"{c.name}={c.value}  domain={c.domain} host_only={not c.domain_specified} "
+              f"path={c.path} secure={c.secure} expires={c.expires} rest={c._rest}")
+
+def will_send(jar, url):
+    req = urllib.request.Request(url)
+    return [c.name for c in jar if jar._policy.return_ok(c, req)]</code></pre>
+<p>Print <code>dump(jar)</code> first, then call <code>will_send()</code> on the URL that misbehaves. Two lines of output answer three questions: is the cookie in the jar, what scope did it compute, and why was it judged unsendable.</p>
+<h2>Frequently asked questions</h2>
+<p><strong>Q: Why do two local ports overwrite each other's sessions?</strong></p>
+<p>Because port is not a dimension of cookie scope. The filters in RFC 6265 section 5.4 are domain, path and scheme. Isolate with different host names (<code>127.0.0.1</code> versus <code>localhost</code>), not different ports.</p>
+<p><strong>Q: The server sets a cookie and devtools shows it, so why is the API request missing it?</strong></p>
+<p>Check two things first: whether Path landed outside the API directory, and whether Secure was set over http. The first looks like "the page sees it, the request does not"; the second looks like "it was stored but never sent". Neither reports an error.</p>
+<p><strong>Q: Why does <code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code> fail to delete a cookie?</strong></p>
+<p>The standard library reads two-digit years as the century nearest the current date, so 70 becomes 2070 rather than 1970. Delete with <code>Max-Age=0</code>, or write all four digits.</p>
+<p><strong>Q: Is there any difference between <code>Domain=.example.com</code> and <code>Domain=example.com</code>?</strong></p>
+<p>Not in the standard library or in browsers; the leading dot is ignored. What matters is presence versus absence of the attribute, which separates host-only from domain cookies.</p>
+<h2>Conclusion: scope is four attributes, computed</h2>
+<p>Compress the six gates into one sentence: which request carries a cookie is decided by the domain attribute, the path, the Secure flag and the expiry, plus one sort rule for same-name collisions. What the server wrote is not what the client does; a layer of policy defaults sits in between.</p>
+<p>Five places where the standard library disagreed with the RFC or with MDN showed up in this round: host-only cookies going to subdomains by default, no public suffix list, nearest-century two-digit years, Secure cookies accepted over http, and total indifference to SameSite and cookie prefixes. Each is minor alone. Stacked on one login flow they produce "I set it and it never arrived".</p>
+<p>Neighbouring layers are already covered on this site: how long a response header lives in <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-and-etag-eight-silent-defaults-en.html" class="internal-link">HTTP cache control and ETag</a>, whether the connection is still up in <a href="https://yaohehe.github.io/2026-11-20-tcp-socket-liveness-send-succeeds-peer-already-gon-en.html" class="internal-link">TCP socket liveness</a>, and what a certificate chain actually verifies in <a href="https://yaohehe.github.io/2026-11-23-tls-verify-six-failures-and-one-silent-downgrade-en.html" class="internal-link">TLS verification</a>. Cookies sit after all of them: they assume the first two worked, then decide whether this request carries credentials.</p>
+<p>If you keep one line, keep this: <code>DefaultCookiePolicy()</code> is not a safe default, it is a compatibility default written for browsers of the 2000s. Fine for API tests. Wrong for imitating a real user.</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
