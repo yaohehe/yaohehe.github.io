@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cookie 作用域：一个 Set-Cookie 要过的六道关 - TechPassive</title>
+  <meta name="description" content="同一个 Cookie，换个端口照发，换个目录就不发；Domain 少写一个点，作用域反而大了一层子域。本文用本机两个 HTTP 服务实测，拆开 Python 标准库 cookiejar 的六道关：域名、端口、路径、Secure、同名冲突与过期解析，附五个真实报错原文、一份浏览器对照表和一段可直接用的排查脚本。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>Cookie 作用域：一个 Set-Cookie 要过的六道关</h1>
+  <div class="post-tags">
+    <span class="tag">cookie</span><span class="tag">HTTP 语义</span><span class="tag">调试排查</span>
+  </div>
+  <div class="content">
+    <p>为了复现一个「登录明明成功了，下一个请求还是游客」的问题，我在本机起了两个 HTTP 服务，一个占 8101，一个占 8102。同一份代码、同一个 CookieJar 对象：8101 上设的会话 cookie，8102 的请求里照样带着；换成路径，<code>/app/v1/other</code> 带，<code>/app/v1x</code> 不带。</p>
+<p>这两件事都不算 bug，它们是 RFC 6265 写明的行为。可排错文章很少把它们摆在一起讲，于是「cookie 丢了」最后总是归结成一句「清一下浏览器缓存」。</p>
+<p>本文只回答一个问题：服务端发了 Set-Cookie 之后，下一次请求到底会不会带上它。</p>
+<p>数字全部来自本机实测：Windows 11 10.0.26300、CPython 3.13.14、标准库 http.cookiejar（2,123 行）、requests 2.31.0。被测对象是标准库与 requests，不是浏览器；凡涉及浏览器的地方一律引官方文档原文并单独标注。本文不含任何联盟推广链接。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="一个 Set-Cookie 要过的六道关" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftf6c1500egrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ftf6c1500egrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">一个 Set-Cookie 要过的六道关</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">1 存不存：Domain 与公共后缀</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">2 发给谁：域名匹配，端口不算</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">3 哪条路径：默认取上一级目录</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">4 协议够不够：Secure 只走 https</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">5 同名几份：长 path 排在前面</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">6 过没过期：Max-Age 压过 Expires</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>一个 Set-Cookie 要过的六道关 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#F03C2E" role="img" aria-label="Git" style="flex:none;"><path d="M13.09 23.549a1.54 1.54 0 0 1-2.18 0L.451 13.089a1.54 1.54 0 0 1 0-2.179l7.191-7.19 2.733 2.733a1.85 1.85 0 0 0 .964 2.326v6.66a1.849 1.849 0 1 0 1.54 0V8.957l2.508 2.508a1.85 1.85 0 1 0 1.09-1.09l-2.634-2.634a1.85 1.85 0 0 0-2.378-2.377L8.73 2.63 10.91.451a1.54 1.54 0 0 1 2.179 0l10.459 10.46a1.54 1.54 0 0 1 0 2.179z"/></svg><span>Git</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#181717" role="img" aria-label="GitHub" style="flex:none;"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg><span>GitHub</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>判据只有一份：请求前要过四道筛选</h2>
+<p>RFC 6265 §5.4 规定，生成 Cookie 头之前，先从存储里挑出满足全部条件的记录：host-only 的必须与请求主机完全相同，其余走 domain-match；请求路径要 path-match；secure-only 为真时请求必须是安全协议；http-only 只在非 HTTP API 场景下排除。选中之后再排序，路径长的在前，等长时创建早的在前，最后拼成 <code>name=value; name=value</code> 的唯一一个请求头。</p>
+<p>标准库把这套规矩做成了一个策略对象。DefaultCookiePolicy 有 13 个构造参数，其中三个默认值决定了后面大半的行为：<code>strict_domain=False</code>、<code>strict_ns_domain=DomainLiberal</code>（等于 0，所有 Netscape 域严格性开关全关）、<code>strict_ns_set_path=False</code>。</p>
+<p>换句话说，「标准库比浏览器松」不是形容词，是这三行默认值。</p>
+<h2>第一关：Domain 不写，作用域反而更大</h2>
+<p>先看 jar 里存了什么。请求 <code>http://127.0.0.1:8101/set</code> 时下发两种 cookie，一种不带 Domain，一种写 <code>Domain=127.0.0.1</code>。读回来是两条记录：</p>
+<ul><li>不带的：domain 为 <code>127.0.0.1</code>，<code>domain_specified=False</code>，即 host-only</li><li>带 Domain 的：domain 变成 <code>.127.0.0.1</code>，前面被加了一个点，<code>domain_specified=True</code></li></ul>
+<p>按 RFC 6265 §5.4，host-only 的 cookie 只有「请求主机与 cookie 的 domain 完全相同」才会被发出，这是比 Domain 写法更严的一档。但标准库默认策略不这么判。</p>
+<p>我用伪造的 Request 对象直接调 <code>policy.return_ok()</code>，绕开 DNS 与网络，只测匹配逻辑本身。4 个主机 × 2 种策略共 8 个组合，结果分成两栏：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">请求主机</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DomainLiberal（默认）</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">DomainStrictNonDomain</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">example.com</td><td style="border:1px solid #ddd;padding:8px;">发</td><td style="border:1px solid #ddd;padding:8px;">发</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">sub.example.com</td><td style="border:1px solid #ddd;padding:8px;">发</td><td style="border:1px solid #ddd;padding:8px;">不发</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">a.b.example.com</td><td style="border:1px solid #ddd;padding:8px;">发</td><td style="border:1px solid #ddd;padding:8px;">不发</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">notexample.com</td><td style="border:1px solid #ddd;padding:8px;">不发</td><td style="border:1px solid #ddd;padding:8px;">不发</td></tr></tbody></table>
+<p>只要把 <code>strict_ns_domain</code> 从默认的 0 改成 <code>DomainStrictNonDomain</code>，行为立刻和 RFC 对齐。默认值这一栏，源码自己的注释写得很直白（<code>Lib/http/cookiejar.py</code> 第 1171 行）：<code>strict check of non-domain cookies: Mozilla does this, MSIE5 doesn't</code>。</p>
+<p>官方文档对 DomainStrictNonDomain 的解释是：没有显式写 domain 属性的 cookie，只能返回给设置它的那个域。也就是说这个开关是存在的，只是默认关着。</p>
+<p>这里的杀伤力在共享域名上：多租户系统里 A 客户在 <code>a.example.com</code> 设了一个没写 Domain 的会话 cookie，默认策略下它会不会被发到 <code>b.example.com</code>，取决于你用哪个客户端。浏览器不会，标准库会。</p>
+<h2>第二关：端口根本不在作用域里</h2>
+<p>8101 上设的 cookie，在 8102 的请求里完整带上，两条都在。这不是标准库偷懒，是 RFC 6265 的属性表里压根没有端口这一项——§5.4 的筛选条件只有域名、路径、协议三项，RFC 2965 时代的 Port 属性已被删除。</p>
+<p>于是本机最常见的两种翻车都从这里来：<code>localhost:3000</code> 与 <code>localhost:8080</code> 互相覆盖同名 session；前端 dev server 代理到后端时，两边 cookie 互相污染。</p>
+<p>一个不需要改代码的办法：<code>127.0.0.1</code> 与 <code>localhost</code> 是两个不同的 host，cookie 不互通。想彻底隔离，用 host 区分而不是用端口区分。</p>
+<h2>第三关：Path 不写时，默认是上一级目录</h2>
+<p>在 <code>/app/v1/settings</code> 上设一条不带 Path 的 cookie，jar 里存的 path 是 <code>/app/v1</code>，不是 <code>/</code>。</p>
+<p>RFC 6265 §5.1.4 的算法写得很清楚：取请求 URI 的路径，去掉最右边那个 <code>/</code> 之后的所有内容。所以「上一层目录」才是默认值，<code>/</code> 是很多人想当然的答案。</p>
+<p>拿这个 path 去请求五个地址，实测结果：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">请求路径</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">带不带</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/app/v1/other</td><td style="border:1px solid #ddd;padding:8px;">带</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">/app/v1</td><td style="border:1px solid #ddd;padding:8px;">带</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/app/v1x</td><td style="border:1px solid #ddd;padding:8px;">不带</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">/app/v2/x</td><td style="border:1px solid #ddd;padding:8px;">不带</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">/</td><td style="border:1px solid #ddd;padding:8px;">不带</td></tr></tbody></table>
+<p>显式写 <code>Path=/foo</code> 时边界更清楚：<code>/foo</code> 带、<code>/foo/bar</code> 带、<code>/foobar</code> 不带、<code>/foo2</code> 不带。path-match 要求「前缀匹配」并且「多出来的第一个字符必须是 <code>/</code>」，<code>/foobar</code> 多出来的是 <code>b</code>，所以不匹配。</p>
+<p>有一处文档口径值得记一笔：MDN 的例子说 <code>https://example.com/docs/Web/HTTP/index.html</code> 的默认 path 是 <code>/docs/Web/HTTP/</code>，带尾斜杠；RFC 算法给出的是不带尾斜杠的 <code>/docs/Web/HTTP</code>。两种写法 path-match 出来的集合相同，实测标准库跟的是 RFC 那一版。</p>
+<p>真实的翻车场景是 SPA：登录接口在 <code>/api/login</code>，前端路由在 <code>/</code>。不带 Path 时 cookie 的作用域只有 <code>/api</code>，前端页面里的 <code>document.cookie</code> 一个字都看不到，但接口请求一切正常——于是问题被描述成「前端拿不到登录态」，其实是服务端少写了一行。</p>
+<h2>第四关：Secure 的 cookie 存得进、发不出</h2>
+<p>用 http 下发一条带 Secure 的 cookie，标准库照收不误：jar 里 secure 为 True，<code>discard=True</code>、<code>expires=None</code>。然后同一个 jar 再发 http 请求，这条 cookie 一次都不会出现。</p>
+<p>既没有异常，也没有日志。它就在 jar 里躺着，等着某个 https 请求来取。</p>
+<p>浏览器在这件事上更严格。MDN 的 Set-Cookie 页原文写着：<code>Insecure sites (http:) cannot set cookies with the Secure attribute.</code> 也就是说 http 页面下发的 Secure cookie 会被整条忽略，连存都不存。标准库存下来但永不发出，浏览器直接丢掉——两种实现，同一个结果，两种排查路径。</p>
+<p>顺带一个容易误解的点：RFC 6265 §4.1.2.5 自己就说了，Secure 只保护机密性，不保护完整性，主动攻击者可以从非安全通道覆写 Secure cookie。把它当成「不可篡改」是过度解读。</p>
+<h2>第五关：同一个名字可以同时存在几份</h2>
+<p>cookie 的唯一键是「名字 + 域名 + 路径」，三者任一不同就是两条记录。所以 <code>sid</code> 完全可以在 <code>/</code> 和 <code>/app</code> 各存一份：</p>
+<ul><li>jar 里两条：<code>sid=root</code>（path <code>/</code>）与 <code>sid=app</code>（path <code>/app</code>）</li><li>请求 <code>/app/x</code> 时发出的头是 <code>sid=app; sid=root</code>，长 path 在前</li><li><code>dict_from_cookiejar()</code> 只给你 <code>{'sid': 'app'}</code>，另一份被静默丢掉</li><li><code>CookieJar</code> 对象直接下标会报 <code>TypeError: 'CookieJar' object is not subscriptable</code>，因为它没有实现 <code>__getitem__</code></li></ul>
+<p>这个顺序是 RFC 推荐的（SHOULD，不是 MUST）：路径长的在前，等长时创建早的在前。历史上有服务端依赖过这个顺序，所以它至今被当作事实标准。</p>
+<p>服务端读第一个值，就等于读到了 path 更长、更具体的那个。如果应用在 <code>/</code> 上写登出逻辑、把 <code>sid</code> 清成空，<code>/app</code> 上的那份还活着，下一次进 <code>/app</code> 就又被认回来——「退出登录后刷新一下又登进去了」通常就是这条。</p>
+<p>同一次响应里发两个同名同 path 的 Set-Cookie 则是另一种结果：只有后一个活下来，jar 里仍然只有 1 条。</p>
+<h2>第六关：过期解析，两位数年份会把你送回未来</h2>
+<p>先确认优先级。同时下发 <code>Max-Age=3600</code> 和 <code>Expires=Thu, 01 Jan 1970 00:00:00 GMT</code>，RFC 6265 §4.1.2.2 原文是 <code>the Max-Age attribute has precedence</code>，实测 jar 里存活，expires 变成当前时间加 3600 秒。<code>Max-Age=0</code> 则是立刻删除，MDN 的说法是「零或负数立即过期」。</p>
+<p>真正麻烦的是解析失败。下面几种写法都不是全部合法，结果分两类：</p>
+<ul><li><code>Expires=garbage</code>、<code>Expires=Thu, 32 Jan 2030 00:00:00 GMT</code>：解析失败，<code>expires=None</code>、<code>discard=True</code>，静默退化成会话 cookie</li><li><code>Expires=Thu, 01 Jan 1970 00:00:00 GMT</code>：正常解析成过去时间，删除生效</li><li><code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code>：两位数年份，解析成功，但结果不是 1970</li></ul>
+<p>最后一条是本文最反直觉的发现。cookiejar 的 <code>http2time()</code> 文档字符串写着：年份只有两位时，选择「让这个年份最接近当前日期」的那个世纪。实测今天（2026-11-27）的边界落在 76 与 77 之间：</p>
+<ul><li><code>70</code> 解析成 2070-01-01</li><li><code>76</code> 解析成 2076-01-01</li><li><code>77</code> 解析成 1977-01-01</li></ul>
+<p>而 RFC 6265 §5.1.1 的规则是死的：70 到 99 加 1900，0 到 69 加 2000。按 RFC，<code>70</code> 应该解析成 1970，cookie 立即过期。按标准库，它活到 2070。</p>
+<p>100 个两位数年份取值里有 7 个（70 到 76）和 RFC 不同，也就是 7% 的取值会在「用过期时间删 cookie」这个经典手法上失效。老代码里 <code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code> 是常见的删除写法，实测跑完这条之后，jar 里那条 cookie 的 expires 变成 3155760000，删除失败，而且不报错。</p>
+<p>更要紧的是这个边界会漂移：它是按「离当前日期最近」算的，随着年份推移，分歧区间会整体后移。今天测出来的结论，过几年就不成立。</p>
+<h2>没有公共后缀表，cookie 会发给别人的子域</h2>
+<p>浏览器拒绝把公共后缀当 Domain。MDN 原文：Domain <code>cannot be a public suffix such as com, co.uk, or github.io</code>，越界的 cookie 会被直接忽略。</p>
+<p>标准库没有这张表。我在源码里搜 <code>publicsuffix</code> 与 <code>public_suffix</code>，命中 0 次。实测结果：</p>
+<ul><li>从 <code>user.github.io</code> 下发 <code>Domain=.github.io</code>，<code>set_ok</code> 返回 True</li><li>这条 cookie 对 <code>other.github.io</code> 返回 True</li><li>对 <code>evil.github.io</code> 也返回 True</li><li>从 <code>shop.example.co.uk</code> 下发 <code>Domain=.co.uk</code>，<code>set_ok</code> 同样返回 True</li></ul>
+<p>也就是说，在共享域托管（<code>*.github.io</code>、<code>*.herokuapp.com</code>、<code>*.netlify.app</code> 这类）上跑脚本时，一个租户的 cookie 可以被发到另一个租户的站点。浏览器挡住了这条，脚本没有。</p>
+<p>需要挡住时，要么在策略里挂 <code>blocked_domains</code>，要么在发送前自己核一遍域名后缀，别指望库替你做。</p>
+<h2>SameSite 与 __Host-：标准库一个字都不认</h2>
+<p>同样在源码里数：<code>samesite</code> 命中 0 次、<code>SameSite</code> 0 次、<code>__Host-</code> 0 次、<code>__Secure-</code> 0 次。</p>
+<p>实际行为对得上：</p>
+<ul><li>下发 <code>SameSite=Strict</code> 的 cookie，它只落在 Cookie 对象的 <code>_rest</code> 字典里（<code>{'SameSite': 'Strict'}</code>），请求时没有任何额外判断</li><li>带 <code>Referer: https://evil.example/</code> 与 <code>Sec-Fetch-Site: cross-site</code> 的请求，这个 cookie 照发</li><li>下发 <code>__Host-h=1</code>（既无 Secure，也没有 <code>Path=/</code>）被接受，并正常回发</li><li>下发 <code>__Secure-s=1</code>（没有 Secure 属性）也被接受，并正常回发</li></ul>
+<p>而 MDN 对 <code>__Host-</code> 的要求是三条同时满足：必须 Secure、必须由 HTTPS 页面设置、不得带 Domain 且 Path 必须为 <code>/</code>。代码里用前缀做「这个 cookie 绑死在当前主机」的假设，在浏览器里成立，在脚本里不成立。</p>
+<p>对写爬虫、写接口测试、写 SSO 联调脚本的人来说，这条意味着：你在浏览器里验证过的 CSRF 防护，换成脚本跑同一套流程，防护层根本不存在。</p>
+<h2>浏览器与 cookiejar 的对照表</h2>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">检查</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">浏览器</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">CPython cookiejar（默认策略）</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">不写 Domain 的 cookie</td><td style="border:1px solid #ddd;padding:8px;">只回原主机</td><td style="border:1px solid #ddd;padding:8px;">默认也回子域，需开 DomainStrictNonDomain</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">端口是否算作用域</td><td style="border:1px solid #ddd;padding:8px;">不算</td><td style="border:1px solid #ddd;padding:8px;">不算</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">不写 Path 的默认值</td><td style="border:1px solid #ddd;padding:8px;">请求 URL 的上一级目录</td><td style="border:1px solid #ddd;padding:8px;">同上</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">http 下发 Secure</td><td style="border:1px solid #ddd;padding:8px;">整条忽略</td><td style="border:1px solid #ddd;padding:8px;">存下，但永不发出</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">Max-Age 与 Expires 冲突</td><td style="border:1px solid #ddd;padding:8px;">Max-Age 优先</td><td style="border:1px solid #ddd;padding:8px;">同上</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">两位数年份 70</td><td style="border:1px solid #ddd;padding:8px;">1970（RFC 规则）</td><td style="border:1px solid #ddd;padding:8px;">2070（取最近世纪）</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">公共后缀作 Domain</td><td style="border:1px solid #ddd;padding:8px;">拒绝</td><td style="border:1px solid #ddd;padding:8px;">接受</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">SameSite</td><td style="border:1px solid #ddd;padding:8px;">按属性拦截跨站</td><td style="border:1px solid #ddd;padding:8px;">不认，照发</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">__Host- 与 __Secure- 前缀</td><td style="border:1px solid #ddd;padding:8px;">校验三条</td><td style="border:1px solid #ddd;padding:8px;">不认</td></tr></tbody></table>
+<h2>排错：五个真实报错与两条静默改写</h2>
+<p>下面五条都是这次实测中撞出来的原始报错，附上各自的原因。</p>
+<p><strong>一、直接调策略对象时抛 <code>AttributeError: 'DefaultCookiePolicy' object has no attribute '_now'</code></strong></p>
+<p><code>return_ok()</code> 内部会调 <code>cookie.is_expired(self._now)</code>，而 <code>_now</code> 是 CookieJar 在构造时注入给策略的。单独 new 一个策略来测匹配逻辑，必须自己补 <code>policy._now = lambda: 0</code>，否则第一行就抛。</p>
+<p><strong>二、<code>TypeError: 'CookieJar' object is not subscriptable</code></strong></p>
+<p>标准库的 Jar 不支持 <code>jar['sid']</code>。要按名字取，得用 requests 的 RequestsCookieJar，或者自己遍历。</p>
+<p><strong>三、<code>CookieConflictError: There are multiple cookies with name, 'sid'</code></strong></p>
+<p>用 requests 的 Session 时，同名 cookie 有两份（不同 path），<code>ss.cookies['sid']</code> 就会抛这个。要么指定 domain 与 path，要么改用 <code>dict_from_cookiejar()</code>——但后者会静默丢掉一份，只在调试时可靠。</p>
+<p><strong>四、<code>UnicodeEncodeError: 'latin-1' codec can't encode characters in position 3-4</code></strong></p>
+<p>jar 里存了一个非 ASCII 值（比如中文），发请求时 http.client 用 latin-1 编码请求头，整条请求直接失败。这个报错发生在发送阶段，不在解析阶段，堆栈里看不到 cookie 字样，很容易误判成 URL 编码问题。解决办法是在写入时就做百分号编码，别把原始 UTF-8 塞进 cookie 值。</p>
+<p><strong>五、<code>LoadError: '...' does not look like a Netscape format cookies file</code></strong></p>
+<p><code>MozillaCookieJar.load()</code> 读到一个不是 Netscape 格式的文件时抛这个。文件头必须是 <code># Netscape HTTP Cookie File</code>，自己拼 cookie 文件时最容易漏这一行。</p>
+<p>另外两条静默改写，不报错但会改数据：</p>
+<ul><li>值里带分号：<code>Set-Cookie: v=a;b; Path=/</code> 实际存进去的是 <code>v=a</code>，分号被当成属性分隔符，后半截静默消失</li><li>名字里带空格：<code>Set-Cookie: bad name=1</code> 被接受，请求头里原样发出 <code>bad name=1</code>，服务端多数解析器会把它当成垃圾丢弃</li></ul>
+<h2>三十行脚本：把作用域一次看清</h2>
+<p>排查「cookie 为什么不发」时，先把 jar 摊开，再逐条对照请求路径算一遍，比猜快得多。</p>
+<pre><code>import urllib.request
+import http.cookiejar as cj
+
+policy = cj.DefaultCookiePolicy(
+    strict_ns_domain=cj.DefaultCookiePolicy.DomainStrictNonDomain,
+)
+jar = cj.CookieJar(policy)
+jar._policy._now = jar._now = 0  # 只看结构时固定时间，避免过期项被偷偷剔掉
+
+def dump(jar):
+    for c in jar:
+        print(f"{c.name}={c.value}  domain={c.domain} host_only={not c.domain_specified} "
+              f"path={c.path} secure={c.secure} expires={c.expires} rest={c._rest}")
+
+def will_send(jar, url):
+    req = urllib.request.Request(url)
+    return [c.name for c in jar if jar._policy.return_ok(c, req)]</code></pre>
+<p>先把 <code>dump(jar)</code> 的输出贴出来，再对可疑 URL 调 <code>will_send()</code>。两行输出就能回答三个问题：cookie 在不在 jar 里、作用域算出来是哪一层、以及它为什么被判为不该发。</p>
+<h2>常见问题</h2>
+<p><strong>Q：本机开发为什么两个端口会互相覆盖 session？</strong></p>
+<p>因为 cookie 作用域里没有端口这一维。RFC 6265 §5.4 的筛选条件只有域名、路径、协议。想隔离，用不同 host（<code>127.0.0.1</code> 与 <code>localhost</code>）而不是不同端口。</p>
+<p><strong>Q：服务端设了 cookie，浏览器开发者工具里也能看到，为什么接口请求还是没带上？</strong></p>
+<p>先看两条：Path 是不是落在了接口所在的目录之外，Secure 是不是在 http 下发的。前者表现为「页面能看到、请求不带」，后者表现为「存进去了但一次都不发」。两者都不报错。</p>
+<p><strong>Q：为什么用 <code>Expires=Thu, 01 Jan 70 00:00:00 GMT</code> 删不掉 cookie？</strong></p>
+<p>标准库按「离当前日期最近的世纪」解释两位数年份，70 被解释成 2070 而不是 1970。删 cookie 用 <code>Max-Age=0</code>，或者写完整的四位年份。</p>
+<p><strong>Q：把 <code>Domain=.example.com</code> 写成 <code>Domain=example.com</code> 有区别吗？</strong></p>
+<p>在标准库与浏览器里都没有实质区别，前导点会被忽略。真正有区别的是写与不写，即 domain 属性存在与否，那决定了 host-only 与 domain cookie 两档作用域。</p>
+<h2>结论：作用域是四个属性算出来的</h2>
+<p>把六道关收拢成一句话：cookie 会被发到哪个请求，由「域名属性 + 路径 + Secure + 过期时间」四样东西共同决定，再加上一条同名冲突时的排序规则。服务端写了什么，不等于客户端会照做——中间隔着一层策略默认值。</p>
+<p>这次实测里，标准库与 RFC 或 MDN 不一致的地方有五处：host-only 默认发子域、没有公共后缀表、认两位年份用最近世纪、http 下收下 Secure cookie、完全不认 SameSite 与 cookie 前缀。每一处单独看都是小事，叠在一次登录链路上就是「明明设了却没带上」。</p>
+<p>相邻的几层语义，站内已经写过了：响应头能活多久看 <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-etag.html" class="internal-link">HTTP 缓存与 ETag</a>，连接还在不在看 <a href="https://yaohehe.github.io/2026-11-20-tcp-socket-send.html" class="internal-link">TCP 判活</a>，证书链验了哪几件事看 <a href="https://yaohehe.github.io/2026-11-23-tls-verify.html" class="internal-link">TLS 证书验证</a>。cookie 这一层比它们都靠后：它假设前两层都通了，然后决定这次请求要不要带上凭证。</p>
+<p>如果只从本文带走一条，就这条：<code>DefaultCookiePolicy()</code> 的默认值不是「安全默认」，而是「兼容 2000 年代的浏览器」。用它做接口测试可以，用它模拟真实用户不行。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
