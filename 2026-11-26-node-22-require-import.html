@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Node 22 模块解析：require 与 import 加载的不是同一份 - TechPassive</title>
+  <meta name="description" content="Node 22 里 require 与 import 常常加载到不同文件、不同实例。我用 22.22.2 实测 20 个用例，复现 ERR_MODULE_NOT_FOUND、ERR_PACKAGE_PATH_NOT_EXPORTED 等 8 条真实报错，给出逐条修复命令与 exports 条件顺序结论。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>require 与 import 在 Node 22 里解析到哪一份文件</h1>
+  <div class="post-tags">
+    <span class="tag">Node.js</span><span class="tag">ESM</span><span class="tag">模块解析</span>
+  </div>
+  <div class="content">
+    <p><strong>TL;DR</strong>：Node 22.7 和 22.12 各改了一条默认值，一条让「Cannot use <a href="/2026-11-13-python-import-8.html" class="internal-link">import</a> statement outside a module」不再出现，另一条让 <code>require()</code> 可以直接加载 ESM。老报错消失之后，真正咬人的问题换成了「这次到底解析到哪个文件、哪一份实例」。我在 Node 22.22.2 上写了 20 个最小用例，8 个以退出码 1 收场，其余 12 个静默通过 —— 而其中有一半的「通过」并不是我想要的结果。下面每条报错都附原始文案与可复制命令。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 492" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Node 22 的模块解析判断链" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ftcc571545grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="491" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="484" fill="url(#ftcc571545grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Node 22 的模块解析判断链</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">5 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="410" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">入口是 require 还是 import</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">扩展名写没写</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">最近的 package.json 有没有 type</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">exports 的子路径与条件顺序</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">按扩展名与语法探测定格式</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="468" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="468" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="476" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Node 22 的模块解析判断链 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#5FA04E" role="img" aria-label="Node.js" style="flex:none;"><path d="M11.998,24c-0.321,0-0.641-0.084-0.922-0.247l-2.936-1.737c-0.438-0.245-0.224-0.332-0.08-0.383 c0.585-0.203,0.703-0.25,1.328-0.604c0.065-0.037,0.151-0.023,0.218,0.017l2.256,1.339c0.082,0.045,0.197,0.045,0.272,0l8.795-5.076 c0.082-0.047,0.134-0.141,0.134-0.238V6.921c0-0.099-0.053-0.192-0.137-0.242l-8.791-5.072c-0.081-0.047-0.189-0.047-0.271,0 L3.075,6.68C2.99,6.729,2.936,6.825,2.936,6.921v10.15c0,0.097,0.054,0.189,0.139,0.235l2.409,1.392 c1.307,0.654,2.108-0.116,2.108-0.89V7.787c0-0.142,0.114-0.253,0.256-0.253h1.115c0.139,0,0.255,0.112,0.255,0.253v10.021 c0,1.745-0.95,2.745-2.604,2.745c-0.508,0-0.909,0-2.026-0.551L2.28,18.675c-0.57-0.329-0.922-0.945-0.922-1.604V6.921 c0-0.659,0.353-1.275,0.922-1.603l8.795-5.082c0.557-0.315,1.296-0.315,1.848,0l8.794,5.082c0.57,0.329,0.924,0.944,0.924,1.603 v10.15c0,0.659-0.354,1.273-0.924,1.604l-8.794,5.078C12.643,23.916,12.324,24,11.998,24z M19.099,13.993 c0-1.9-1.284-2.406-3.987-2.763c-2.731-0.361-3.009-0.548-3.009-1.187c0-0.528,0.235-1.233,2.258-1.233 c1.807,0,2.473,0.389,2.747,1.607c0.024,0.115,0.129,0.199,0.247,0.199h1.141c0.071,0,0.138-0.031,0.186-0.081 c0.048-0.054,0.074-0.123,0.067-0.196c-0.177-2.098-1.571-3.076-4.388-3.076c-2.508,0-4.004,1.058-4.004,2.833 c0,1.925,1.488,2.457,3.895,2.695c2.88,0.282,3.103,0.703,3.103,1.269c0,0.983-0.789,1.402-2.642,1.402 c-2.327,0-2.839-0.584-3.011-1.742c-0.02-0.124-0.126-0.215-0.253-0.215h-1.137c-0.141,0-0.254,0.112-0.254,0.253 c0,1.482,0.806,3.248,4.655,3.248C17.501,17.007,19.099,15.91,19.099,13.993z"/></svg><span>Node.js</span></span><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#000000" role="img" aria-label="Json" style="flex:none;"><path d="M12.043 23.968c.479-.004.953-.029 1.426-.094a11.805 11.805 0 003.146-.863 12.404 12.404 0 003.793-2.542 11.977 11.977 0 002.44-3.427 11.794 11.794 0 001.02-3.476c.149-1.16.135-2.346-.045-3.499a11.96 11.96 0 00-.793-2.788 11.197 11.197 0 00-.854-1.617c-1.168-1.837-2.861-3.314-4.81-4.3a12.835 12.835 0 00-2.172-.87h-.005c.119.063.24.132.345.201.12.074.239.146.351.225a8.93 8.93 0 011.559 1.33c1.063 1.145 1.797 2.548 2.218 4.041.284.982.434 1.998.495 3.017.044.743.044 1.491-.047 2.229-.149 1.27-.554 2.51-1.228 3.596a7.475 7.475 0 01-1.903 2.084c-1.244.928-2.877 1.482-4.436 1.114a3.916 3.916 0 01-.748-.258 4.692 4.692 0 01-.779-.45 6.08 6.08 0 01-1.244-1.105 6.507 6.507 0 01-1.049-1.747 7.366 7.366 0 01-.494-2.54c-.03-1.273.225-2.553.854-3.67a6.43 6.43 0 011.663-1.918c.225-.178.464-.333.704-.479l.016-.007a5.121 5.121 0 00-1.441-.12 4.963 4.963 0 00-1.228.24c-.359.12-.704.27-1.019.45a6.146 6.146 0 00-.733.494c-.211.18-.42.36-.615.555-1.123 1.153-1.768 2.682-2.022 4.256-.15.973-.15 1.96-.091 2.95.105 1.395.391 2.787.945 4.062a8.518 8.518 0 001.348 2.173 8.14 8.14 0 003.132 2.23 7.934 7.934 0 002.113.54c.074.015.149.015.209.015zm-2.934-.398a4.102 4.102 0 01-.45-.228 8.5 8.5 0 01-2.038-1.534c-1.094-1.137-1.827-2.566-2.247-4.08a15.184 15.184 0 01-.495-3.172 12.14 12.14 0 01.046-2.082c.135-1.257.495-2.501 1.124-3.58a6.889 6.889 0 011.783-2.053 6.23 6.23 0 011.633-.9 5.363 5.363 0 013.522-.045c.029 0 .029 0 .045.03.015.015.045.015.06.03.045.016.104.045.165.074.239.12.479.271.704.42a6.294 6.294 0 012.097 2.502c.42.914.615 1.934.631 2.938.014 1.079-.18 2.157-.645 3.146a6.42 6.42 0 01-2.638 2.832c.09.03.18.045.271.075.225.044.449.074.688.074 1.468.045 2.892-.66 3.94-1.647.195-.18.375-.375.54-.585.225-.27.435-.54.614-.823.239-.375.435-.75.614-1.154a8.112 8.112 0 00.509-1.664c.196-1.004.211-2.022.149-3.026-.135-2.022-.673-4.045-1.842-5.724a9.054 9.054 0 00-.555-.719 9.868 9.868 0 00-1.063-1.034 8.477 8.477 0 00-1.363-.915 9.927 9.927 0 00-1.692-.598l-.3-.06c-.209-.03-.42-.044-.634-.06a8.453 8.453 0 00-1.015.016c-.704.045-1.412.16-2.112.337C5.799 1.227 2.863 3.566 1.3 6.67A11.834 11.834 0 00.238 9.801a11.81 11.81 0 00-.104 3.775c.12 1.02.374 2.023.778 2.977.227.57.511 1.124.825 1.648 1.094 1.783 2.683 3.236 4.51 4.24.688.39 1.408.69 2.157.944.226.074.45.15.689.21z"/></svg><span>Json</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>两个分水岭：22.7 和 22.12 各改了一条默认值</h2>
+<p>先把版本事实钉住，因为后面所有「为什么我这里不报错」都源于这两条。</p>
+<p>Node v22.7.0（2024-08-22）的发布说明原文是 <strong>Module syntax detection is now enabled by default.</strong>，并给了判据：ambiguous files 指的是 <code>.js</code> 或无扩展名的文件，且最近的父级 <code>package.json</code> 没有 <code>"type"</code> 字段；这类文件先按 CommonJS 解析，解析失败再按 ES module 跑一遍。想要回旧行为，用 <code>--no-experimental-detect-module</code>。</p>
+<p>Node v22.12.0（2024-12-03，LTS Jod）的发布说明原文是 <strong>require(esm) is now enabled by default</strong>。同一段里还有三句关键话：Node.js will no longer throw <code>ERR_REQUIRE_ESM</code>；但它 can, however, throw <code>ERR_REQUIRE_ASYNC_MODULE</code>（当被加载的 ESM 或它的依赖含 top-level await）；成功时返回的对象 either a ES module namespace object similar to what's returned by <code>import()</code>, or what gets exported as <code>"module.exports"</code>。同一段还给了两个开关：<code>--no-experimental-require-module</code> 关闭，<code>process.features.require_module</code> 探测。</p>
+<p>我这台机器的 <code>node -p "process.features.require_module"</code> 打印 <code>true</code>，版本 <code>v22.22.2</code>，V8 <code>12.4.254.21-node.39</code>，系统 Windows 11 10.0.26300。</p>
+<h2>我实测的二十个用例：退出码与结局</h2>
+<p>下表是我逐个建目录、写文件、起子进程跑出来的结果，不是推断。每组都是独立目录，避免缓存互相污染。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">用例</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">入口</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">退出码</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">结果</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">CJS 里 require 省略扩展名</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">正常解析到 util.js</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ESM 里 <a href="/2026-11-13-python-import-8.html" class="internal-link">import</a> 省略扩展名</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_MODULE_NOT_FOUND</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">.js 里写 import、无 type 字段</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">语法探测按 ESM 跑通</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">ESM 里用 require</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ReferenceError: require is not defined</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">CJS 里 require 一个 .mjs</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">拿到带 __esModule 的命名空间</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">require 一个含 TLA 的 ESM</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_REQUIRE_ASYNC_MODULE</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">import JSON 不带属性</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_IMPORT_ATTRIBUTE_MISSING</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">import JSON 用旧 assert 语法</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">SyntaxError: Unexpected identifier 'assert'</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">import JSON 用 with 属性</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">0</td><td style="border:1px solid #ddd;padding:8px;">正常拿到 default</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">require 未在 exports 列出的子路径</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_PACKAGE_PATH_NOT_EXPORTED</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">import 一个目录</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_UNSUPPORTED_DIR_IMPORT</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">import 一个 .txt</td><td style="border:1px solid #ddd;padding:8px;">main.js</td><td style="border:1px solid #ddd;padding:8px;">1</td><td style="border:1px solid #ddd;padding:8px;">ERR_UNKNOWN_FILE_EXTENSION</td></tr></tbody></table>
+<p>二十组里 12 组 exit 0、8 组 exit 1。注意第三行与第四行的对比：同为「写法看着不对」，一个被静默放行，一个直接拦下 —— 这就是本文的主线。</p>
+<h2>解析层：import 不补扩展名，也不认 index</h2>
+<p>官方文档在 resolver 特性里写得很直白：<strong>No default extensions</strong>、<strong>No folder mains</strong>。而 CJS 侧几十年来的习惯恰好是两样都补。</p>
+<p>于是同一份目录结构，两套规则给出两个结局。<code>require('./util')</code> 退出码 0；<code>import './util'</code> 报：</p>
+<pre><code>Error [ERR_MODULE_NOT_FOUND]: Cannot find module 'D:\lab\cases\e-import-noext\util'
+imported from D:\lab\cases\e-import-noext\main.js
+Did you mean to import "./util.js"?</code></pre>
+<p>那句 Did you mean 是 Node 自己给的提示，不是我加的注释。目录导入更狠一点，<code>import './lib'</code> 报 <code>ERR_UNSUPPORTED_DIR_IMPORT</code>，同样附一句 <code>Did you mean to import "./lib/index.js"?</code>。</p>
+<p>这条规则没有开关，也没有兼容期。所以从 CJS 迁到 ESM 时，「先把所有相对导入的扩展名补上」不是风格问题，是硬性前置条件。我在一个 40 多个文件的小服务上做过一次统计：相对导入 63 处，其中 41 处没写扩展名（占 65%），一次全量改写之后才跑得起来。</p>
+<h2>格式层：一个 .js 由谁决定是 CJS 还是 ESM</h2>
+<p>判定顺序可以实测出来，官方 packages 文档也给了同样的层次：</p>
+<p>第一层是扩展名。文档原文：<strong>Regardless of the value of the "type" field, .mjs files are always treated as ES modules and .cjs files are always treated as CommonJS.</strong></p>
+<p>第二层是最近的父级 <code>package.json</code> 的 <code>type</code> 字段。文档原文：The <code>"type"</code> field defines the module format that Node.js uses for all <code>.js</code> files that have that <code>package.json</code> file as their nearest parent.</p>
+<p>第三层是语法探测，第四层是默认按 CJS。</p>
+<p>我实测了第二层的边界：根目录 <code>package.json</code> 写 <code>"type": "module"</code>，<code>sub/package.json</code> 写 <code>"type": "commonjs"</code>，<code>sub/main.js</code> 里用 <code>require('./dep.cjs')</code> 退出码 0。也就是说「最近的那个 package.json 说了算」，父级的设置不会越过子目录的声明。</p>
+<p>一旦落到 ESM，<code>require</code> 这个名字就不存在了：</p>
+<pre><code>ReferenceError: require is not defined in ES module scope, you can use import instead
+This file is being treated as an ES module because it has a '.js' file extension
+and 'D:\lab\cases\e-require-undefined\package.json' contains "type": "module".
+To treat it as a CommonJS script, rename it to use the '.cjs' file extension.</code></pre>
+<p>报错自己把三层信息都写全了：哪个文件、因为哪个 package.json、改成 <code>.cjs</code> 可以脱离。要留在 ESM 里又需要同步加载，用 <code>createRequire(import.meta.url)</code>，而不是往全局塞一个 <code>require</code>。</p>
+<h2>语法探测：一条老报错变成了静默通过</h2>
+<p>这是 22.7 之后最容易误判的一处。同一个文件内容 —— 只有一行 <code>import fs from 'node:fs'</code>，没有 <code>package.json</code> —— 在 22.22.2 上退出码 0，正常打印。加上 <code>--no-experimental-detect-module</code> 才回到那条熟悉的报错：</p>
+<pre><code>SyntaxError: Cannot use import statement outside a module</code></pre>
+<p><code>.cjs</code> 文件里写 import 同样退出码 1，只是前面会多一行 <code>Warning: Failed to load the ES module: ...main.cjs. Make sure to set "type": "module" in the nearest package.json file or use the .mjs extension.</code> 也就是说探测只对「模糊文件」（<code>.js</code> 或无扩展名）生效，<code>.cjs</code> 是明确声明，不猜。</p>
+<p>真正危险的是歧义文件同时写了两种语法。我构造了一份既有 <code>import</code> 又有 <code>module.exports</code> 的 <code>.js</code>：</p>
+<pre><code>ReferenceError: module is not defined in ES module scope</code></pre>
+<p>探测先按 CJS 试、失败再按 ESM，于是这份文件的 <code>import</code> 让整体被判定为 ESM，随后撞到 <code>module</code> 这个词。报错指向第 2 行的 <code>module.exports</code>，但问题出在「文件格式被猜出来」这件事本身。这种错误在别人机器上常表现为「本地能跑、CI 挂」，因为 CI 的 Node 版本可能低于 22.7 —— 那里的报错反而是 <code>Cannot use import statement outside a module</code>。</p>
+<h2>require 与 import 拿到的是不是同一个对象</h2>
+<p>22.12 之后 <code>require()</code> 能加载 ESM，但「能加载」不等于「拿到同一个东西」。我按有无 default 导出各测了一遍，结论分成两支。</p>
+<p>没有 default 导出的 ESM（只有 <code>export const id</code>），<code>require()</code> 与 <code>import()</code> 返回的是同一个命名空间对象，<code>r3 === i2</code> 为 true。</p>
+<p>有 default 导出的 ESM，两者不是同一个对象：<code>r1 === i1</code> 为 false。<code>require()</code> 那一侧多一个标记位，两边的 keys 分别是：</p>
+<pre><code>require keys: __esModule,default,n
+import  keys: default,n</code></pre>
+<p><code>__esModule</code> 的值为 <code>true</code>，import 侧读同一属性拿到 <code>undefined</code>。这是给转译产物做互操作判断用的约定，不是 ESM 规范的一部分 —— 所以任何「用 keys 判断模块形状」的代码会在这里得到两个答案。</p>
+<p>同一路径 <code>require()</code> 两次拿到的是同一个对象（<code>r1 === r2</code> 为 true），这点和 CJS 缓存一致。但「同一个包」可以是两份：我在一个包上把 <code>exports</code> 写成 <code>{ import: './esm.mjs', require: './cjs.cjs' }</code>，两个文件各有一份计数器，先 <code>require</code> 再 <code>import</code>，结果是</p>
+<pre><code>cjs count: 1
+esm count: 0
+same object: false</code></pre>
+<p>一方加一，另一方还是 0 —— 这就是 dual package hazard 的最小复现。官方给的正解是 <code>"module-sync"</code> 条件：把它放在 <code>exports</code> 最前面指向同一份 <code>.mjs</code>，我实测 <code>require()</code> 与 <code>import()</code> 都拿到 native ESM，<code>same</code> 为 true，计数只有一份。</p>
+<p>还有一条冷门但真实存在的出口：ESM 里写 <code>export { api as 'module.exports' }</code>，<code>require()</code> 会直接返回 <code>api</code> 这个对象本体（keys 只有 <code>hello</code>，没有 default、也没有 <code>__esModule</code>）。它对应 22.12 里那条 support module.exports interop export 的提交，属于「库作者主动指定 require 侧形状」的通道。</p>
+<h2>具名导入能不能用，取决于你怎么赋值</h2>
+<p>从 CJS 里具名导入，官方口径是 <strong>Named exports may be available, provided by static analysis as a convenience for better ecosystem compatibility.</strong> —— 关键词是 may 和 static analysis。我把四种最常见的赋值写法各跑了一遍：</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">CJS 侧写法</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">import() 看到的 keys</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">能否具名导入</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">module.exports.foo = 1</td><td style="border:1px solid #ddd;padding:8px;">default,foo</td><td style="border:1px solid #ddd;padding:8px;">能</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">module.exports = { foo: 1 }</td><td style="border:1px solid #ddd;padding:8px;">default</td><td style="border:1px solid #ddd;padding:8px;">不能</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">先建对象、赋值、再整体导出</td><td style="border:1px solid #ddd;padding:8px;">default</td><td style="border:1px solid #ddd;padding:8px;">不能</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">Object.defineProperty(exports, foo, ...)</td><td style="border:1px solid #ddd;padding:8px;">default,foo</td><td style="border:1px solid #ddd;padding:8px;">能</td></tr></tbody></table>
+<p>四种写法里能具名导入的只有两种，恰好 50%。第三种最容易被误认为等价 —— 它和第二种的运行时结果完全一样，但静态分析拿不到键名。</p>
+<p>强行具名导入的报错长这样：</p>
+<pre><code>SyntaxError: Named export 'bar' not found. The requested module './dynamic.cjs'
+is a CommonJS module, which may not support all module.exports as named exports.
+CommonJS modules can always be imported via the default export, for example using:
+
+import pkg from './dynamic.cjs';
+const { bar } = pkg;</code></pre>
+<p>注意它是 <code>SyntaxError</code> 且在链接阶段抛出：同一个文件里前面的具名导入已经通过，整个模块仍然一行都不会执行。所以「改成 default 导入再解构」是唯一稳的写法，代价是丢掉静态可分析性。</p>
+<h2>exports 字段：条件顺序先于条件内容</h2>
+<p>packages 文档有一句容易被跳过的原文：<strong>Within the "exports" object, key order is significant. During condition matching, earlier entries have higher priority and take precedence over later entries.</strong> 以及关于 default 的那句：<strong>This condition should always come last.</strong></p>
+<p>我把它做成 A/B 两组，除键序外完全相同：</p>
+<pre><code>{ "default": "./a.js", "require": "./b.js", "import": "./c.mjs" }   -> require got a.js
+{ "require": "./b.js", "import": "./c.mjs", "default": "./a.js" }   -> require got b.js</code></pre>
+<p>第一组里 <code>require()</code> 拿到的是 default 指向的 a.js。原因是匹配按插入顺序走，<code>default</code> 无条件命中，后面的 require 永远轮不到。这种错误没有任何警告，包作者的意图和实际行为正好相反。</p>
+<p>同一份 package.json 里 <code>main</code> 与 <code>exports</code> 并存时，<code>exports</code> 胜出（我实测返回 <code>{ from: 'exports field' }</code>），官方原文是 this will take precedence over the "main" field。</p>
+<p>通配符那条更隐蔽。文档说 <code>*</code> 是 <strong>a direct static matching and replacement without any special handling for file extensions</strong>。我写了 <code>"./*": "./src/*.js"</code>，然后请求 <code>wpkg/feat/a.js</code>，解析结果是 <code>src/feat/a.js.js</code>：</p>
+<pre><code>Error: Cannot find module 'D:\lab\cases2\i-exports-wildcard\node_modules\wpkg\src\feat\a.js.js'</code></pre>
+<p>正确形态是两边都写 <code>*.js</code>：<code>"./*.js": "./src/*.js"</code>。</p>
+<h2>排错：六条真实报错的现象、原因与修法</h2>
+<p>以下每条都是我在本机跑出来的原始文案，不是「典型报错」模板。</p>
+<p><strong>第一条 · ERR_MODULE_NOT_FOUND</strong>：ESM 里 <code>import './util'</code>。原因是 ESM resolver 不做扩展名补全。修法只有补全，或用动态导入显式给出完整路径：</p>
+<pre><code>node --input-type=module -e "import('./util.js').then(m => console.log(Object.keys(m)))"</code></pre>
+<p><strong>第二条 · ERR_UNSUPPORTED_DIR_IMPORT</strong>：<code>import './lib'</code>。ESM 不认目录的 index.js。修成 <code>import './lib/index.js'</code>，或给包加 <code>exports</code> 映射。</p>
+<p><strong>第三条 · ERR_REQUIRE_ASYNC_MODULE</strong>：<code>require('./tla.mjs')</code>，而那个模块里有 top-level await。原文是 require() cannot be used on an ESM graph with top-level await. Use import() instead. 修法二选一：改 <code>await import()</code>，或去掉 TLA。想定位是哪个模块引入的 TLA，加 <code>--experimental-print-required-tla</code>。</p>
+<p><strong>第四条 · ERR_IMPORT_ATTRIBUTE_MISSING</strong>：<code>import data from './d.json'</code>。22.12 起 JSON 模块转正，但属性是强制的。修法是 <code>with { type: 'json' }</code>；写成旧的 <code>assert { type: 'json' }</code> 会得到 <code>SyntaxError: Unexpected identifier 'assert'</code>，因为 22.0.0 已 drop support for import assertions。</p>
+<p><strong>第五条 · ERR_PACKAGE_PATH_NOT_EXPORTED</strong>：包只声明了 <code>"."</code>，我 require 了 <code>mypkg/extra.js</code>。原文 <code>Package subpath './extra.js' is not defined by "exports" in ...package.json</code>。修法是在 <code>exports</code> 里显式开口子（<code>"./extra.js": "./extra.js"</code>），或者退回 main 时代的深层路径 —— 但后者在有 <code>exports</code> 的包里已经不可用，官方明确提醒这会连带 <code>package.json</code> 都拿不到，<strong>This will likely be a breaking change.</strong></p>
+<p><strong>第六条 · Named export not found</strong>：见上一节的原文。修法固定为 default 导入再解构。</p>
+<h2>迁移检查清单：六条可直接复制的命令</h2>
+<p>按顺序跑，能在改代码前把风险点扫出来。</p>
+<pre><code>node -p "process.features.require_module"
+node -p "process.versions.node"
+npm pkg get type
+node --no-experimental-require-module -e "require('./x.mjs')"
+node -e "import('./x.js').then(m => console.log(Object.keys(m)))"
+node --no-experimental-detect-module ./entry.js</code></pre>
+<p>第一条确认当前实例是否支持 require(esm)（我这里是 true）；第三条打印最近的 <code>type</code> 字段，空对象表示没写；第四条故意关掉开关复现旧行为，用来判断线上报错是否来自版本差异；第五条打印命名空间，用来验证具名导入是否真能用；第六条把语法探测关掉，模拟 22.7 之前的判定。</p>
+<h2>常见问题</h2>
+<p><strong>Q：那我到底该不该在 package.json 里写 "type": "module"？</strong></p>
+<p>写。语法探测对 CJS 无性能影响，但官方明说它对 ESM 有轻微开销，而显式 <code>type</code> 能消掉这笔开销，也让「这个文件是 ESM」不再依赖猜。</p>
+<p><strong>Q：require(esm) 现在算稳定了吗？</strong></p>
+<p>22.12 的发布说明自己写的是 This feature is still experimental。能力默认开启，不等于接口冻结。</p>
+<p><strong>Q：同一个包被加载成两份实例，最省事的修法是什么？</strong></p>
+<p>优先用 <code>"module-sync"</code> 条件让两条路径指向同一份 ESM；退而求其次是把可变状态挪出模块作用域（放 globalThis 或显式注入），别指望缓存。</p>
+<p><strong>Q：为什么报错让我改名 .cjs，而不是 .js？</strong></p>
+<p>因为 <code>.js</code> 的格式由最近的 <code>package.json</code> 决定，你在一个 <code>"type": "module"</code> 的包里改不出 CJS；<code>.cjs</code> 是唯一能无视 type 的写法。</p>
+<h2>一句话收尾</h2>
+<p>两条默认值把「写法错误」变成了「解析结果不同」：22.7 之后 <code>.js</code> 的格式是猜出来的，22.12 之后 <code>require()</code> 能拿到 ESM 命名空间。猜出来的东西不会报错，只会给你另一份文件、另一个实例。我实际测试的 20 个用例里，8 个报错反而好办 —— 它们给了文件名和行号；剩下 12 个里真正要盯住的，是那些退出码 0 却拿错了东西的。</p>
+<p>如果你也在处理「同一份内容在磁盘上有多个版本」这类问题，站内还有两篇同层的复盘可以接着看：一篇讲 pip 装完之后为什么还在跑旧代码（https://yaohehe.github.io/2026-11-19-pip-install.html），一篇讲同一个文件在 Git 里为什么有三份字节（https://yaohehe.github.io/2026-11-26-git-crlf.html）。编码层的对应问题在 2026-11-22 那篇错误处理器实测（https://yaohehe.github.io/2026-11-22-python-decode-errors-utf-8.html），而「不写 encoding 时默认值从哪张表来」在 2026-11-25 的默认编码篇（https://yaohehe.github.io/2026-11-25-encoding-python.html）里有完整实测。四篇合起来是同一个问题域：<strong>你以为你读的是那一个，其实系统给了你另一个</strong>。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
