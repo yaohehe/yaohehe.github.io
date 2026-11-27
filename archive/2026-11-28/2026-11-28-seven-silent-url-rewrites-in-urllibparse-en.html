@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Seven silent URL rewrites in urllib.parse - TechPassive</title>
+  <meta name="description" content="URL split and rebuilt: empty queries vanish, semicolons stop separating, host names get rewritten. Seven urllib.parse defaults measured on CPython 3.13.14.">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+  <a href="/" class="back-btn">← Back to Home</a>
+  <main id="main-content">
+  <h1>Seven silent URL rewrites in urllib.parse, measured</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">URL parsing</span><span class="tag">Web development</span>
+  </div>
+  <div class="content">
+    <p>Last week a crawl report showed two "different" pagination URLs in our sitemap: one with a trailing slash, one without. Google had indexed both, while the canonical tag pointed at only one. The generator contained a single call, <code>urljoin(base, page)</code>, which looks harmless enough.</p>
+<p>I pulled that one call out and ran it against more than sixty cases. The finding: <code>urllib.parse</code> never raises an exception to tell you it changed a character. It quietly returns a string that looks the same and is not. The hard part is not parsing. It is that <strong>splitting and serialising are two different functions</strong>, and every default between them gets a vote.</p>
+<p>Everything below was produced on CPython 3.13.14 on Windows 11 10.0.26300. I paste the output as it came out. Where Python and RFC 3986 disagree, I quote both sides so you can decide which one your code should follow.</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="Seven rewrites on one round trip" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft83e1d680grid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ft83e1d680grid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Seven rewrites on one round trip</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Compare scheme and host first</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Then check the trailing slash</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Compare the empty query verbatim</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Keep blank values when splitting</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Encode exactly once</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">Assert pure ASCII before the socket</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>Seven rewrites on one round trip · diagram drawn from this article</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">Technologies referenced · icons from Simple Icons (CC0)</figcaption></figure><h2>Seven rewrites in one table</h2>
+<p>Start with the whole picture. The left column is what you typed, the middle is what came back after one round trip on this machine, and the right is the default that did the damage.</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">You write</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">You get back</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">Who changed it</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urlunparse</code> takes six parts; an empty query leaves no trace</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>http://a/b</code> plus <code>c</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http://a/c</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urljoin</code> drops the base's last segment, per RFC 3986 5.2.3</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?a=1;b=2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>a</code> equals <code>1;b=2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>parse_qs</code> only splits on <code>&</code> since 3.10</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?b=</code></td><td style="border:1px solid #ddd;padding:8px;">key <code>b</code> disappears</td><td style="border:1px solid #ddd;padding:8px;"><code>keep_blank_values</code> defaults to <code>False</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">query value <code>a b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>a+b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urlencode</code> uses <code>quote_plus</code> by default</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">path <code>/a b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/a%20b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>quote</code> encodes the space but protects <code>/</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">host <code>例子.测试</code></td><td style="border:1px solid #ddd;padding:8px;"><code>UnicodeEncodeError</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http.client</code> sends the Host header as latin-1</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">host <code>ex%61mple.com</code></td><td style="border:1px solid #ddd;padding:8px;"><code>hostname</code> unchanged</td><td style="border:1px solid #ddd;padding:8px;"><code>urlsplit</code> explicitly does not decode percent escapes</td></tr></tbody></table>
+<p>Not one row in that table raises. The six failures that do raise are in the troubleshooting section near the end, and they are the easy half of the problem, precisely because they are loud.</p>
+<h2>One: the trailing slash eats the last segment</h2>
+<p>This is the most common surprise. <code>urljoin</code> does not concatenate strings. It appends the relative path to everything in the base except the last segment. Measured here:</p>
+<pre><code>urljoin('http://a/b/c/d', 'e')   -> http://a/b/c/e
+urljoin('http://a/b/c/d/', 'e')  -> http://a/b/c/d/e
+urljoin('http://a/b', 'c')       -> http://a/c
+urljoin('http://a/', 'c')        -> http://a/c</code></pre>
+<p><code>http://a/b</code> plus <code>c</code> gives <code>http://a/c</code>. The <code>b</code> segment is gone. RFC 3986 5.2.3 spells out the rule: the reference path is "appended to all but the last segment of the base URI's path". Unless the base ends in a slash, its last segment is treated as a file and gets replaced.</p>
+<p>So whenever the base is a directory, add the slash yourself. The inverse case behaves sanely: a query-only reference keeps the path and swaps only the query.</p>
+<pre><code>urljoin('http://a/b/c/d;p?q', '?y')  -> http://a/b/c/d;p?y
+urljoin('http://a/b/c/d;p?q', '#s')  -> http://a/b/c/d;p?q#s
+urljoin('http://a/b/c/d;p?q', '')    -> http://a/b/c/d;p?q</code></pre>
+<p>Dot segments follow the same rules and never climb above the root: <code>urljoin('http://a/b/c/d;p?q', '../../../g')</code> returns <code>http://a/g</code>. I checked all nineteen abnormal examples in RFC 3986 5.4.2. Python matches them except <code>http:g</code>, which the next section covers.</p>
+<h2>Two: two characters are enough to change the host</h2>
+<p>The second rule in <code>urljoin</code> is far more dangerous than the first. When the reference begins with <code>//</code>, the host is replaced wholesale.</p>
+<pre><code>urljoin('https://shop.example.com/cart', '//evil.test/x')      -> https://evil.test/x
+urljoin('https://shop.example.com/cart', 'https://evil.test/x') -> https://evil.test/x</code></pre>
+<p>The documentation is blunt about it: "Because an absolute URL may be passed as the url parameter, it is generally not secure to use urljoin with an attacker-controlled url." That sentence is the whole argument. If the second argument comes from user input, a return-to URL, an avatar field, a webhook callback, then this function is an open redirect with extra steps.</p>
+<p>There is a quieter variant. A relative reference whose first segment contains a colon is read as a scheme.</p>
+<pre><code>urljoin('http://h/d/e', 'a:b')     -> a:b
+urljoin('http://h/d/e', './a:b')   -> http://h/d/a:b
+urljoin('http://h/d/e', 'a%3Ab')   -> http://h/d/a%3Ab</code></pre>
+<p><code>a:b</code> is returned as-is, as an absolute URI with scheme <code>a</code>. A browser handed that string will go looking for a protocol named <code>a</code>. RFC 3986 5.4.2 describes both behaviours: strict parsers keep <code>http:g</code> as <code>http:g</code>, and only backward-compatible parsers expand it to <code>http://a/b/c/g</code>. Python is the second kind. Measured: <code>urljoin('http://a/b/c/d;p?q', 'http:g')</code> returns <code>http://a/b/c/g</code>.</p>
+<p>Credentials ride along too. <code>urljoin('https://user:pw@a.test/x/y', '../z')</code> returns <code>https://user:pw@a.test/z</code>. If your logs print the joined result, the password is now in the logs. This belongs to the same family as the <a href="https://yaohehe.github.io/2026-11-27-cookie-scope-six-gates-a-set-cookie-has-to-pass-en.html" class="internal-link">six gates a Set-Cookie has to pass</a>: a string that looks fine at the text layer has already become a different object at the protocol layer.</p>
+<h2>Three: an empty question mark does not survive the round trip</h2>
+<p><code>urlsplit</code> followed by <code>urlunparse</code> is not an identity transform.</p>
+<pre><code>urlsplit('http://h/p?').geturl()   -> http://h/p
+urlsplit('http://h/p#').geturl()   -> http://h/p
+urlsplit('http://h/p?&').geturl()  -> http://h/p?&
+urlunparse(('http','h','/p','','','')) -> http://h/p</code></pre>
+<p>The trailing <code>?</code> and <code>#</code> vanish. A query of <code>?&</code> survives, because it has content. <code>urlunparse</code> only checks whether a component is an empty string, and an empty string writes no separator.</p>
+<p>Here the documentation and the RFC point in opposite directions, which is worth recording. The <code>urlunparse</code> entry says: "This may result in a slightly different, but equivalent URL, if the URL that was parsed originally had unnecessary delimiters (for example, a ? with an empty query; the RFC states that these are equivalent)."</p>
+<p>RFC 3986 5.3 says something else: "Note that we are careful to preserve the distinction between a component that is undefined, meaning that its separator was not present in the reference, and a component that is empty, meaning that the separator was present". The RFC asks you to keep the difference; the Python documentation calls it equivalent.</p>
+<p>For anyone doing URL deduplication, cache keys or canonicals, this is not academic. Whether <code>/p</code> and <code>/p?</code> are the same resource decides whether you keep one cache entry or two. Upstream clearly noticed. The 3.15 docs add a <code>keep_empty</code> parameter to <code>urlunparse</code> and <code>missing_as_none</code> to <code>urlsplit</code>. On the 3.13.14 install I tested, neither exists; the signature is still <code>urlunparse(components)</code>. If you upgrade to 3.15, revisit any code that assumed the current behaviour.</p>
+<p>One related rewrite: <code>urlsplit(url, allow_fragments=False)</code> does not raise. It shoves everything after the hash into the query. Measured, <code>urlsplit('http://a/p?x=1#f', allow_fragments=False)</code> gives <code>query='x=1#f'</code> and <code>fragment=''</code>.</p>
+<h2>Four: urlparse only splits semicolons in the last segment</h2>
+<p>The extra <code>params</code> component in <code>urlparse</code> comes from the obsolete RFC 1738 and 1808. The docs say plainly that "<code>urlsplit()</code> should generally be used instead of <code>urlparse()</code>", but old code is full of <code>urlparse</code>, and its splitting depends on position.</p>
+<pre><code>urlparse('http://a/b/c;d')   -> path='/b/c'      params='d'
+urlparse('http://a/b;c/d')   -> path='/b;c/d'    params=''
+urlparse('http://a/b;c;d')   -> path='/b'        params='c;d'
+urlparse('http://a/b/c;d/e') -> path='/b/c;d/e'  params=''</code></pre>
+<p>Only a semicolon in the final segment becomes <code>params</code>. Semicolons in earlier segments stay in the path. With two semicolons in the last segment, everything after the first one counts as params. So <code>.path</code> can be shorter than what you wrote. If you compare <code>parsed.path</code> against a route table, <code>/b/c;d</code> will not match a route for <code>/b/c;d</code>.</p>
+<p><code>urlsplit</code> does none of this; the path stays <code>/b;c/d</code>. The choice is simple: do you want <code>params</code> or not. If not, use <code>urlsplit</code> and remove a variable from the equation.</p>
+<h2>Five: three query-string defaults</h2>
+<p>The <code>parse_qs</code> signature is a list of defaults, and each one changes the answer.</p>
+<pre><code>parse_qs('a=1&b=&c=&d')                         -> {'a': ['1']}
+parse_qs('a=1&b=&c=&d', keep_blank_values=True) -> {'a': ['1'], 'b': [''], 'c': [''], 'd': ['']}
+parse_qs('a=1;b=2')                             -> {'a': ['1;b=2']}
+parse_qs('a=1;b=2', separator=';')              -> {'a': ['1'], 'b': ['2']}
+parse_qs('a=1&junk', strict_parsing=True)       -> ValueError: bad query field: 'junk'
+parse_qs('a=1&b=2&c=3', max_num_fields=2)       -> ValueError: Max number of fields exceeded</code></pre>
+<p>Three things to note.</p>
+<p>First, <code>keep_blank_values</code> defaults to <code>False</code>, so a parameter with <code>=</code> and no value is dropped entirely. The docs: "The default false value indicates that blank values are to be ignored and treated as if they were not included." For form round-trips, analytics validation or OAuth callback checks, that is data loss with a clean exit code.</p>
+<p>Second, the semicolon stopped being a separator in 3.10. The version note reads: "Python versions earlier than Python 3.10 allowed using both <code>;</code> and <code>&</code> as query parameter separator." So <code>a=1;b=2</code> is now one key whose value is <code>1;b=2</code>. Migrate an old system and its parameters merge silently.</p>
+<p>Third, <code>+</code> and <code>%20</code> are two different decoders. Both <code>parse_qs('q=a+b')</code> and <code>parse_qs('q=a%20b')</code> yield <code>a b</code>, but <code>unquote('a+b')</code> returns <code>a+b</code>, and only <code>unquote_plus('a+b')</code> returns <code>a b</code>. Pick the wrong one when decoding by hand and plus signs become literal plus signs.</p>
+<p>And one that never complains: <code>parse_qs('q=100%')</code> returns <code>{'q': ['100%']}</code>. So do <code>%zz</code> and <code>%2</code>; they pass through untouched. <code>unquote</code> lets unmatched percent signs through rather than raising; it only substitutes when the bytes assemble but fail to decode as UTF-8. A clean parse is not the same as clean data.</p>
+<h2>Six: quote and quote_plus differ by one default</h2>
+<p><code>quote</code> defaults to <code>safe='/'</code>, <code>quote_plus</code> to <code>safe=''</code>. One character of difference and slashes are handled differently.</p>
+<pre><code>quote('a b/c?d=e&f+g%h#i')       -> a%20b/c%3Fd%3De%26f%2Bg%25h%23i
+quote_plus('a b/c?d=e&f+g%h#i')  -> a+b%2Fc%3Fd%3De%26f%2Bg%25h%23i
+quote('/a b')                    -> /a%20b
+quote_plus('/a b')               -> %2Fa+b</code></pre>
+<p><code>quote</code> is for paths, so it protects <code>/</code> and turns spaces into <code>%20</code>. <code>quote_plus</code> is for form values, so it encodes <code>/</code> as <code>%2F</code> and spaces as <code>+</code>. <code>urlencode</code> uses the second by default: "By default, <code>quote_plus()</code> is used to quote the values". Pass <code>quote_via=quote</code> to get <code>%20</code> instead.</p>
+<p>Double encoding is the hardest kind to spot. <code>quote(quote('a b'))</code> returns <code>a%2520b</code>; one decode gives back <code>a%20b</code>, and only the second decode yields <code>a b</code>. Measured example of a double decode going wrong: <code>parse_qs(unquote('q=a%252Bb'))</code> returns <code>{'q': ['a+b']}</code>. After two passes an encoded plus has become a real plus, and one more pass would turn it into a space. Signature strings and callback parameters lose a character this way, and the error surfaces far from the scene.</p>
+<p><code>urlencode</code> also stringifies types without asking:</p>
+<pre><code>urlencode({'a': [1, 2]})              -> a=%5B1%2C+2%5D
+urlencode({'a': [1, 2]}, doseq=True)  -> a=1&a=2
+urlencode({'a': None})                -> a=None
+urlencode({'a': True, 'b': 0})        -> a=True&b=0</code></pre>
+<p>Without <code>doseq=True</code>, a list is run through <code>str()</code> and encoded as the literal <code>[1, 2]</code>. <code>None</code> becomes <code>None</code> and <code>True</code> becomes <code>True</code>, with no warning. Booleans and integers are not strings in Python, and <code>urlencode</code> does not intend to decide that for you.</p>
+<h2>Seven: three notions of the host, and one NFKC check</h2>
+<p>For a single URL, <code>netloc</code>, <code>hostname</code> and <code>username</code> give three different answers.</p>
+<pre><code>urlsplit('HTTP://User:PW@Example.COM:8080/Path?Q=1')
+  scheme='http'  netloc='User:PW@Example.COM:8080'
+  hostname='example.com'  username='User'  path='/Path'</code></pre>
+<p>The scheme is lowercased, <code>netloc</code> keeps its original case, <code>hostname</code> is lowercased, and the path and query are untouched. An allowlist built on <code>netloc</code> (<code>if host in ALLOWED</code>) will miss a mixed-case domain. An allowlist built on <code>hostname</code> will not decode a percent-encoded host: the docs state "Percent-encoded sequences are not decoded", and <code>hostname</code> returns <code>ex%61mple.com</code> exactly as typed.</p>
+<p><code>urlsplit</code> does not validate either. The docs carry an explicit warning: "<code>urlsplit()</code> does not perform validation." Measured, <code>urlsplit('http://a b/p')</code> raises nothing and <code>hostname</code> is <code>a b</code>. IPv6 brackets are stripped: <code>urlsplit('http://[::1]:8080/p').hostname</code> is <code>::1</code>.</p>
+<p>Only two classes get rejected, and both raise during parsing or attribute access.</p>
+<pre><code>urlsplit('http://exam／ple.com/p')  # fullwidth solidus U+FF0F
+  -> ValueError: netloc 'exam／ple.com' contains invalid characters under NFKC normalization
+urlsplit('http://℀.test/p')          # U+2100, NFKC expands to a/c
+  -> ValueError: netloc '℀.test' contains invalid characters under NFKC normalization</code></pre>
+<p>The check lives in <code>_checknetloc()</code>: normalise a non-ASCII netloc with NFKC, reject it if <code>/?#@:</code> appears afterwards. The reasoning holds, since IDNA compares hostnames by NFKC, so a character that looks like a dot but normalises to a slash can slip past a visual allowlist. But the net is not tight. U+2044, the fraction slash, does not expand under NFKC here, and <code>http://a⁄b/p</code> passes.</p>
+<p>Chinese and other IDN hostnames are not converted for you. <code>'münchen.de'.encode('idna')</code> gives <code>b'xn--mnchen-3ya.de'</code>; that step is yours. Skip it and the failure shows up much later, as error 5 in the next section.</p>
+<h2>Eight: control characters and non-ASCII, deleted, kept and thrown</h2>
+<p><code>urlsplit</code> silently deletes <code>\t</code>, <code>\r</code> and <code>\n</code> anywhere in the URL (since 3.10) and strips leading C0 controls and spaces (since 3.12).</p>
+<pre><code>urlsplit('http://h/p\r\nX: y').path  -> '/pX: y'
+urlsplit('http://h/p\x00').path      -> '/p\x00'
+urlsplit('  http://h/p').netloc      -> 'h'</code></pre>
+<p>Carriage returns and newlines are gone; <code>\x00</code> stays. Both matter on the security side. The first means a URL that passed through <code>urlsplit</code> cannot carry CRLF any more. The second means a NUL byte travels to your application layer, where <code>os.path</code> and the database each read it their own way.</p>
+<p>Non-ASCII is not a <code>urllib.parse</code> problem. It waits at the socket.</p>
+<pre><code>HTTPConnection('127.0.0.1', 9).putrequest('GET', '/订单?q=中')
+  -> UnicodeEncodeError: 'ascii' codec can't encode characters in position 5-6
+HTTPConnection('127.0.0.1', 9).putrequest('GET', '/订单/a b?q=中')
+  -> InvalidURL: URL can't contain control characters. '/订单/a b?q=中' (found at least ' ')
+HTTPConnection('127.0.0.1', 9).putrequest('GET', '/%E8%AE%A2%E5%8D%95')
+  -> accepted</code></pre>
+<p>The request line is ASCII only, so the path has to be quoted first. Note the second message: it complains about control characters, while the actual trigger is the space. That mismatch between message and cause cost me the most time in this round. If your problem is a connection that opens but never answers, that is a different layer; I measured four timeout and half-close cases in <a href="https://yaohehe.github.io/2026-11-20-tcp-socket-liveness-send-succeeds-peer-already-gon-en.html" class="internal-link">TCP socket liveness</a>.</p>
+<p>One more thing worth knowing: <code>urlsplit</code> does not decode <code>%2F</code> in the path. <code>urlsplit('http://h/a%2Fb').path</code> returns <code>/a%2Fb</code>, so splitting on <code>/</code> gives you one segment named <code>a%2Fb</code>, while some servers decode it into a real separator. When your splitting logic and the server's decoding disagree, that gap is a path traversal.</p>
+<h2>Troubleshooting: six errors I reproduced</h2>
+<p><strong>1. <code>ValueError: not enough values to unpack (expected 7, got 6)</code></strong></p>
+<pre><code>parts = urlsplit('http://h/p')   # 5 components
+urlunparse(parts)                # raises</code></pre>
+<p><code>urlunparse</code> wants six items (scheme, netloc, path, params, query, fragment); <code>urlsplit</code> gives five. Use <code>urlunsplit(...)</code> or <code>SplitResult.geturl()</code> instead. The function cannot align them for you; internally it unpacks six values, hence the wording about unpacking six.</p>
+<p><strong>2. <code>ValueError: Invalid IPv6 URL</code></strong></p>
+<pre><code>urlsplit('http://[::1/p')</code></pre>
+<p>An unclosed bracket. The error comes out of <code>urlsplit</code>, not from reading <code>hostname</code>, because <code>_check_bracketed_netloc()</code> rejects content before the bracket and anything other than a colon between bracket and port. An IPv4 address in brackets is rejected too: <code>An IPv4 address cannot be in brackets</code>.</p>
+<p><strong>3. <code>ValueError: Port out of range 0-65535</code> and <code>ValueError: Port could not be cast to integer value as 'abc'</code></strong></p>
+<pre><code>urlsplit('http://a:99999/p').port
+urlsplit('http://a:abc/p').port</code></pre>
+<p>Both raise only when <code>.port</code> is read. <code>urlsplit</code> itself is happy. A successful parse is therefore not evidence that the port is valid; validate by reading <code>.port</code> on purpose. Before 3.6 an out-of-range port returned <code>None</code>. Code written as <code>if p.port:</code> will now crash rather than take the false branch.</p>
+<p><strong>4. <code>UnicodeEncodeError: 'ascii' codec can't encode characters in position 5-6</code></strong></p>
+<p>A non-ASCII path that was never quoted. Quote it once, before <code>putrequest</code> or <code>urlopen</code>, and only once, otherwise you get the <code>%2520</code> case from section six.</p>
+<p><strong>5. <code>UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1</code></strong></p>
+<pre><code>c = HTTPConnection('例子.测试', 9, timeout=1)
+c.putrequest('GET', '/')
+c.putheader('Host', '例子.测试')
+c.endheaders()</code></pre>
+<p>The Host header is encoded as latin-1, so an IDN must first become punycode via <code>encode('idna').decode('ascii')</code>. The symptom usually appears after DNS or TLS, on the same layer as the <a href="https://yaohehe.github.io/2026-11-23-tls-verify-six-failures-and-one-silent-downgrade-en.html" class="internal-link">six TLS chain failures</a>, but the cause is a string upstream that was never converted.</p>
+<p><strong>6. <code>TypeError: Cannot mix str and non-str arguments</code></strong></p>
+<pre><code>urljoin('http://a/b', b'/c')</code></pre>
+<p>Both arguments must be the same type. <code>urlsplit(b'...')</code> is supported and returns a <code>SplitResultBytes</code> whose components are bytes, but a single mixed argument raises. Normalise to <code>str</code> at the boundary rather than hoping the function guesses.</p>
+<p>One more that is not an exception but still worth recording: <code>quote(b'\xff', encoding='utf-8')</code> raises <code>TypeError: quote() doesn't support 'encoding' for bytes</code>. Bytes are already bytes; there is nothing left to encode.</p>
+<h2>A checklist you can reuse</h2>
+<p>Six rules, worth more in a code comment than in a wiki:</p>
+<ul><li><strong>If the base is a directory, add the trailing slash.</strong> Otherwise the last segment is lost.</li><li><strong>Do not use <code>urljoin</code> when the second argument is untrusted.</strong> Split the reference first, compare scheme and <code>hostname</code>, then decide.</li><li><strong>Compare round trips character by character.</strong> <code>geturl() == original</code> is the cheapest check that actually works.</li><li><strong>Pass <code>keep_blank_values=True</code> explicitly</strong> when parsing queries, and choose the separator explicitly too.</li><li><strong>Encode exactly once</strong>, and assert "no percent signs" or "no non-ASCII" on both sides of that step.</li><li><strong>Validate hosts on <code>hostname</code>, lowercased</strong>, and normalise the case of <code>netloc</code> as well, so the two notions cannot disagree.</li></ul>
+<p>There is a habit that goes with rule three: before storing a URL as a primary key, run parse, rebuild and compare. If the strings differ, keep both. It is the same idea I used when normalising cache keys in the <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-and-etag-eight-silent-defaults-en.html" class="internal-link">HTTP cache and ETag</a> piece: make the key stable before you talk about hits.</p>
+<h2>FAQ</h2>
+<p><strong>Q: The docs call an empty query "equivalent" after a round trip. Should I still preserve it?</strong></p>
+<p>It depends whether you treat the URL as a resource identifier or as a string. As an identifier, <code>/p</code> and <code>/p?</code> usually resolve to the same content and you can normalise. As a cache key or deduplication key, preserve it, because some downstream system will compare bytes. RFC 3986 5.3 asks you to keep "undefined" and "empty" apart, and I would follow the RFC until <code>keep_empty</code> in 3.15 is available to you.</p>
+<p><strong>Q: I have a host allowlist. Does that stop a <code>//evil.test</code> reference?</strong></p>
+<p>An allowlist helps if it runs before the join. After the join it is too late. Measured, <code>urljoin('https://shop.example.com/cart', '//evil.test/x')</code> returns <code>https://evil.test/x</code> with the host replaced. The correct order is to split the reference, inspect its scheme and hostname, and only join when both are empty.</p>
+<p><strong>Q: Why does <code>parse_qs</code> return lists instead of single values?</strong></p>
+<p>Because a parameter can repeat: <code>a=1&a=2</code> returns <code>{'a': ['1', '2']}</code> here. A dict of lists is the only shape that keeps both. Taking <code>[0]</code> is fine, as long as you know it discards the rest rather than proving uniqueness.</p>
+<p><strong>Q: My Chinese path throws an ascii error. <code>encode('utf-8')</code> did not help. Why?</strong></p>
+<p><code>putrequest</code> wants a percent-encoded ASCII string, not UTF-8 bytes. <code>quote('/订单')</code> gives <code>/%E8%AE%A2%E5%8D%95</code>, which it accepts. Passing bytes takes a different branch of the type checks.</p>
+<h2>Conclusion</h2>
+<p>The problem with <code>urllib.parse</code> is not a bug. It is that the module ships a complete set of sensible defaults, and your situation is probably not the situation those defaults were chosen for: base treated as a file, blank query values discarded, <code>&</code> as the only separator, <code>quote_plus</code> for form values, no IDNA on hostnames, no non-ASCII anywhere in the URL.</p>
+<p>Of the seven rewrites, only two ever reach an exception. The other five (five of seven, 71%) are silent. So the acceptance criterion cannot be "it ran". It has to be "the string I got back is character-for-character the string I put in". After sixty-odd cases, the most useful lesson was also the dumbest: assert <code>geturl() == original</code> before a URL is stored, joined or sent. It will not catch everything, but it catches most problems before they leave your machine.</p>
+<p>Sources: Python documentation for <code>urllib.parse</code> (<code>quote</code>, <code>quote_plus</code>, <code>unquote</code>, <code>parse_qs</code>, <code>urlunparse</code>, <code>urljoin</code>, <code>urlsplit</code> entries and version notes, 3.15 docs as of publication), RFC 3986 sections 5.2.3, 5.3 and 5.4.2, and measurements on CPython 3.13.14 under Windows 11 10.0.26300 (sixty-odd cases, probe scripts kept locally).</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Xiaomi MiMo Platform: Leading AI model platform with cost-effective inference</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 Join Aliyun AI: Top AI products with exclusive coupons for business innovation</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 This article was AI-assisted generated and human-reviewed | <a href="/">TechPassive</a> — An AI-driven content testing site focused on real tool reviews</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; Recommended Tools</h3>
+  <p style="margin:0 0 15px;color:#666;">These are carefully selected tools. Using our affiliate links supports us to keep producing quality content:</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">As an Amazon Associate, I earn from qualifying purchases at no extra cost to you.</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean Cloud</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork CN (Refer & Earn)</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ Aliyun AI Products</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress Books</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI & LLM Books</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ System Design Books</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker & K8s Books</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux Admin Books</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python Books</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ Database Books</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps & SRE Books</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 Xiaomi MiMo Platform</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← Back to Home</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>

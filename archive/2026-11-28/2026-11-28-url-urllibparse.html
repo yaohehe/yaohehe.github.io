@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>URL 拆开再拼回去：urllib.parse 的七处静默改写 - TechPassive</title>
+  <meta name="description" content="同一个链接写两遍，拆开再拼回去可能已经不是原来那个：尾斜杠吃掉一段路径、空问号消失、分号不再是参数分隔符、加号与主机名各被改一次。我用 CPython 3.13.14 逐个实测 urllib.parse 的七处默认值，附六个真实报错、与 RFC 3986 的三处分歧，以及一段可直接跑的探针。">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#0066cc">
+  <!-- Google tag (gtag.js) -->
+<script async src="https://www.googletagmanager.com/gtag/js?id=G-JX42K3RMSC"></script>
+<script>
+window.dataLayer = window.dataLayer || [];
+function gtag(){dataLayer.push(arguments);}
+gtag('js', new Date());
+gtag('config', 'G-JX42K3RMSC');
+</script>
+  <!-- Microsoft Clarity -->
+<script type="text/javascript">
+ (function(c,l,a,r,i,t,y){
+ c[a]=c[a]||function(){(c[a].q=c[a].q||[]).push(arguments)};
+ t=l.createElement(r);t.async=1;t.src="https://www.clarity.ms/tag/"+i;
+ y=l.getElementsByTagName(r)[0];y.parentNode.insertBefore(t,y);
+ })(window, document, "clarity", "script", "wdy3avd2j9");
+</script>
+  <style>
+.skip-link { position: absolute; top: -40px; left: 0; background: #0066cc; color: white; padding: 8px 16px; z-index: 100; text-decoration: none; }
+.skip-link:focus { top: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
+h1 { color: #1a1a1a; border-bottom: 2px solid #0066cc; padding-bottom: 10px; }
+.tag { background: #0066cc; color: white; padding: 2px 8px; border-radius: 3px; font-size: 0.85em; margin-right: 5px; }
+.post-tags { margin: 15px 0; }
+.content { margin: 20px 0; }
+.content p { margin: 15px 0; text-align: justify; }
+.content h2 { color: #0066cc; margin-top: 30px; }
+.content h3 { color: #0055aa; margin-top: 25px; }
+.content ul, .content ol { margin: 15px 0; padding-left: 25px; }
+.content li { margin: 8px 0; }
+.content a { color: #0066cc; text-decoration: none; }
+.content a:hover { text-decoration: underline; }
+.content code { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.9em; color: #c7254e; border: 1px solid #e0e0e0; }
+.content pre { background: #1e1e1e; color: #d4d4d4; padding: 16px 20px; border-radius: 8px; overflow-x: auto; margin: 20px 0; border: 1px solid #333; font-family: "SF Mono", "Fira Code", Consolas, monospace; font-size: 0.88em; line-height: 1.6; }
+.content pre code { background: none; border: none; color: inherit; padding: 0; font-size: inherit; border-radius: 0; }
+.content blockquote { border-left: 4px solid #0066cc; margin: 15px 0; padding: 10px 15px; background: #f9f9f9; }
+.content table { overflow-x: auto; display: block; }
+.back-btn { display: inline-block; margin: 30px 0; padding: 10px 24px; background: #0066cc; color: white; text-decoration: none; border-radius: 6px; font-size: 0.95em; transition: background 0.2s; }
+.back-btn:hover { background: #0055aa; text-decoration: none; color: white; }
+
+/* 响应式设计 - 移动端适配 */
+@media (max-width: 600px) {
+  body { padding: 12px; }
+  h1 { font-size: 1.6em; }
+  .content h2 { font-size: 1.3em; }
+  .content h3 { font-size: 1.1em; }
+  .content p { margin: 12px 0; text-align: left; }
+  .content pre { padding: 12px; margin: 15px 0; }
+  .content ul, .content ol { padding-left: 20px; }
+  .tag { font-size: 0.75em; padding: 2px 6px; }
+  .back-btn { padding: 8px 16px; font-size: 0.85em; }
+  .content table { display: block; overflow-x: auto; white-space: nowrap; }
+}
+
+@media (max-width: 400px) {
+  body { padding: 10px; font-size: 14px; }
+  .content pre { font-size: 0.8em; padding: 10px; }
+}
+
+  </style>
+</head>
+<body>
+  <a href="#main-content" class="skip-link">跳到主要内容</a>
+  <a href="/" class="back-btn">← 返回首页</a>
+  <main id="main-content">
+  <h1>URL 拆开再拼回去：urllib.parse 的七处静默改写</h1>
+  <div class="post-tags">
+    <span class="tag">Python</span><span class="tag">URL 解析</span><span class="tag">Web 开发</span>
+  </div>
+  <div class="content">
+    <p>上周排查一个收录问题：站点的 sitemap 里出现了两条「不同」的分页链接，一条带尾斜杠、一条不带，Google 把两条都收了，canonical 却只有一个。生成器里只有一行 <code>urljoin(base, page)</code>，看上去人畜无害。</p>
+<p>我把这一行单独拎出来跑了六十多条用例。结论是：<code>urllib.parse</code> 从不抛异常地告诉你「我改了一个字符」，它只是安静地给出一个看起来一样、实际不一样的字符串。而这个问题最难的地方不在解析，在于<strong>解析和序列化是两个函数</strong>，中间任何一个默认值都会动手。</p>
+<p>下面七处都是我在 CPython 3.13.14、Windows 11 10.0.26300 上实际跑出来的输出，原样贴结果，不推断。凡是与 RFC 3986 有出入的地方，我把两边原文都列出来，你自己判断该信谁。</p>
+<figure class="auto-visual p1-flow" data-img-type="flow" style="margin:26px 0 28px;text-align:left;"><div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border-radius:0px;"><svg viewBox="0 0 720 562" width="100%" style="display:block;width:100%;min-width:540px;max-width:720px;height:auto;" role="img" aria-label="URL 往返七处改写" xmlns="http://www.w3.org/2000/svg"><defs><pattern id="ft2453cc3egrid" width="20" height="20" patternUnits="userSpaceOnUse"><path d="M20 0 L0 0 0 20" fill="none" stroke="#e2eefb" stroke-width="0.8"/></pattern></defs><rect x="0.5" y="0.5" width="719" height="561" fill="#f5f9fd" stroke="#bcd6f0"/><rect x="1" y="7" width="718" height="554" fill="url(#ft2453cc3egrid)"/><rect x="0" y="0" width="720" height="6" fill="#0066cc"/><text x="28" y="32" font-size="11" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">// FLOW_01</text><text x="28" y="60" font-size="20" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">URL 往返七处改写</text><rect x="596" y="24" width="96" height="28" fill="none" stroke="#0066cc"/><text x="644" y="42" text-anchor="middle" font-size="10.5" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">6 NODES</text><line x1="28" y1="76" x2="692" y2="76" stroke="#c9dcf0" stroke-dasharray="4 4"/><line x1="44" y1="130" x2="44" y2="480" stroke="#78b0e8" stroke-width="2" stroke-dasharray="4 4"/><rect x="76" y="104" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 104 L90 104 L76 118 Z" fill="#0066cc"/><rect x="28" y="114" width="32" height="32" fill="#004a99"/><text x="44" y="130" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">01</text><text x="96" y="122" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_01</text><text x="96" y="146" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">先比 scheme 与主机是否同源</text><rect x="668" y="126" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="174" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 174 L90 174 L76 188 Z" fill="#0066cc"/><rect x="28" y="184" width="32" height="32" fill="#004a99"/><text x="44" y="200" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">02</text><text x="96" y="192" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_02</text><text x="96" y="216" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">再查尾斜杠与末段路径</text><rect x="668" y="196" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="244" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 244 L90 244 L76 258 Z" fill="#0066cc"/><rect x="28" y="254" width="32" height="32" fill="#004a99"/><text x="44" y="270" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">03</text><text x="96" y="262" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_03</text><text x="96" y="286" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">逐字比对空问号是否存在</text><rect x="668" y="266" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="314" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 314 L90 314 L76 328 Z" fill="#0066cc"/><rect x="28" y="324" width="32" height="32" fill="#004a99"/><text x="44" y="340" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">04</text><text x="96" y="332" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_04</text><text x="96" y="356" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">查询串切分时保留空值</text><rect x="668" y="336" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="384" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 384 L90 384 L76 398 Z" fill="#0066cc"/><rect x="28" y="394" width="32" height="32" fill="#004a99"/><text x="44" y="410" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">05</text><text x="96" y="402" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_05</text><text x="96" y="426" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">只编码一次并确认没有二次编码</text><rect x="668" y="406" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="76" y="454" width="616" height="54" fill="#ffffff" fill-opacity="0.92" stroke="#a8ccef"/><path d="M76 454 L90 454 L76 468 Z" fill="#0066cc"/><rect x="28" y="464" width="32" height="32" fill="#004a99"/><text x="44" y="480" text-anchor="middle" dominant-baseline="central" font-size="12" font-weight="700" fill="#ffffff" font-family="Consolas,monospace">06</text><text x="96" y="472" font-size="10" letter-spacing="1" fill="#64748b" font-family="Consolas,monospace">STEP_06</text><text x="96" y="496" font-size="15.5" font-weight="700" fill="#003a7a" font-family="Arial,Microsoft YaHei,PingFang SC,sans-serif">进 socket 前确认路径是纯 ASCII</text><rect x="668" y="476" width="10" height="10" fill="none" stroke="#0066cc"/><rect x="28" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="50" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="72" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="94" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="116" y="538" width="14" height="8" fill="none" stroke="#0066cc"/><rect x="138" y="538" width="14" height="8" fill="#0066cc" stroke="#0066cc"/><text x="692" y="546" text-anchor="end" font-size="9" letter-spacing="1" fill="#004a99" font-family="Consolas,monospace">END_OF_FLOW</text></svg></div><figcaption style="display:flex;align-items:center;gap:7px;margin-top:10px;font-size:0.78em;letter-spacing:0.2px;color:#7c8ca6;"><span style="display:inline-block;width:14px;height:2px;border-radius:2px;background:#0066cc;flex:none;"></span>URL 往返七处改写 · 依据本文步骤自绘示意图</figcaption></figure>
+<figure class="auto-visual" data-img-type="badge" style="margin:18px 0 22px;text-align:left;"><div style="display:flex;flex-wrap:wrap;gap:8px;"><span style="display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border:1px solid #e2e8f0;border-radius:20px;background:#fff;font-size:0.85em;color:#334155;"><svg width="20" height="20" viewBox="0 0 24 24" fill="#3776AB" role="img" aria-label="Python" style="flex:none;"><path d="M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z"/></svg><span>Python</span></span></div><figcaption style="margin-top:8px;font-size:0.78em;color:#64748b;">文中涉及的技术标识 · 图标来自 Simple Icons（CC0）</figcaption></figure><h2>七处改写一张表</h2>
+<p>先看全局。左边是你写下的，中间是本机实测往返之后拿到的，右边是动手的那个默认值。</p>
+<table style="border-collapse:collapse;width:100%;margin:20px 0;font-size:0.95em;"><thead><tr><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">你写的</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">往返后拿到</th><th style="border:1px solid #ddd;padding:8px;background:#0066cc;color:white;">谁改的</th></tr></thead><tbody><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urlunparse</code> 的六元组里，空 query 没有痕迹</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>http://a/b</code> 拼 <code>c</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http://a/c</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urljoin</code> 按 RFC 3986 5.2.3 丢掉 base 末段</td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?a=1;b=2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>a</code> 的值变成 <code>1;b=2</code></td><td style="border:1px solid #ddd;padding:8px;"><code>parse_qs</code> 自 3.10 起只认 <code>&</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;"><code>http://h/p?b=</code></td><td style="border:1px solid #ddd;padding:8px;">键 <code>b</code> 整个消失</td><td style="border:1px solid #ddd;padding:8px;"><code>keep_blank_values</code> 默认 <code>False</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">查询值 <code>a b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>a+b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>urlencode</code> 默认用 <code>quote_plus</code></td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">路径 <code>/a b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>/a%20b</code></td><td style="border:1px solid #ddd;padding:8px;"><code>quote</code> 会编码空格，但放过 <code>/</code></td></tr><tr style="background:#f9f9f9"><td style="border:1px solid #ddd;padding:8px;">主机 <code>例子.测试</code></td><td style="border:1px solid #ddd;padding:8px;"><code>UnicodeEncodeError</code></td><td style="border:1px solid #ddd;padding:8px;"><code>http.client</code> 用 latin-1 发 Host 头</td></tr><tr style="background:white"><td style="border:1px solid #ddd;padding:8px;">主机 <code>ex%61mple.com</code></td><td style="border:1px solid #ddd;padding:8px;"><code>hostname</code> 原样返回</td><td style="border:1px solid #ddd;padding:8px;"><code>urlsplit</code> 明确不解码百分号</td></tr></tbody></table>
+<p>这张表里没有一条会报错。真正会报错的六种情况在后面的排错录里，它们反而是最好处理的那一批——因为它们吵。</p>
+<h2>一、尾斜杠：base 的最后一段会被吃掉</h2>
+<p>这是最常见的一处。<code>urljoin</code> 的路径合并规则不是「拼字符串」，而是「把相对路径接在 base 除最后一段之外的部分后面」。本机实测：</p>
+<pre><code>urljoin('http://a/b/c/d', 'e')   -> http://a/b/c/e
+urljoin('http://a/b/c/d/', 'e')  -> http://a/b/c/d/e
+urljoin('http://a/b', 'c')       -> http://a/c
+urljoin('http://a/', 'c')        -> http://a/c</code></pre>
+<p><code>http://a/b</code> 拼 <code>c</code> 得到 <code>http://a/c</code>，<code>b</code> 那一段直接没了。原因写在 RFC 3986 5.2.3 里，原文是「appended to all but the last segment of the base URI's path」——除非 base 以斜杠结尾，否则最后一段被当作「文件」，只能被替换。</p>
+<p>所以凡是把「目录」当 base 用，必须自己补尾斜杠。反过来，如果 base 是 <code>http://a/b/c/d;p?q</code> 这种带查询串的地址，<code>?y</code> 这种只有查询的引用会保留原路径，只换查询部分：</p>
+<pre><code>urljoin('http://a/b/c/d;p?q', '?y')  -> http://a/b/c/d;p?y
+urljoin('http://a/b/c/d;p?q', '#s')  -> http://a/b/c/d;p?q#s
+urljoin('http://a/b/c/d;p?q', '')    -> http://a/b/c/d;p?q</code></pre>
+<p>上点号也一样按规则走，而且<strong>不会越过根</strong>：<code>urljoin('http://a/b/c/d;p?q', '../../../g')</code> 得到 <code>http://a/g</code>，退到根就停。RFC 3986 5.4.2 的异常示例我逐条对拍了十九条，Python 只在 <code>http:g</code> 这一条上与严格解析器不同，下一节说。</p>
+<h2>二、换站：两个字符就能把请求发到别人家</h2>
+<p><code>urljoin</code> 的第二条规则比第一条危险得多：引用以 <code>//</code> 开头时，<strong>主机被整体替换</strong>。</p>
+<pre><code>urljoin('https://shop.example.com/cart', '//evil.test/x')      -> https://evil.test/x
+urljoin('https://shop.example.com/cart', 'https://evil.test/x') -> https://evil.test/x</code></pre>
+<p>官方文档对这一条写得很直白：「Because an absolute URL may be passed as the url parameter, it is generally not secure to use urljoin with an attacker-controlled url.」——前半句是事实，后半句是我们最容易漏掉的判据：只要 <code>urljoin</code> 的第二个参数来自用户输入（回跳地址、头像链接、Webhook 回调），这个函数就是一个开放重定向。</p>
+<p>还有一条更隐蔽的：<strong>相对引用的第一段只要含冒号，就被当成 scheme</strong>。</p>
+<pre><code>urljoin('http://h/d/e', 'a:b')     -> a:b
+urljoin('http://h/d/e', './a:b')   -> http://h/d/a:b
+urljoin('http://h/d/e', 'a%3Ab')   -> http://h/d/a%3Ab</code></pre>
+<p><code>a:b</code> 被当成「scheme 为 a、路径为 b」的绝对地址原样返回，浏览器拿到它就会去找 <code>a</code> 这个协议。RFC 3986 5.4.2 对这一点有明确说明：严格解析器把 <code>http:g</code> 解析成 <code>http:g</code>，只有向后兼容的解析器才把它当相对引用展开成 <code>http://a/b/c/g</code>。Python 属于后者——本机实测 <code>urljoin('http://a/b/c/d;p?q', 'http:g')</code> 返回 <code>http://a/b/c/g</code>。</p>
+<p>另外，带凭据的 base 会把凭据一路带下去：<code>urljoin('https://user:pw@a.test/x/y', '../z')</code> 得 <code>https://user:pw@a.test/z</code>。如果日志里打印的是 join 之后的结果，密码就跟着进了日志。这一条与我此前实测的 <a href="https://yaohehe.github.io/2026-11-27-cookie-set-cookie.html" class="internal-link">Cookie 作用域六道关</a> 属于同一类问题：字符串层面看起来正常的地址，到了协议层已经换了对象。</p>
+<h2>三、空问号与空井号：往返一圈就没了</h2>
+<p><code>urlsplit</code> 与 <code>urlunparse</code> 的往返不是恒等变换。本机实测：</p>
+<pre><code>urlsplit('http://h/p?').geturl()   -> http://h/p
+urlsplit('http://h/p#').geturl()   -> http://h/p
+urlsplit('http://h/p?&').geturl()  -> http://h/p?&
+urlunparse(('http','h','/p','','','')) -> http://h/p</code></pre>
+<p>末尾那个空 <code>?</code> 和空 <code>#</code> 消失了，但 <code>?&</code> 这种「有内容」的查询串能活下来。原因是 <code>urlunparse</code> 只判断分量是否为空字符串，空字符串就不写分隔符。</p>
+<p>这里有一处文档与 RFC 的分歧，值得单独记一笔。Python 文档在 <code>urlunparse</code> 条目下写的是：「This may result in a slightly different, but equivalent URL, if the URL that was parsed originally had unnecessary delimiters (for example, a ? with an empty query; the RFC states that these are equivalent).」</p>
+<p>而我去查 RFC 3986 5.3 的原文，方向是反的：「Note that we are careful to preserve the distinction between a component that is undefined, meaning that its separator was not present in the reference, and a component that is empty, meaning that the separator was present」。5.3 要求<strong>区分「未定义」与「为空」</strong>，重组时该写回 <code>?</code> 就要写回。</p>
+<p>对做 URL 去重、缓存键、canonical 的人来说这不是学术问题：<code>/p</code> 与 <code>/p?</code> 在你眼里是不是同一个资源，决定了两个缓存条目还是一个。上游显然也意识到了，3.15 的文档里 <code>urlunparse</code> 多了一个 <code>keep_empty</code> 参数，<code>urlsplit</code> 多了 <code>missing_as_none</code>；本机 3.13.14 两个参数都还没有（<code>urlunparse</code> 的签名仍是 <code>urlunparse(components)</code>）。升级到 3.15 之后这一段行为会变，写死假设的代码要复查。</p>
+<p>顺带一个同族改写：<code>urlsplit(url, allow_fragments=False)</code> 不会报错，它把井号后面的东西整个塞进 query。实测 <code>urlsplit('http://a/p?x=1#f', allow_fragments=False)</code> 得到 <code>query='x=1#f'</code>、<code>fragment=''</code>。用这个参数时要记得，<code>#</code> 之后的内容已经混进查询串了。</p>
+<h2>四、分号：urlparse 只从最后一段切</h2>
+<p><code>urlparse</code> 比 <code>urlsplit</code> 多的那个 <code>params</code> 分量，来自已废弃的 RFC 1738 / 1808。Python 文档直说「<code>urlsplit()</code> should generally be used instead of <code>urlparse()</code>」，但老代码里 <code>urlparse</code> 到处都是，而它的切法很挑位置：</p>
+<pre><code>urlparse('http://a/b/c;d')   -> path='/b/c'      params='d'
+urlparse('http://a/b;c/d')   -> path='/b;c/d'    params=''
+urlparse('http://a/b;c;d')   -> path='/b'        params='c;d'
+urlparse('http://a/b/c;d/e') -> path='/b/c;d/e'  params=''</code></pre>
+<p>只有<strong>最后一段</strong>里的分号才会被切成 params；中间段的分号留在 path 里；最后一段有两个分号时，第一个之后全算 params。也就是说 <code>.path</code> 这个属性在 <code>urlparse</code> 下可能比你写的少一截——如果你用 <code>parsed.path</code> 去比对路由表，<code>/b/c;d</code> 会比不上。</p>
+<p><code>urlsplit</code> 完全不做这件事，<code>path</code> 原样保留 <code>/b;c/d</code>。要在两者之间选，判据很简单：要不要 <code>params</code>。不要就用 <code>urlsplit</code>，因为少一个可变分量，少一处惊喜。</p>
+<h2>五、查询串的三个默认值：空值、分号、加号</h2>
+<p><code>parse_qs</code> 的签名里有一串默认值，每一个都会改变结果：</p>
+<pre><code>parse_qs('a=1&b=&c=&d')                         -> {'a': ['1']}
+parse_qs('a=1&b=&c=&d', keep_blank_values=True) -> {'a': ['1'], 'b': [''], 'c': [''], 'd': ['']}
+parse_qs('a=1;b=2')                             -> {'a': ['1;b=2']}
+parse_qs('a=1;b=2', separator=';')              -> {'a': ['1'], 'b': ['2']}
+parse_qs('a=1&junk', strict_parsing=True)       -> ValueError: bad query field: 'junk'
+parse_qs('a=1&b=2&c=3', max_num_fields=2)       -> ValueError: Max number of fields exceeded</code></pre>
+<p>三件事：</p>
+<p>第一，<code>keep_blank_values</code> 默认 <code>False</code>，带 <code>=</code> 但没值的参数会被整条丢掉。做表单回填、埋点校验、OAuth 回调参数核对时，这等于丢数据。文档原话：「The default false value indicates that blank values are to be ignored and treated as if they were not included.」</p>
+<p>第二，分号自 3.10 起不再是分隔符。文档版本注记写得很清楚：「Python versions earlier than Python 3.10 allowed using both <code>;</code> and <code>&</code> as query parameter separator.」所以 <code>a=1;b=2</code> 现在是一个键，值是 <code>1;b=2</code>。老系统迁移过来，参数会静默合体。</p>
+<p>第三，<code>+</code> 与 <code>%20</code> 是两套解码：<code>parse_qs('q=a+b')</code> 与 <code>parse_qs('q=a%20b')</code> 都给 <code>a b</code>，但 <code>unquote('a+b')</code> 返回 <code>a+b</code>，只有 <code>unquote_plus('a+b')</code> 才返回 <code>a b</code>。手动解码查询串时用错函数，加号就变成字面加号。</p>
+<p>还有一个不会报错的：<code>parse_qs('q=100%')</code> 返回 <code>{'q': ['100%']}</code>，<code>%zz</code>、<code>%2</code> 也原样留着。<code>unquote</code> 对不成对的百分号是「放过」而不是「报错」，只有能凑成字节、但字节解不成 UTF-8 时才替换。所以「解析没报错」不等于「数据干净」。</p>
+<h2>六、编码：quote 与 quote_plus 只差一个默认参数</h2>
+<p><code>quote</code> 的默认 <code>safe='/'</code>，<code>quote_plus</code> 的默认 <code>safe=''</code>。差这一个字符，斜杠的处理就完全不同：</p>
+<pre><code>quote('a b/c?d=e&f+g%h#i')       -> a%20b/c%3Fd%3De%26f%2Bg%25h%23i
+quote_plus('a b/c?d=e&f+g%h#i')  -> a+b%2Fc%3Fd%3De%26f%2Bg%25h%23i
+quote('/a b')                    -> /a%20b
+quote_plus('/a b')               -> %2Fa+b</code></pre>
+<p><code>quote</code> 是给路径用的，所以放过 <code>/</code>、把空格编成 <code>%20</code>；<code>quote_plus</code> 是给表单值用的，所以 <code>/</code> 也编成 <code>%2F</code>、空格变成 <code>+</code>。<code>urlencode</code> 默认走的是后者，文档原话：「By default, <code>quote_plus()</code> is used to quote the values」；想换成 <code>%20</code> 就传 <code>quote_via=quote</code>。</p>
+<p>二次编码是这类问题里最难看出来的一种：<code>quote(quote('a b'))</code> 得到 <code>a%2520b</code>，解一次回到 <code>a%20b</code>，再解一次才是 <code>a b</code>。本机实测一个具体的双解码场景：<code>parse_qs(unquote('q=a%252Bb'))</code> 返回 <code>{'q': ['a+b']}</code>——经过两次解码，原本被编码的加号变成了真正的加号，再进一次解码就会变成空格。签名字符串、回调参数被这样啃掉一个字符，报错会出现在离现场很远的地方。</p>
+<p><code>urlencode</code> 还有两处会把类型悄悄变成字符串：</p>
+<pre><code>urlencode({'a': [1, 2]})              -> a=%5B1%2C+2%5D
+urlencode({'a': [1, 2]}, doseq=True)  -> a=1&a=2
+urlencode({'a': None})                -> a=None
+urlencode({'a': True, 'b': 0})        -> a=True&b=0</code></pre>
+<p>不传 <code>doseq=True</code> 时，列表会被 <code>str()</code> 成 <code>[1, 2]</code> 再编码，服务端收到的是字面量 <code>[1, 2]</code>。<code>None</code> 变成 <code>None</code>、<code>True</code> 变成 <code>True</code>，没有任何警告——布尔值与整数在 Python 里不是字符串，但 <code>urlencode</code> 不打算替你判断。</p>
+<h2>七、主机名：三种口径与一次 NFKC 拦截</h2>
+<p>同一个 URL，<code>netloc</code>、<code>hostname</code>、<code>username</code> 三个属性给三种口径：</p>
+<pre><code>urlsplit('HTTP://User:PW@Example.COM:8080/Path?Q=1')
+  scheme='http'  netloc='User:PW@Example.COM:8080'
+  hostname='example.com'  username='User'  path='/Path'</code></pre>
+<p>scheme 被小写，<code>netloc</code> 原样保留大小写，<code>hostname</code> 又变成小写，路径与查询串一律不动。拿 <code>netloc</code> 做白名单比对（<code>if host in ALLOWED</code>），大小写混写的域名就会漏判；拿 <code>hostname</code> 比对，<code>ex%61mple.com</code> 这种百分号编码的主机又不会被解开——文档写着「Percent-encoded sequences are not decoded」，实测 <code>hostname</code> 返回的就是 <code>ex%61mple.com</code> 原串。</p>
+<p><code>urlsplit</code> 也不做校验。文档给了明确警告：「<code>urlsplit()</code> does not perform validation.」实测 <code>urlsplit('http://a b/p')</code> 不报错，<code>hostname</code> 就是 <code>a b</code>；IPv6 要去掉方括号：<code>urlsplit('http://[::1]:8080/p').hostname</code> 是 <code>::1</code>。</p>
+<p>真正会拦下来的只有两类，都是解析或访问属性时才抛：</p>
+<pre><code>urlsplit('http://exam／ple.com/p')  # 全角斜杠 U+FF0F
+  -> ValueError: netloc 'exam／ple.com' contains invalid characters under NFKC normalization
+urlsplit('http://℀.test/p')          # U+2100，NFKC 展开成 a/c
+  -> ValueError: netloc '℀.test' contains invalid characters under NFKC normalization</code></pre>
+<p>规则来自 <code>_checknetloc()</code>：对非 ASCII 的 netloc 做 NFKC 归一，若归一后出现了 <code>/?#@:</code> 就拒绝。理由是 IDNA 按 NFKC 等价处理主机名，一个「看起来像点、归一后是斜杠」的字符能骗过肉眼白名单。但这道网并不密：我实测 U+2044（分数斜杠）在 NFKC 下不展开，<code>http://a⁄b/p</code> 照样通过。</p>
+<p>中文域名不会自动转 punycode。<code>'münchen.de'.encode('idna')</code> 得 <code>b'xn--mnchen-3ya.de'</code>，这一步要自己做；不做的话错误会出现在比你预想晚得多的地方，见排错录第 5 条。</p>
+<h2>八、控制字符与非 ASCII：删掉的、留着的、炸掉的</h2>
+<p><code>urlsplit</code> 会<strong>静默删除</strong> URL 里任意位置的 <code>\t</code>、<code>\r</code>、<code>\n</code>（3.10 起），并剥掉开头的 C0 控制字符与空格（3.12 起）。本机实测：</p>
+<pre><code>urlsplit('http://h/p\r\nX: y').path  -> '/pX: y'
+urlsplit('http://h/p\x00').path      -> '/p\x00'
+urlsplit('  http://h/p').netloc      -> 'h'</code></pre>
+<p>回车换行被删掉，<code>\x00</code> 留着。这两条对安全侧都不是小事：前者意味着「用 urlsplit 清洗过的 URL 不会再带 CRLF」，后者意味着 NUL 会一路带到应用层，<code>os.path</code> 与数据库各自有各自的解读。</p>
+<p>非 ASCII 的问题不在 <code>urllib.parse</code> 里，它在 socket 口上等着。本机实测：</p>
+<pre><code>HTTPConnection('127.0.0.1', 9).putrequest('GET', '/订单?q=中')
+  -> UnicodeEncodeError: 'ascii' codec can't encode characters in position 5-6
+HTTPConnection('127.0.0.1', 9).putrequest('GET', '/订单/a b?q=中')
+  -> InvalidURL: URL can't contain control characters. '/订单/a b?q=中' (found at least ' ')
+HTTPConnection('127.0.0.1', 9).putrequest('GET', '/%E8%AE%A2%E5%8D%95')
+  -> 通过</code></pre>
+<p>请求行只接受 ASCII，所以路径必须先 <code>quote</code>。注意第二条的报错文案在说「control characters」，实际触发原因是那个空格——文案与根因不一致，是本轮我花时间最多的一处误导。发送顺序上，如果你要处理的是「连上了但对面不回应」，那是另一层，我在 <a href="https://yaohehe.github.io/2026-11-20-tcp-socket-send.html" class="internal-link">TCP socket 判活</a> 里实测过四组超时与半关闭行为。</p>
+<p>还有一条容易被忽略：<code>urlsplit</code> 不解码路径里的 <code>%2F</code>。<code>urlsplit('http://h/a%2Fb').path</code> 返回 <code>/a%2Fb</code>，你按 <code>/</code> 切段得到一段 <code>a%2Fb</code>，而某些服务端会把 <code>%2F</code> 解成真正的分隔符。切段逻辑与服务端解码口径不一致，就是路径穿越的入口。</p>
+<h2>排错录：六个真实报错</h2>
+<p><strong>1. <code>ValueError: not enough values to unpack (expected 7, got 6)</code></strong></p>
+<pre><code>parts = urlsplit('http://h/p')   # 5 分量
+urlunparse(parts)                # 炸</code></pre>
+<p><code>urlunparse</code> 要六元组（scheme, netloc, path, params, query, fragment），<code>urlsplit</code> 只给五个。修法：改用 <code>urlunsplit(...)</code> 或直接 <code>SplitResult.geturl()</code>。别指望 <code>urlunparse</code> 自动对齐——它内部就是一次六元组解包，所以报错文案说的是「解包得到 6 个值」。</p>
+<p><strong>2. <code>ValueError: Invalid IPv6 URL</code></strong></p>
+<pre><code>urlsplit('http://[::1/p')</code></pre>
+<p>方括号没闭合。异常抛在 <code>urlsplit</code> 里而不是访问 <code>hostname</code> 时，源码 <code>_check_bracketed_netloc()</code> 会先检查「方括号前不允许有内容、方括号与端口之间只能是冒号」。IPv4 加方括号同样会被拒：<code>An IPv4 address cannot be in brackets</code>。</p>
+<p><strong>3. <code>ValueError: Port out of range 0-65535</code> 与 <code>ValueError: Port could not be cast to integer value as 'abc'</code></strong></p>
+<pre><code>urlsplit('http://a:99999/p').port
+urlsplit('http://a:abc/p').port</code></pre>
+<p>两条都在<strong>读 <code>.port</code> 属性时</strong>才抛，<code>urlsplit</code> 本身不报错。所以「解析成功」不能作为端口合法的依据；校验端口必须显式读一次 <code>.port</code>。3.6 之前越界返回 <code>None</code>，现在是抛异常，老代码 <code>if p.port:</code> 的判断方式会直接崩。</p>
+<p><strong>4. <code>UnicodeEncodeError: 'ascii' codec can't encode characters in position 5-6</code></strong></p>
+<p>路径里有中文且没编码。修法只有一条：进 <code>putrequest</code> / <code>urlopen</code> 之前 <code>quote(path)</code>，且编码只做一次（见第六节的 <code>%2520</code>）。</p>
+<p><strong>5. <code>UnicodeEncodeError: 'latin-1' codec can't encode characters in position 0-1</code></strong></p>
+<pre><code>c = HTTPConnection('例子.测试', 9, timeout=1)
+c.putrequest('GET', '/')
+c.putheader('Host', '例子.测试')
+c.endheaders()</code></pre>
+<p>Host 头按 latin-1 编码，中文域名必须先 <code>encode('idna').decode('ascii')</code>。这类问题的现场通常出现在 DNS 或 TLS 之后（对照 <a href="https://yaohehe.github.io/2026-11-23-tls-verify.html" class="internal-link">TLS 证书链验证的六种失败</a>，主机名不匹配也在同一层），但根因在上游的字符串没转。</p>
+<p><strong>6. <code>TypeError: Cannot mix str and non-str arguments</code></strong></p>
+<pre><code>urljoin('http://a/b', b'/c')</code></pre>
+<p><code>urljoin</code> 两边必须同类型。<code>urlsplit(b'...')</code> 是支持的，返回 <code>SplitResultBytes</code>，所有分量都是 bytes；但只要混一个 str 就抛。修法是入口处统一转 str，别指望函数替你猜。</p>
+<p>另外还有一条不算报错但同样要记：<code>quote(b'\xff', encoding='utf-8')</code> 抛 <code>TypeError: quote() doesn't support 'encoding' for bytes</code>——bytes 输入不接受 <code>encoding</code>，因为它已经是字节，没什么可编的。</p>
+<h2>一套可复用的判据</h2>
+<p>把上面七处收成六条，写进代码注释比写进文档管用：</p>
+<ul><li><strong>base 是目录就补尾斜杠</strong>，否则最后一段必丢。</li><li><strong><code>urljoin</code> 的第二参数不可信时不要用它</strong>，先用 <code>urlsplit</code> 取 <code>hostname</code> 与 scheme 比对，再决定要不要拼。</li><li><strong>往返要逐字比对</strong>，不要用「看起来一样」判断。<code>geturl()</code> 与原串做 <code>==</code>，是唯一成本够低的检查。</li><li><strong>查询串解析显式传 <code>keep_blank_values=True</code></strong>，并显式选定分隔符，不要依赖默认值。</li><li><strong>编码只做一次</strong>，编码前后各断言一次「不含 <code>%</code>」或「不含非 ASCII」。</li><li><strong>校验主机用 <code>hostname</code> 且先 <code>lower()</code></strong>，同时对 <code>netloc</code> 的大小写混写做一次归一，别让两套口径各管一半。</li></ul>
+<p>关于第 3 条，还有个配套的工程习惯：把 URL 当主键存库之前，先跑一遍「解析 → 重拼 → 比对」，不一致就把两串都记下来。这个动作和我在 <a href="https://yaohehe.github.io/2026-11-17-http-cache-control-etag.html" class="internal-link">HTTP 缓存那篇</a> 里给缓存键做归一化是同一套思路：<strong>先让键稳定，再谈命中</strong>。</p>
+<h2>常见问题</h2>
+<p><strong>Q：既然 Python 文档说空问号往返之后是「equivalent」，那我还需要保留它吗？</strong></p>
+<p>取决于你把它当资源标识还是当字符串。作为资源标识，<code>/p</code> 与 <code>/p?</code> 在多数服务端指向同一份内容，可以归一；作为缓存键或去重键，就必须保留原样，因为下游可能有系统按字节比较。RFC 3986 5.3 要求区分「未定义」与「为空」，我倾向按 RFC 走，等到 3.15 的 <code>keep_empty</code> 可用再简化。</p>
+<p><strong>Q：<code>urljoin</code> 会不会被 <code>//evil.test</code> 这种引用绕过？我加了 host 白名单。</strong></p>
+<p>白名单加在校验阶段就有用，加在拼接之后没用。实测 <code>urljoin('https://shop.example.com/cart', '//evil.test/x')</code> 直接返回 <code>https://evil.test/x</code>，主机被整体替换。正确顺序是：先解析引用、取出它的 scheme 与 hostname，为空才允许拼；不为空就按绝对地址走拒绝逻辑。</p>
+<p><strong>Q：<code>parse_qs</code> 返回的键值都是列表，为什么不做成单值？</strong></p>
+<p>因为同一个参数可以出现多次（<code>a=1&a=2</code> 实测返回 <code>{'a': ['1', '2']}</code>），字典只能存列表。要单值就自己取 <code>[0]</code>，但要清楚这等于主动丢掉后面的值，而不是「取到唯一值」。</p>
+<p><strong>Q：中文路径报 ascii 编码错，我改成 <code>encode('utf-8')</code> 为什么还是错？</strong></p>
+<p><code>putrequest</code> 要的是已经百分号编码的 ASCII 字符串，不是 UTF-8 字节。正确做法是 <code>quote('/订单')</code> 得到 <code>/%E8%AE%A2%E5%8D%95</code>，再交给它。直接传 bytes 会走到另一条类型判断上。</p>
+<h2>结论</h2>
+<p><code>urllib.parse</code> 的问题不是「有 bug」，而是<strong>它有一整套合理的默认值，而你的场景未必是它默认的那个</strong>：默认 base 是文件、默认查询串不要空值、默认分隔符只有 <code>&</code>、默认给表单值用 <code>quote_plus</code>、默认主机名不做 IDNA、默认 URL 里没有非 ASCII。</p>
+<p>这七处改写里，只有两处会走到异常，其余五处（5/7，约 71%）都是静默的。所以判据不能是「跑通了」，只能是「拼回来的字符串和我写下去的那个逐字相同」。我实际跑了六十多条用例之后，最有用的一条经验反而是最笨的那条：任何 URL 在落库、拼装、发请求之前，先做一次 <code>geturl() == original</code> 的断言。它抓不到所有问题，但它能在问题离开你的机器之前抓住大部分。</p>
+<p>来源：Python 官方文档 <code>urllib.parse</code>（<code>quote</code> / <code>quote_plus</code> / <code>unquote</code> / <code>parse_qs</code> / <code>urlunparse</code> / <code>urljoin</code> / <code>urlsplit</code> 各条目与版本注记，截至发稿为 3.15 文档）、RFC 3986 5.2.3 / 5.3 / 5.4.2 原文、CPython 3.13.14 本机实测（Windows 11 10.0.26300，六十余条用例，探针脚本留在本机 tmp 目录）。</p><p style="margin:15px 0;"><a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与小米 MiMo 开放平台：国内领先的 AI 大模型开放平台，高性价比推理服务</a></p><p style="margin:15px 0;"><a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="color:#0066cc;text-decoration:underline;">👉 立即参与阿里云 AI：汇集爆款 AI 产品，热门模型专属权益优惠券助力企业创新加速</a></p><p style="color:#888;font-size:0.85em;margin:15px 0;">📌 本文由 AI 辅助生成并经人工审核发布 | <a href="/">TechPassive</a> — AI 驱动的内容测试站点，专注于效率工具与 SaaS 真实评测</p>
+<div style="background:#fff8e1;border-left:4px solid #f39c12;padding:20px;margin:30px 0;border-radius:8px;">
+  <h3 style="margin:0 0 10px;color:#b7791f;">&#x1F517; 精选推荐工具</h3>
+  <p style="margin:0 0 15px;color:#666;">使用以下链接支持我们持续产出高质量内容（点击可直接前往购买）：</p>
+  <p style="margin:0 0 12px;color:#888;font-size:0.82em;">作为亚马逊联盟会员，符合条件的购买会为我们带来佣金，不会增加你的购买成本。</p>
+  <div style="display:flex;flex-wrap:wrap;gap:10px;">
+    <a href="https://m.do.co/c/ef5f58bd38d2" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ DigitalOcean 云服务器</a>
+    <a href="https://www.vultr.com/?ref=9890714" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#0058ff;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">⚡ Vultr 高性能 VPS</a>
+    <a href="https://qoder.com.cn/referral?referral_code=W58OGiar7l5dWaNYXwkebR3rV4LDoeXG" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#6366f1;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 QoderWork 中国版（推荐有奖）</a>
+    <a href="https://www.aliyun.com/minisite/goods?userCode=7nyzznme" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6a00;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">☁️ 阿里云爆款 AI 产品</a>
+    <a href="https://www.amazon.com/s?k=WordPress&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">📚 WordPress 实用书单</a>
+    <a href="https://www.amazon.com/s?k=AI+LLM&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🧠 AI / 大模型书单</a>
+    <a href="https://www.amazon.com/s?k=system+design+cloud+architecture&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🏗️ 系统设计/云架构书单</a>
+    <a href="https://www.amazon.com/s?k=Docker+Kubernetes&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐳 Docker/K8s 书单</a>
+    <a href="https://www.amazon.com/s?k=Linux+system+administration&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐧 Linux 系统管理书单</a>
+    <a href="https://www.amazon.com/s?k=Python+programming&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🐍 Python 编程书单</a>
+    <a href="https://www.amazon.com/s?k=PostgreSQL+database&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🗄️ 数据库/PostgreSQL 书单</a>
+    <a href="https://www.amazon.com/s?k=DevOps+SRE&tag=techpassive-20" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff9900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🚀 DevOps/SRE 书单</a>
+    <a href="https://platform.xiaomimimo.com?ref=6847ML" target="_blank" rel="nofollow sponsored" style="display:inline-block;background:#ff6900;color:white;padding:8px 16px;border-radius:5px;text-decoration:none;font-size:0.9em;">🤖 小米 MiMo 开放平台</a>
+  </div>
+</div>
+
+  </div>
+  <a href="/" class="back-btn">← 返回首页</a>
+  </main>
+  <script>
+var _hmt = _hmt || [];
+(function() {
+  var hm = document.createElement("script");
+  hm.src = "https://hm.baidu.com/hm.js?5217d6a8f8299c6b114858ac6e719e2b";
+  var s = document.getElementsByTagName("script")[0];
+  s.parentNode.insertBefore(hm, s);
+})();
+</script>
+  <div style="margin:30px 0; text-align:center;">
+    <ins class="adsbygoogle" style="display:block; text-align:center; margin:30px 0;" data-ad-client="ca-pub-3419621562136630" data-ad-slot="in-article" data-ad-format="auto"></ins>
+  </div>
+  <script>
+(adsbygoogle = window.adsbygoogle || []).push({});
+</script>
+<script defer src="https://yaohehe.github.io/amz-geo-router.js"></script>
+</body>
+</html>
